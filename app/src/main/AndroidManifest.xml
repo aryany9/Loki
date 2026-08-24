@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Audio recording permission — required for voice sessions -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Vibration for feedback -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Post notifications (API 33+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:name=".LokiApplication"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Loki">
+
+        <!-- Main settings / launcher activity -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Loki">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            VoiceInteractionService — the entry point for Android's assistant system.
+            Declaring this service + the BIND_VOICE_INTERACTION permission allows
+            Android to bind to Loki and select it as the default assistant via
+            Settings → Default apps → Digital assistant.
+
+            The meta-data element points to xml/interaction_service.xml which
+            declares the sessionService, recognitionService, and capabilities.
+        -->
+        <service
+            android:name=".assistant.LokiVoiceInteractionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION">
+            <intent-filter>
+                <action android:name="android.service.voice.VoiceInteractionService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.voice_interaction"
+                android:resource="@xml/interaction_service" />
+        </service>
+
+        <!--
+            VoiceInteractionSessionService — the factory that creates
+            VoiceInteractionSession instances when the system invokes the assistant.
+        -->
+        <service
+            android:name=".assistant.LokiVoiceInteractionSessionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VOICE_INTERACTION_SERVICE" />
+
+        <!--
+            RecognitionService — companion service required by the Android framework
+            for VoiceInteractionService validation.
+        -->
+        <service
+            android:name=".assistant.LokiRecognitionService"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.speech.RecognitionService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
+
+    </application>
+
+</manifest>

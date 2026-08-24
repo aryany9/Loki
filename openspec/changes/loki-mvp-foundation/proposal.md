@@ -14,6 +14,7 @@ Loki is a greenfield open-source Android voice assistant that processes requests
 - Initial set of local Android tools covering the MVP: contacts lookup, call contact, dial number, open application, battery status, current time, set timer, set alarm, basic media controls
 - Explicit separation of `LocalTool` and `OnlineTool` interfaces, with online tools deferred to a future phase
 - Minimal Jetpack Compose overlay UI rendered within the `VoiceInteractionSession` window (listening indicator, partial transcript, processing state, response text)
+- Jetpack Compose Chat Activity rendered when the user opens Loki directly from the launcher — text chat interface with scrollable message history, keyboard input, and an optional mic button; TTS disabled by default in chat mode
 - `ContextProvider` abstraction with `ConversationContext` and `DeviceContext`; `ScreenContext` via `AssistStructure` deferred to a future phase
 - `WakeWordEngine` interface defined but unimplemented — wake-word detection is an optional future subsystem
 - Three technical spikes to validate the highest-risk assumptions before full implementation begins
@@ -30,6 +31,7 @@ Loki is a greenfield open-source Android voice assistant that processes requests
 - `local-android-tools`: Initial MVP tool implementations: `LookupContactTool`, `CallContactTool`, `DialNumberTool`, `OpenAppTool`, `GetBatteryTool`, `GetTimeTool`, `SetTimerTool`, `SetAlarmTool`, `MediaControlTool`
 - `grammar-builder`: Dynamic GBNF grammar generation from `ToolRegistry` schemas for grammar-constrained LLM output; guarantees syntactic validity of tool calls independent of semantic validation
 - `voice-interaction-ui`: Minimal Jetpack Compose overlay surface displayed within `VoiceInteractionSession` — session state indicator, partial transcript, processing state, response text
+- `chat-ui`: Jetpack Compose Chat Activity displayed when the user opens Loki from the Android launcher — scrollable chat bubble message list, text keyboard input, optional inline mic button triggering WhisperSTT, text-only assistant responses (no TTS), in-memory conversation history for the session lifetime
 
 ### Modified Capabilities
 

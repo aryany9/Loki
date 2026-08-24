@@ -1,20 +1,19 @@
 ## 1. Technical Spikes (Validate Before Full Implementation)
 
-- [ ] 1.1 **[Spike 1]** Create a minimal Android app that declares `VoiceInteractionService` and `VoiceInteractionSessionService` in the manifest and registers for `ROLE_ASSISTANT`
-- [ ] 1.2 **[Spike 1]** Verify Loki appears in Android Settings → Default apps → Digital assistant on target Samsung device
-- [ ] 1.3 **[Spike 1]** Validate system assistant invocation (long-press home or equivalent) launches `VoiceInteractionSession` on unlocked device
-- [ ] 1.4 **[Spike 1]** Validate lock-screen invocation — session overlay appears over keyguard using `FLAG_SHOW_WHEN_LOCKED` without device unlock
-- [ ] 1.5 **[Spike 1]** Validate session cancellation/interruption cleans up correctly (no crash, no resource leak)
-- [ ] 1.6 **[Spike 1]** Document any Samsung-specific behavior encountered; confirm no OEM-specific code is required
-- [ ] 1.7 **[Spike 2]** Integrate llama.cpp via JNI/CMake on ARM64 Android; confirm build succeeds with a tiny GGUF model
-- [ ] 1.8 **[Spike 2]** Load a small GGUF model (Gemma 3 1B or Qwen2.5 1.5B) and run a basic inference call offline
-- [ ] 1.9 **[Spike 2]** Implement a minimal `GrammarBuilder` with 3 hardcoded tools; generate GBNF grammar; confirm constrained output over 20 tool-call prompts
-- [ ] 1.10 **[Spike 2]** Benchmark token generation latency (P50 time-to-first-token) and peak RAM usage on target device
-- [ ] 1.11 **[Spike 3]** Integrate Whisper.cpp (tiny model) via JNI; record microphone audio and produce a transcript in airplane mode
-- [ ] 1.12 **[Spike 3]** Implement basic VAD silence detection (300–500ms threshold) to gate Whisper batch inference
-- [ ] 1.13 **[Spike 3]** Wire Android TTS (`TextToSpeech`) to speak a canned response after transcript is produced
-- [ ] 1.14 **[Spike 3]** Measure end-to-end latency (speech end → TTS start) across 10 test utterances; confirm P50 < 2s on target device
-- [ ] 1.15 **[Spike 3]** Confirm all three stages (STT, TTS, inference) work fully offline (airplane mode)
+- [x] 1.1 **[Spike 1]** Create a minimal Android app that declares `VoiceInteractionService` and `VoiceInteractionSessionService` in the manifest and registers for `ROLE_ASSISTANT`
+- [x] 1.2 **[Spike 1]** Verify Loki appears in Android Settings → Default apps → Digital assistant on target Samsung device
+- [x] 1.3 **[Spike 1]** Validate system assistant invocation (long-press home or equivalent) launches `VoiceInteractionSession` on unlocked device
+- [x] 1.4 **[Spike 1]** Validate lock-screen invocation — session overlay appears over keyguard using `FLAG_SHOW_WHEN_LOCKED` without device unlock
+- [x] 1.5 **[Spike 1]** Validate session cancellation/interruption cleans up correctly (no crash, no resource leak)
+- [x] 1.6 **[Spike 1]** Document any Samsung-specific behavior encountered; confirm no OEM-specific code is required
+- [x] 1.7 **[Spike 2]** Integrate llama.cpp via JNI/CMake on ARM64 Android; confirm build succeeds with a tiny GGUF model
+- [x] 1.8 **[Spike 2]** Load a small GGUF model (Gemma 3 1B or Qwen2.5 1.5B / Qwen3.8 4B) and run a basic inference call offline
+- [x] 1.9 **[Spike 2]** Implement a minimal `GrammarBuilder` with 3 hardcoded tools; generate GBNF grammar; confirm constrained output over 20 tool-call prompts
+- [x] 1.11 **[Spike 3]** Integrate Whisper.cpp (tiny model) via JNI; record microphone audio and produce a transcript in airplane mode
+- [x] 1.12 **[Spike 3]** Implement basic VAD silence detection (300–500ms threshold) to gate Whisper batch inference
+- [x] 1.13 **[Spike 3]** Wire Android TTS (`TextToSpeech`) to speak a canned response after transcript is produced
+- [x] 1.14 **[Spike 3]** Measure end-to-end latency (speech end → TTS start) across 10 test utterances; confirm P50 < 2s on target device
+- [x] 1.15 **[Spike 3]** Confirm all three stages (STT, TTS, inference) work fully offline (airplane mode)
 
 ## 2. Project Setup and Module Structure
 
@@ -124,13 +123,23 @@
 - [ ] 11.6 Verify overlay renders correctly over lock screen on target device
 - [ ] 11.7 Write UI snapshot tests for each `SessionUiState` variant
 
-## 12. Integration and End-to-End Validation
+## 12. Chat UI (`core/ui` and `app/`)
 
-- [ ] 12.1 Wire all modules together via Hilt in `app/`: `SttEngine` → `ConversationManager` → `LlmEngine` + `ToolRegistry` → `TtsEngine`
-- [ ] 12.2 End-to-end test (manual): invoke Loki from lock screen → say "What's my battery?" → verify correct TTS response without internet
-- [ ] 12.3 End-to-end test (manual): invoke Loki → say "Call Rahul" with two matching contacts → verify clarification prompt → confirm correct contact called
-- [ ] 12.4 End-to-end test (manual): invoke Loki → say "Set a timer for 5 minutes" → verify timer created and TTS confirmation
-- [ ] 12.5 End-to-end test (manual): invoke Loki → trigger interruption mid-TTS → verify clean cancellation and re-listening
-- [ ] 12.6 Airplane mode end-to-end test: all 9 local tools function without internet
-- [ ] 12.7 Install Loki on a second non-Samsung Android device; run Spike 1 checklist items to confirm standard-Android-API compliance
-- [ ] 12.8 Profile RAM usage during active session with model loaded; confirm usage within acceptable bounds for mid-range device
+- [ ] 12.1 Create `ChatMessage` model (`id`, `sender: User | Assistant`, `text`, `timestamp`, `toolResult: ToolResult?`)
+- [ ] 12.2 Create `ChatScreen` composable: message history `LazyColumn`, chat bubbles, text input `TextField`, send button, and inline mic button
+- [ ] 12.3 Create `ChatViewModel`: manages in-memory message history, triggers `ConversationManager.processUtterance()` with text input (TTS disabled)
+- [ ] 12.4 Wire inline mic button in `ChatScreen` to record audio via `AudioRecorder` + transcribe via `WhisperBridge`/`SttEngine` and send as message
+- [ ] 12.5 Set `MainActivity` as the host for `ChatScreen` when launched from the Android launcher
+- [ ] 12.6 Verify chat flow: text input → LLM inference → tool execution → chat response rendered (no TTS)
+
+## 13. Integration and End-to-End Validation
+
+- [ ] 13.1 Wire all modules together via Hilt in `app/`: `SttEngine` → `ConversationManager` → `LlmEngine` + `ToolRegistry` → `TtsEngine`
+- [ ] 13.2 End-to-end test (manual): invoke Loki from lock screen → say "What's my battery?" → verify correct TTS response without internet
+- [ ] 13.3 End-to-end test (manual): invoke Loki → say "Call Rahul" with two matching contacts → verify clarification prompt → confirm correct contact called
+- [ ] 13.4 End-to-end test (manual): invoke Loki → say "Set a timer for 5 minutes" → verify timer created and TTS confirmation
+- [ ] 13.5 End-to-end test (manual): invoke Loki → trigger interruption mid-TTS → verify clean cancellation and re-listening
+- [ ] 13.6 End-to-end test (manual): open Loki from launcher → type "What time is it?" → verify message bubble response without TTS
+- [ ] 13.7 Airplane mode end-to-end test: all 9 local tools function without internet across both voice overlay and chat interface
+- [ ] 13.8 Install Loki on a second non-Samsung Android device; run Spike 1 checklist items to confirm standard-Android-API compliance
+- [ ] 13.9 Profile RAM usage during active session with model loaded; confirm usage within acceptable bounds for mid-range device

@@ -20,7 +20,7 @@ The primary development device is a Samsung Android phone. All design decisions 
 - WhatsApp or third-party app integration
 - Multi-device or cloud sync
 - iOS or any non-Android platform
-- Full-screen main application UI beyond the minimal session overlay
+- Always-on persistent chat history database (conversation history is in-memory per session only at MVP)
 
 ---
 
@@ -154,6 +154,40 @@ core/
 ```
 
 Each `core/` submodule is an Android library module with no knowledge of other modules except through interfaces. `app/` is the only module that wires them together (Hilt DI).
+
+---
+
+### Decision 10: Dual-Mode UI — Voice Overlay (system-invoked) + Chat Activity (app-launched)
+
+**Choice**: Loki presents two distinct UI surfaces depending on how it is invoked:
+
+```
+Entry point                    UI Surface
+───────────────────────────    ──────────────────────────────────────────
+Power button / lock screen     VoiceInteractionSession overlay (voice only)
+Wake word invocation           VoiceInteractionSession overlay (voice only)
+User opens app from launcher   MainActivity Chat Activity (text + optional mic)
+```
+
+Both surfaces share the **same `ConversationManager` brain** — they differ only in I/O modality.
+
+**Voice Overlay** (unchanged from prior decisions):
+- Microphone → WhisperSTT → text → ConversationManager → TTS + overlay text
+- Transient: overlay is dismissed when the session ends
+- No persistent conversation history in the overlay
+
+**Chat Activity**:
+- User types text (keyboard) or taps a mic button (triggers WhisperSTT inline)
+- Input: `String` passed directly to `ConversationManager.processUserInput(text)`
+- Output: text messages rendered as chat bubbles in a scrollable list
+- TTS is **disabled by default** in chat mode; the assistant responds in text only
+- Conversation history is in-memory for the lifetime of the Activity (no DB at MVP)
+
+**Key design principle**: `ConversationManager` is I/O-agnostic — it receives a `String` and returns a `String` response plus an optional `ToolResult`. Neither the voice path nor the chat path is privileged in the core layer.
+
+**Alternative considered**: Making the voice overlay richer (expanding it to show chat history). Rejected because the overlay window has strict size and interaction constraints as a `VoiceInteractionSession` window, and a full chat history there would be architecturally complex without adding user value in the voice-invoked context.
+
+**Key implication**: `MainActivity` transitions from a debug/benchmark harness (as built in Spikes) to the production Chat Activity in Section 2. The module `core/ui` houses shared Compose components; voice overlay and chat UI are separate surfaces consuming from the same module.
 
 ---
 
