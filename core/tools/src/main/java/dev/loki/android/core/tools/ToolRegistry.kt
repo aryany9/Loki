@@ -29,27 +29,65 @@ class ToolRegistry {
 
     fun getOnlineTools(): List<OnlineTool> = tools.values.filterIsInstance<OnlineTool>()
 
+    fun getAvailableTools(
+        context: Context,
+        permissionManager: PermissionManager = PermissionManager()
+    ): List<Tool> {
+        return tools.values.filter { tool ->
+            tool.requiredPermissions.isEmpty() || permissionManager.arePermissionsGranted(context, tool.requiredPermissions)
+        }
+    }
+
+    fun getDisabledTools(
+        context: Context,
+        permissionManager: PermissionManager = PermissionManager()
+    ): List<Pair<Tool, String>> {
+        val disabled = mutableListOf<Pair<Tool, String>>()
+        for (tool in tools.values) {
+            for (perm in tool.requiredPermissions) {
+                if (!permissionManager.isPermissionGranted(context, perm)) {
+                    disabled.add(tool to perm)
+                    break
+                }
+            }
+        }
+        return disabled
+    }
+
     suspend fun execute(
         context: Context,
         name: String,
-        arguments: Map<String, Any?>
+        arguments: Map<String, Any?>,
+        permissionManager: PermissionManager = PermissionManager()
     ): ToolResult {
-        val tool = tools[name] ?: return ToolResult.error(
-            "Tool '$name' not found",
-            ToolErrorCode.NOT_FOUND
+        return when (val result = executeDetailed(context, name, arguments, permissionManager)) {
+            is ToolExecutionResult.Success -> result.toolResult
+            is ToolExecutionResult.Error -> result.toolResult
+            is ToolExecutionResult.PermissionRequired -> ToolResult.error(
+                "Missing permission: ${result.permission}",
+                ToolErrorCode.PERMISSION_DENIED
+            )
+        }
+    }
+
+    suspend fun executeDetailed(
+        context: Context,
+        name: String,
+        arguments: Map<String, Any?>,
+        permissionManager: PermissionManager = PermissionManager()
+    ): ToolExecutionResult {
+        val tool = tools[name] ?: return ToolExecutionResult.Error(
+            ToolResult.error(
+                "Tool '$name' not found",
+                ToolErrorCode.NOT_FOUND
+            )
         )
 
         // Check required permissions
         for (perm in tool.requiredPermissions) {
-            val granted = ContextCompat.checkSelfPermission(
-                context,
-                perm
-            ) == PackageManager.PERMISSION_GRANTED
-            if (!granted) {
-                return ToolResult.error(
-                    "Missing permission: $perm",
-                    ToolErrorCode.PERMISSION_DENIED
-                )
+            val state = permissionManager.checkPermission(context, perm)
+            if (state != PermissionState.GRANTED) {
+                return ToolExecutionResult.PermissionRequired(perm, state)
             }
         }
 
@@ -58,20 +96,29 @@ class ToolRegistry {
             if (paramDef.required) {
                 val value = arguments[paramName]
                 if (value == null || (value is String && value.isBlank())) {
-                    return ToolResult.error(
-                        "Missing required argument: $paramName",
-                        ToolErrorCode.VALIDATION_ERROR
+                    return ToolExecutionResult.Error(
+                        ToolResult.error(
+                            "Missing required argument: $paramName",
+                            ToolErrorCode.VALIDATION_ERROR
+                        )
                     )
                 }
             }
         }
 
         return try {
-            tool.execute(context, arguments)
+            val result = tool.execute(context, arguments)
+            if (result.success) {
+                ToolExecutionResult.Success(result)
+            } else {
+                ToolExecutionResult.Error(result)
+            }
         } catch (e: Exception) {
-            ToolResult.error(
-                "Execution failed: ${e.message}",
-                ToolErrorCode.EXECUTION_ERROR
+            ToolExecutionResult.Error(
+                ToolResult.error(
+                    "Execution failed: ${e.message}",
+                    ToolErrorCode.EXECUTION_ERROR
+                )
             )
         }
     }

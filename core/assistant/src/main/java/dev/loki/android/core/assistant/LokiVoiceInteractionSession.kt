@@ -93,7 +93,7 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
             setViewTreeLifecycleOwner(this@LokiVoiceInteractionSession)
             setViewTreeSavedStateRegistryOwner(this@LokiVoiceInteractionSession)
             setContent {
-                MaterialTheme {
+                dev.loki.android.core.ui.theme.LokiTheme {
                     val state by assistantSession.state.collectAsState()
                     VoiceSessionOverlay(
                         state = state,
@@ -142,7 +142,7 @@ fun VoiceSessionOverlay(
             .fillMaxWidth()
             .padding(16.dp),
         shape = RoundedCornerShape(24.dp),
-        color = Color(0xFF1A1A24),
+        color = MaterialTheme.colorScheme.surface,
         shadowElevation = 8.dp
     ) {
         Column(
@@ -156,7 +156,7 @@ fun VoiceSessionOverlay(
                 text = "⚡ Loki Assistant",
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color.White
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -165,7 +165,7 @@ fun VoiceSessionOverlay(
                     Text(
                         text = "Ready",
                         fontSize = 15.sp,
-                        color = Color(0xFF8E8EA0)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 is AssistantState.Listening -> {
@@ -173,7 +173,7 @@ fun VoiceSessionOverlay(
                         text = if (state.partialTranscript.isNotEmpty()) state.partialTranscript else "🎙️ Listening...",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color(0xFF818CF8)
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
                 is AssistantState.Processing -> {
@@ -184,12 +184,12 @@ fun VoiceSessionOverlay(
                         CircularProgressIndicator(
                             modifier = Modifier.height(16.dp),
                             strokeWidth = 2.dp,
-                            color = Color(0xFF38BDF8)
+                            color = MaterialTheme.colorScheme.secondary
                         )
                         Text(
                             text = if (state.query.isNotEmpty()) state.query else "Thinking...",
                             fontSize = 15.sp,
-                            color = Color(0xFF38BDF8)
+                            color = MaterialTheme.colorScheme.secondary
                         )
                     }
                 }
@@ -198,14 +198,14 @@ fun VoiceSessionOverlay(
                         text = "🔊 ${state.responseText}",
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium,
-                        color = Color(0xFF34D399)
+                        color = MaterialTheme.colorScheme.tertiary
                     )
                 }
                 is AssistantState.Error -> {
                     Text(
                         text = "⚠️ ${state.message}",
                         fontSize = 15.sp,
-                        color = Color(0xFFF87171)
+                        color = MaterialTheme.colorScheme.error
                     )
                 }
             }
@@ -213,7 +213,11 @@ fun VoiceSessionOverlay(
             Spacer(modifier = Modifier.height(16.dp))
             Button(
                 onClick = onDismiss,
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(12.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
             ) {
                 Text("Dismiss")
             }

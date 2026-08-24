@@ -68,7 +68,8 @@ class AssistantSession(
 
                 _state.value = AssistantState.Processing(query = finalTranscript)
 
-                conversationManager.processUtterance(finalTranscript, enableTts = true).collect { event ->
+                val voiceSession = conversationManager.newVoiceSession()
+                voiceSession.processUtterance(finalTranscript, enableTts = true, source = "VOICE").collect { event ->
                     when (event) {
                         is ConversationEvent.Speaking -> {
                             _state.value = AssistantState.Speaking(responseText = event.text)
@@ -112,13 +113,15 @@ class AssistantSession(
     }
 
     fun cancelTurn() {
-        Log.i(TAG, "cancelTurn() invoked")
-        activeTurnJob?.cancel()
-        activeTurnJob = null
-        val provider = AssistantSessionProvider.instance
-        provider?.getSttEngine()?.cancel()
-        provider?.getConversationManager()?.cancel()
-        _state.value = AssistantState.Idle
+        if (activeTurnJob != null || _state.value !is AssistantState.Idle) {
+            Log.i(TAG, "cancelTurn() invoked")
+            activeTurnJob?.cancel()
+            activeTurnJob = null
+            val provider = AssistantSessionProvider.instance
+            provider?.getSttEngine()?.cancel()
+            provider?.getConversationManager()?.cancel()
+            _state.value = AssistantState.Idle
+        }
     }
 
     fun dismiss() {

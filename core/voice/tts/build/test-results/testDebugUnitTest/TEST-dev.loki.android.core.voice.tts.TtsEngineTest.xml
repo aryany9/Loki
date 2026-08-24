@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="dev.loki.android.core.voice.tts.TtsEngineTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-08-24T10:47:23" hostname="Aryans-MacBook-Air.local" time="0.005">
-  <properties/>
-  <testcase name="MockTtsEngine adheres to TtsEngine contract" classname="dev.loki.android.core.voice.tts.TtsEngineTest" time="0.005"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

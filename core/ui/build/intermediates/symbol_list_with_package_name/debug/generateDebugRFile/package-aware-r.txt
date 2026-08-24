@@ -1,1 +1,0 @@
-dev.loki.android.core.ui

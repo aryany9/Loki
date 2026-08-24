@@ -1,5 +1,8 @@
 package dev.loki.android.core.llm
 
+import android.content.Context
+import dev.loki.android.core.tools.PermissionManager
+import dev.loki.android.core.tools.Tool
 import dev.loki.android.core.tools.ToolParamType
 import dev.loki.android.core.tools.ToolRegistry
 import kotlinx.serialization.json.buildJsonArray
@@ -7,6 +10,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import java.util.concurrent.ConcurrentHashMap
 
 data class ToolDefinition(
     val name: String,
@@ -22,11 +26,33 @@ enum class ParamType {
 
 /**
  * GrammarBuilder converts tool definitions into GBNF grammars using llama.cpp's native JSON schema compiler.
+ * Caches compiled GBNF grammars based on the active toolset to avoid re-compiling across turns.
  */
 object GrammarBuilder {
 
-    fun buildFrom(toolRegistry: ToolRegistry): String {
-        val toolDefs = toolRegistry.getAllTools().map { tool ->
+    private val grammarCache = ConcurrentHashMap<String, String>()
+
+    fun buildFrom(
+        toolRegistry: ToolRegistry,
+        context: Context? = null,
+        permissionManager: PermissionManager = PermissionManager()
+    ): String {
+        val tools = if (context != null) {
+            toolRegistry.getAvailableTools(context, permissionManager)
+        } else {
+            toolRegistry.getAllTools()
+        }
+        return buildFromToolsList(tools)
+    }
+
+    fun buildFromToolsList(tools: List<Tool>): String {
+        val cacheKey = tools.map { it.name }.sorted().joinToString(separator = ",")
+        val cached = grammarCache[cacheKey]
+        if (cached != null) {
+            return cached
+        }
+
+        val toolDefs = tools.map { tool ->
             ToolDefinition(
                 name = tool.name,
                 description = tool.description,
@@ -39,7 +65,15 @@ object GrammarBuilder {
                 }
             )
         }
-        return buildFromTools(toolDefs)
+        val grammar = buildFromTools(toolDefs)
+        if (grammar.isNotEmpty()) {
+            grammarCache[cacheKey] = grammar
+        }
+        return grammar
+    }
+
+    fun clearCache() {
+        grammarCache.clear()
     }
 
     fun buildFromTools(tools: List<ToolDefinition>): String {

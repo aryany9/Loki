@@ -66,6 +66,7 @@ class WhisperSttEngine(
                 )
             }.trim()
 
+            Log.i(TAG, "Whisper transcription completed: \"$transcript\" (${audioFloats.size} audio samples)")
             emit(SttEvent.FinalResult(transcript))
         } catch (e: CancellationException) {
             isListening = false

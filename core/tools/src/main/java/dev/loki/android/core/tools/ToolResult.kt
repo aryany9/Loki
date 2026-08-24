@@ -30,3 +30,9 @@ data class ToolResult(
         )
     }
 }
+
+sealed interface ToolExecutionResult {
+    data class Success(val toolResult: ToolResult) : ToolExecutionResult
+    data class Error(val toolResult: ToolResult) : ToolExecutionResult
+    data class PermissionRequired(val permission: String, val state: PermissionState) : ToolExecutionResult
+}

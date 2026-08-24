@@ -1,2 +1,0 @@
-ninja: Entering directory `/Users/aryanyadav/Documents/Development/MobileApp/Loki/core/voice/stt/.cxx/Release/5hw8685u/arm64-v8a'
-ninja: no work to do.

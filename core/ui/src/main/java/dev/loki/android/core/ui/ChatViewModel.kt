@@ -17,6 +17,7 @@ class ChatViewModel(
     private val sttEngine: SttEngine? = null
 ) : ViewModel() {
 
+    private val chatSession = conversationManager.newChatSession()
     val modelState: StateFlow<LlmModelState> = conversationManager.llmEngine.modelState
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(
@@ -45,6 +46,16 @@ class ChatViewModel(
         }
     }
 
+    fun clearChat() {
+        chatSession.clear()
+        _messages.value = listOf(
+            ChatMessage(
+                sender = MessageSender.ASSISTANT,
+                text = "Chat cleared. What can I do for you?"
+            )
+        )
+    }
+
     fun sendMessage(text: String) {
         if (text.isBlank()) return
 
@@ -53,7 +64,7 @@ class ChatViewModel(
         _messages.value = _messages.value + userMessage + thinkingMessage
 
         viewModelScope.launch {
-            conversationManager.processUtterance(text, enableTts = false).collect { event ->
+            chatSession.processUtterance(text, enableTts = false, source = "TEXT").collect { event ->
                 when (event) {
                     is ConversationEvent.ToolExecuting -> {
                         _messages.value = _messages.value.map { msg ->

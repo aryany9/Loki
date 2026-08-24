@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -38,7 +39,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -47,7 +47,8 @@ import dev.loki.android.core.llm.LlmModelState
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
-    viewModel: ChatViewModel
+    viewModel: ChatViewModel,
+    onNavigateToPermissions: (() -> Unit)? = null
 ) {
     val messages by viewModel.messages.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
@@ -69,7 +70,12 @@ fun ChatScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("⚡ Loki", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.White)
+                        Text(
+                            text = "⚡ Loki",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
                         Spacer(modifier = Modifier.weight(1f))
 
                         // Model Status Badge
@@ -77,12 +83,25 @@ fun ChatScreen(
                             modelState = modelState,
                             onRetry = { viewModel.retryLoadModel() }
                         )
+
+                        if (onNavigateToPermissions != null) {
+                            IconButton(onClick = onNavigateToPermissions) {
+                                Text("🛡️", fontSize = 16.sp)
+                            }
+                        }
+
+                        IconButton(onClick = { viewModel.clearChat() }) {
+                            Text("🗑️", fontSize = 16.sp)
+                        }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF121218))
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface
+                )
             )
         },
-        containerColor = Color(0xFF0D0D12)
+        containerColor = MaterialTheme.colorScheme.background
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -94,7 +113,7 @@ fun ChatScreen(
             if (modelState is LlmModelState.Loading) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFF1E1B4B)
+                    color = MaterialTheme.colorScheme.primaryContainer
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -104,24 +123,26 @@ fun ChatScreen(
                         CircularProgressIndicator(
                             modifier = Modifier.size(14.dp),
                             strokeWidth = 2.dp,
-                            color = Color(0xFF818CF8)
+                            color = MaterialTheme.colorScheme.primary
                         )
                         Text(
                             text = "Loading on-device LLM (Qwen 4B)...",
                             fontSize = 13.sp,
-                            color = Color(0xFFC7D2FE)
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
                 }
             } else if (modelState is LlmModelState.Error) {
                 Surface(
-                    modifier = Modifier.fillMaxWidth().clickable { viewModel.retryLoadModel() },
-                    color = Color(0xFF450A0A)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.retryLoadModel() },
+                    color = MaterialTheme.colorScheme.errorContainer
                 ) {
                     Text(
                         text = "⚠️ ${(modelState as LlmModelState.Error).message} (Tap to retry)",
                         fontSize = 13.sp,
-                        color = Color(0xFFFCA5A5),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                     )
                 }
@@ -143,7 +164,7 @@ fun ChatScreen(
             // Input Bar
             Surface(
                 modifier = Modifier.fillMaxWidth(),
-                color = Color(0xFF16161E),
+                color = MaterialTheme.colorScheme.surface,
                 shadowElevation = 8.dp
             ) {
                 Row(
@@ -155,14 +176,19 @@ fun ChatScreen(
                     OutlinedTextField(
                         value = inputText,
                         onValueChange = { inputText = it },
-                        placeholder = { Text("Ask Loki anything...", color = Color(0xFF6B7280)) },
+                        placeholder = {
+                            Text(
+                                "Ask Loki anything...",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(24.dp),
                         colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color(0xFF22222E),
-                            unfocusedContainerColor = Color(0xFF22222E),
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                         ),
                         maxLines = 4
                     )
@@ -177,11 +203,14 @@ fun ChatScreen(
                         modifier = Modifier
                             .size(44.dp)
                             .background(
-                                color = if (isRecording) Color(0xFFEF4444) else Color(0xFF374151),
+                                color = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondaryContainer,
                                 shape = CircleShape
                             )
                     ) {
-                        Text(if (isRecording) "⏹" else "🎙️", fontSize = 18.sp)
+                        Text(
+                            if (isRecording) "⏹" else "🎙️",
+                            fontSize = 18.sp
+                        )
                     }
 
                     Spacer(modifier = Modifier.width(4.dp))
@@ -196,9 +225,9 @@ fun ChatScreen(
                         },
                         modifier = Modifier
                             .size(44.dp)
-                            .background(Color(0xFF6366F1), shape = CircleShape)
+                            .background(MaterialTheme.colorScheme.primary, shape = CircleShape)
                     ) {
-                        Text("➤", fontSize = 16.sp, color = Color.White)
+                        Text("➤", fontSize = 16.sp, color = MaterialTheme.colorScheme.onPrimary)
                     }
                 }
             }
@@ -214,13 +243,13 @@ fun ModelStatusBadge(
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = when (modelState) {
-            is LlmModelState.Ready -> Color(0xFF064E3B)
-            is LlmModelState.Loading -> Color(0xFF312E81)
-            is LlmModelState.Error -> Color(0xFF7F1D1D)
-            is LlmModelState.NotLoaded -> Color(0xFF374151)
+            is LlmModelState.Ready -> MaterialTheme.colorScheme.primaryContainer
+            is LlmModelState.Loading -> MaterialTheme.colorScheme.secondaryContainer
+            is LlmModelState.Error -> MaterialTheme.colorScheme.errorContainer
+            is LlmModelState.NotLoaded -> MaterialTheme.colorScheme.surfaceVariant
         },
         modifier = Modifier
-            .padding(end = 8.dp)
+            .padding(end = 4.dp)
             .clickable(enabled = modelState is LlmModelState.Error, onClick = onRetry)
     ) {
         Row(
@@ -230,19 +259,31 @@ fun ModelStatusBadge(
         ) {
             when (modelState) {
                 is LlmModelState.Ready -> {
-                    Box(modifier = Modifier.size(6.dp).background(Color(0xFF10B981), CircleShape))
-                    Text("Ready (Qwen 4B)", fontSize = 11.sp, color = Color(0xFF6EE7B7))
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .background(MaterialTheme.colorScheme.tertiary, CircleShape)
+                    )
+                    Text("Ready", fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer)
                 }
                 is LlmModelState.Loading -> {
-                    CircularProgressIndicator(modifier = Modifier.size(8.dp), strokeWidth = 1.5.dp, color = Color(0xFF818CF8))
-                    Text("Loading...", fontSize = 11.sp, color = Color(0xFFA5B4FC))
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(8.dp),
+                        strokeWidth = 1.5.dp,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Text("Loading...", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSecondaryContainer)
                 }
                 is LlmModelState.Error -> {
-                    Box(modifier = Modifier.size(6.dp).background(Color(0xFFEF4444), CircleShape))
-                    Text("Model Error", fontSize = 11.sp, color = Color(0xFFFCA5A5))
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .background(MaterialTheme.colorScheme.error, CircleShape)
+                    )
+                    Text("Error", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
                 }
                 is LlmModelState.NotLoaded -> {
-                    Text("Not Loaded", fontSize = 11.sp, color = Color(0xFF9CA3AF))
+                    Text("Not Loaded", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -253,8 +294,8 @@ fun ModelStatusBadge(
 fun ChatBubble(message: ChatMessage) {
     val isUser = message.sender == MessageSender.USER
     val alignment = if (isUser) Alignment.End else Alignment.Start
-    val bg = if (isUser) Color(0xFF6366F1) else Color(0xFF1E1E2A)
-    val textColor = Color.White
+    val bg = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+    val textColor = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -276,8 +317,16 @@ fun ChatBubble(message: ChatMessage) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color(0xFF38BDF8))
-                        Text(message.text, fontSize = 14.sp, color = Color(0xFF38BDF8))
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        Text(
+                            message.text,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 } else {
                     Text(
@@ -292,13 +341,13 @@ fun ChatBubble(message: ChatMessage) {
                     Spacer(modifier = Modifier.height(6.dp))
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = Color(0xFF121218),
+                        color = MaterialTheme.colorScheme.surface,
                         modifier = Modifier.padding(top = 4.dp)
                     ) {
                         Text(
                             text = "✓ Action executed",
                             fontSize = 12.sp,
-                            color = Color(0xFF10B981),
+                            color = MaterialTheme.colorScheme.tertiary,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }

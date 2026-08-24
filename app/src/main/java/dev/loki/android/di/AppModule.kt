@@ -10,8 +10,10 @@ import dev.loki.android.core.conversation.ConversationManager
 import dev.loki.android.core.llm.LlamaCppLlmEngine
 import dev.loki.android.core.llm.LlmEngine
 import dev.loki.android.core.llm.ModelManager
+import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.local.DefaultLocalTools
+import dev.loki.android.core.ui.theme.ThemeRepository
 import dev.loki.android.core.voice.stt.SttEngine
 import dev.loki.android.core.voice.stt.WhisperModelManager
 import dev.loki.android.core.voice.stt.WhisperSttEngine
@@ -22,6 +24,18 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    fun providePermissionManager(): PermissionManager {
+        return PermissionManager()
+    }
+
+    @Provides
+    @Singleton
+    fun provideThemeRepository(@ApplicationContext context: Context): ThemeRepository {
+        return ThemeRepository(context)
+    }
 
     @Provides
     @Singleton
@@ -67,13 +81,15 @@ object AppModule {
         @ApplicationContext context: Context,
         llmEngine: LlmEngine,
         toolRegistry: ToolRegistry,
-        ttsEngine: TtsEngine
+        ttsEngine: TtsEngine,
+        permissionManager: PermissionManager
     ): ConversationManager {
         return ConversationManager(
             context = context,
             llmEngine = llmEngine,
             toolRegistry = toolRegistry,
-            ttsEngine = ttsEngine
+            ttsEngine = ttsEngine,
+            permissionManager = permissionManager
         )
     }
 }

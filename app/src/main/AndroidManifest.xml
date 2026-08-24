@@ -3,6 +3,9 @@
 
     <!-- Audio recording permission — required for voice sessions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Phone and Contacts permissions for assistant tools -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <!-- Foreground service for ongoing voice capture / interaction -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />

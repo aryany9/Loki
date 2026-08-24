@@ -66,6 +66,8 @@ class LlamaCppLlmEngine(
         }
     }
 
+    @Volatile private var isGenerating = false
+
     override suspend fun generate(
         prompt: String,
         grammar: String?,
@@ -79,6 +81,7 @@ class LlamaCppLlmEngine(
             }
         }
 
+        isGenerating = true
         try {
             val callback = onToken?.let { cb ->
                 LlamaBridge.TokenCallback { token -> cb(token) }
@@ -92,19 +95,25 @@ class LlamaCppLlmEngine(
                 callback = callback
             )
 
+            isGenerating = false
             Result.success(result)
         } catch (e: CancellationException) {
             cancel()
             throw e
         } catch (e: Throwable) {
+            isGenerating = false
             Log.e(TAG, "LLM generation failed", e)
             Result.failure(e)
+        } finally {
+            isGenerating = false
         }
     }
 
     override fun cancel() {
-        if (nativeHandle != 0L) {
+        if (nativeHandle != 0L && isGenerating) {
+            isGenerating = false
             LlamaBridge.nativeCancel(nativeHandle)
+            Log.i(TAG, "LLM native cancellation requested")
         }
     }
 
