@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.loki.android.core.llm.LlmEngineTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-24T10:47:08" hostname="Aryans-MacBook-Air.local" time="0.044">
+  <properties/>
+  <testcase name="ToolDefinition constructs schema correctly" classname="dev.loki.android.core.llm.LlmEngineTest" time="0.008"/>
+  <testcase name="calculateDefaultThreads returns reasonable value" classname="dev.loki.android.core.llm.LlmEngineTest" time="0.009"/>
+  <testcase name="GrammarBuilder constructs schema JSON with tools" classname="dev.loki.android.core.llm.LlmEngineTest" time="0.026"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

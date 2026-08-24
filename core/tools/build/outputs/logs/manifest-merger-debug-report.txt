@@ -1,0 +1,16 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/aryanyadav/Documents/Development/MobileApp/Loki/core/tools/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest13238118921964071991.xml:2:13-83
+INJECTED from /Users/aryanyadav/Documents/Development/MobileApp/Loki/core/tools/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest13238118921964071991.xml:2:13-83
+	package
+		INJECTED from /Users/aryanyadav/Documents/Development/MobileApp/Loki/core/tools/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest13238118921964071991.xml
+	xmlns:android
+		ADDED from /Users/aryanyadav/Documents/Development/MobileApp/Loki/core/tools/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest13238118921964071991.xml:2:23-81
+uses-sdk
+INJECTED from /Users/aryanyadav/Documents/Development/MobileApp/Loki/core/tools/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest13238118921964071991.xml reason: use-sdk injection requested
+INJECTED from /Users/aryanyadav/Documents/Development/MobileApp/Loki/core/tools/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest13238118921964071991.xml
+INJECTED from /Users/aryanyadav/Documents/Development/MobileApp/Loki/core/tools/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest13238118921964071991.xml
+	android:targetSdkVersion
+		INJECTED from /Users/aryanyadav/Documents/Development/MobileApp/Loki/core/tools/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest13238118921964071991.xml
+	android:minSdkVersion
+		INJECTED from /Users/aryanyadav/Documents/Development/MobileApp/Loki/core/tools/build/intermediates/tmp/ProcessLibraryManifest/debug/tempAndroidManifest13238118921964071991.xml

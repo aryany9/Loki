@@ -22,31 +22,6 @@ android {
         ndk {
             abiFilters.addAll(listOf("arm64-v8a"))
         }
-
-        externalNativeBuild {
-            cmake {
-                cppFlags.addAll(listOf("-std=c++17", "-O3", "-DNDEBUG", "-march=armv8.2-a+dotprod+fp16"))
-                cFlags.addAll(listOf("-O3", "-DNDEBUG", "-march=armv8.2-a+dotprod+fp16"))
-                arguments.addAll(listOf(
-                    "-DANDROID_STL=c++_shared",
-                    "-DCMAKE_BUILD_TYPE=Release",
-                    "-DLLAMA_BUILD_COMMON=ON",
-                    "-DLLAMA_BUILD_TESTS=OFF",
-                    "-DLLAMA_BUILD_TOOLS=OFF",
-                    "-DLLAMA_BUILD_EXAMPLES=OFF",
-                    "-DLLAMA_BUILD_SERVER=OFF",
-                    "-DGGML_OPENMP=OFF",
-                    "-DGGML_LLAMAFILE=OFF"
-                ))
-            }
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
     }
 
     buildTypes {
@@ -74,6 +49,15 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:assistant"))
+    implementation(project(":core:conversation"))
+    implementation(project(":core:llm"))
+    implementation(project(":core:voice:stt"))
+    implementation(project(":core:voice:tts"))
+    implementation(project(":core:tools"))
+    implementation(project(":core:tools:local"))
+    implementation(project(":core:ui"))
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -83,6 +67,7 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 

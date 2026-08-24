@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.loki.android.core.assistant.AssistantSessionTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-08-24T10:47:16" hostname="Aryans-MacBook-Air.local" time="0.124">
+  <properties/>
+  <testcase name="initial state is Idle" classname="dev.loki.android.core.assistant.AssistantSessionTest" time="0.038"/>
+  <testcase name="cancelTurn resets state to Idle" classname="dev.loki.android.core.assistant.AssistantSessionTest" time="0.069"/>
+  <testcase name="startTurn transitions to Listening" classname="dev.loki.android.core.assistant.AssistantSessionTest" time="0.005"/>
+  <testcase name="updateProcessing transitions to Processing" classname="dev.loki.android.core.assistant.AssistantSessionTest" time="0.002"/>
+  <testcase name="updateSpeaking transitions to Speaking" classname="dev.loki.android.core.assistant.AssistantSessionTest" time="0.003"/>
+  <testcase name="dismiss calls onDismiss callback and resets to Idle" classname="dev.loki.android.core.assistant.AssistantSessionTest" time="0.002"/>
+  <testcase name="updateTranscript updates Listening state with partial transcript" classname="dev.loki.android.core.assistant.AssistantSessionTest" time="0.002"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

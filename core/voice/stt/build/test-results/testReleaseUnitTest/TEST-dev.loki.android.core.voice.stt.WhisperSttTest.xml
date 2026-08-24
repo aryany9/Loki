@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.loki.android.core.voice.stt.WhisperSttTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-24T10:47:22" hostname="Aryans-MacBook-Air.local" time="0.006">
+  <properties/>
+  <testcase name="energy RMS calculation is correct for synthetic sine wave" classname="dev.loki.android.core.voice.stt.WhisperSttTest" time="0.004"/>
+  <testcase name="energy RMS of pure silence is near zero" classname="dev.loki.android.core.voice.stt.WhisperSttTest" time="0.0"/>
+  <testcase name="SttEvent sealed interface contracts are defined" classname="dev.loki.android.core.voice.stt.WhisperSttTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

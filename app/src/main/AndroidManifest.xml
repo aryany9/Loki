@@ -3,6 +3,9 @@
 
     <!-- Audio recording permission — required for voice sessions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Foreground service for ongoing voice capture / interaction -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Vibration for feedback -->
     <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Post notifications (API 33+) -->
@@ -42,7 +45,7 @@
             declares the sessionService, recognitionService, and capabilities.
         -->
         <service
-            android:name=".assistant.LokiVoiceInteractionService"
+            android:name="dev.loki.android.core.assistant.LokiVoiceInteractionService"
             android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION">
             <intent-filter>
@@ -58,7 +61,7 @@
             VoiceInteractionSession instances when the system invokes the assistant.
         -->
         <service
-            android:name=".assistant.LokiVoiceInteractionSessionService"
+            android:name="dev.loki.android.core.assistant.LokiVoiceInteractionSessionService"
             android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION_SERVICE" />
 
@@ -67,7 +70,7 @@
             for VoiceInteractionService validation.
         -->
         <service
-            android:name=".assistant.LokiRecognitionService"
+            android:name="dev.loki.android.core.assistant.LokiRecognitionService"
             android:exported="true"
             android:label="@string/app_name">
             <intent-filter>

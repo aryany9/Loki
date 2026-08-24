@@ -10,7 +10,7 @@
 -->
 <voice-interaction-service
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:sessionService="dev.loki.android.assistant.LokiVoiceInteractionSessionService"
-    android:recognitionService="dev.loki.android.assistant.LokiRecognitionService"
+    android:sessionService="dev.loki.android.core.assistant.LokiVoiceInteractionSessionService"
+    android:recognitionService="dev.loki.android.core.assistant.LokiRecognitionService"
     android:supportsAssist="true"
     android:supportsLaunchVoiceAssistFromKeyguard="true" />

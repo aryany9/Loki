@@ -21,3 +21,11 @@ dependencyResolutionManagement {
 
 rootProject.name = "Loki"
 include(":app")
+include(":core:assistant")
+include(":core:conversation")
+include(":core:voice:stt")
+include(":core:voice:tts")
+include(":core:llm")
+include(":core:tools")
+include(":core:tools:local")
+include(":core:ui")

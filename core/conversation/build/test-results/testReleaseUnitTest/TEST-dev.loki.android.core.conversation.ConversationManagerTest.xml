@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.loki.android.core.conversation.ConversationManagerTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-08-24T10:47:09" hostname="Aryans-MacBook-Air.local" time="0.314">
+  <properties/>
+  <testcase name="ConversationManager runs single-step tool loop and fast path" classname="dev.loki.android.core.conversation.ConversationManagerTest" time="0.309"/>
+  <testcase name="ConversationContext manages and trims history within budget" classname="dev.loki.android.core.conversation.ConversationManagerTest" time="0.001"/>
+  <testcase name="ToolCallParser correctly parses direct response JSON" classname="dev.loki.android.core.conversation.ConversationManagerTest" time="0.001"/>
+  <testcase name="ToolCallParser correctly parses tool JSON" classname="dev.loki.android.core.conversation.ConversationManagerTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

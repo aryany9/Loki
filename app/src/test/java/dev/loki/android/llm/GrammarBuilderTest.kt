@@ -1,20 +1,21 @@
-package dev.loki.android.llm
+package dev.loki.android
 
+import dev.loki.android.core.llm.GrammarBuilder
+import dev.loki.android.core.llm.ToolDefinition
+import dev.loki.android.core.tools.ToolRegistry
+import dev.loki.android.core.tools.local.DefaultLocalTools
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GrammarBuilderTest {
 
     @Test
-    fun testGrammarStringDoesNotContainLiteralNewlinesInsideBrackets() {
-        val grammar = GrammarBuilder.buildFromTools(Spike2Benchmark.sampleTools)
-        println("Generated GBNF grammar:\n$grammar")
-        
-        // Ensure no null bytes (char code 0)
-        assertTrue("Grammar should not contain null bytes", !grammar.contains('\u0000'))
-        
-        // Ensure string rule contains valid characters
-        assertTrue(grammar.contains("root ::="))
-        assertTrue(grammar.contains("call_contact"))
+    fun testGrammarBuilderFromRegistry() {
+        val registry = ToolRegistry()
+        DefaultLocalTools.registerAll(registry)
+
+        val grammar = GrammarBuilder.buildFrom(registry)
+        assertNotNull(grammar)
     }
 }

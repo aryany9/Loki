@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="dev.loki.android.core.tools.ToolRegistryTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-08-24T10:47:11" hostname="Aryans-MacBook-Air.local" time="0.151">
+  <properties/>
+  <testcase name="execute returns validation error when required param is missing" classname="dev.loki.android.core.tools.ToolRegistryTest" time="0.119"/>
+  <testcase name="register and retrieve tools from registry" classname="dev.loki.android.core.tools.ToolRegistryTest" time="0.0"/>
+  <testcase name="execute returns error when tool is not registered" classname="dev.loki.android.core.tools.ToolRegistryTest" time="0.011"/>
+  <testcase name="ToolResult serializes and deserializes cleanly with kotlinx serialization" classname="dev.loki.android.core.tools.ToolRegistryTest" time="0.02"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

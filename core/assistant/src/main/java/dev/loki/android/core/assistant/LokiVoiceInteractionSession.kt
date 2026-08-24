@@ -1,0 +1,222 @@
+package dev.loki.android.core.assistant
+
+import android.content.Context
+import android.os.Build
+import android.os.Bundle
+import android.service.voice.VoiceInteractionSession
+import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+
+/**
+ * LokiVoiceInteractionSession manages an individual assistant invocation session.
+ *
+ * Responsibilities:
+ * - Inflates Compose overlay view into the session window.
+ * - Sets window flags for lock-screen/keyguard visibility.
+ * - Coordinates lifecycle and cancellation via AssistantSession.
+ */
+class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(context),
+    LifecycleOwner, SavedStateRegistryOwner {
+
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    private val savedStateRegistryController = SavedStateRegistryController.create(this)
+    val assistantSession = AssistantSession(onDismissCallback = { hide() })
+
+    override val lifecycle: Lifecycle
+        get() = lifecycleRegistry
+
+    override val savedStateRegistry: SavedStateRegistry
+        get() = savedStateRegistryController.savedStateRegistry
+
+    override fun onCreate() {
+        super.onCreate()
+        Log.i(TAG, "onCreate()")
+        savedStateRegistryController.performRestore(null)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+
+        // Configure session window layout and keyguard behavior
+        window?.window?.let { win ->
+            val lp = win.attributes
+            lp.gravity = Gravity.BOTTOM
+            lp.width = WindowManager.LayoutParams.MATCH_PARENT
+            lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+            win.attributes = lp
+
+            // Ensure session overlay can display over lock screen / keyguard
+            @Suppress("DEPRECATION")
+            win.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
+    }
+
+    override fun onCreateContentView(): View {
+        Log.i(TAG, "onCreateContentView()")
+        return ComposeView(context).apply {
+            setViewTreeLifecycleOwner(this@LokiVoiceInteractionSession)
+            setViewTreeSavedStateRegistryOwner(this@LokiVoiceInteractionSession)
+            setContent {
+                MaterialTheme {
+                    val state by assistantSession.state.collectAsState()
+                    VoiceSessionOverlay(
+                        state = state,
+                        onDismiss = { assistantSession.dismiss() }
+                    )
+                }
+            }
+        }
+    }
+
+    override fun onShow(args: Bundle?, showFlags: Int) {
+        super.onShow(args, showFlags)
+        Log.i(TAG, "onShow() showFlags=$showFlags, args=$args")
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+        assistantSession.startTurn()
+    }
+
+    override fun onHide() {
+        super.onHide()
+        Log.i(TAG, "onHide()")
+        assistantSession.cancelTurn()
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.i(TAG, "onDestroy()")
+        assistantSession.destroy()
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+    }
+
+    companion object {
+        private const val TAG = "LokiVoiceInteractionSession"
+    }
+}
+
+@Composable
+fun VoiceSessionOverlay(
+    state: AssistantState,
+    onDismiss: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFF1A1A24),
+        shadowElevation = 8.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "⚡ Loki Assistant",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            when (state) {
+                is AssistantState.Idle -> {
+                    Text(
+                        text = "Ready",
+                        fontSize = 15.sp,
+                        color = Color(0xFF8E8EA0)
+                    )
+                }
+                is AssistantState.Listening -> {
+                    Text(
+                        text = if (state.partialTranscript.isNotEmpty()) state.partialTranscript else "🎙️ Listening...",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color(0xFF818CF8)
+                    )
+                }
+                is AssistantState.Processing -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.height(16.dp),
+                            strokeWidth = 2.dp,
+                            color = Color(0xFF38BDF8)
+                        )
+                        Text(
+                            text = if (state.query.isNotEmpty()) state.query else "Thinking...",
+                            fontSize = 15.sp,
+                            color = Color(0xFF38BDF8)
+                        )
+                    }
+                }
+                is AssistantState.Speaking -> {
+                    Text(
+                        text = "🔊 ${state.responseText}",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = Color(0xFF34D399)
+                    )
+                }
+                is AssistantState.Error -> {
+                    Text(
+                        text = "⚠️ ${state.message}",
+                        fontSize = 15.sp,
+                        color = Color(0xFFF87171)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                onClick = onDismiss,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Dismiss")
+            }
+        }
+    }
+}
