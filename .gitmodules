@@ -1,3 +1,6 @@
 [submodule "core/llm/src/main/cpp/llama.cpp"]
 	path = core/llm/src/main/cpp/llama.cpp
 	url = https://github.com/ggerganov/llama.cpp.git
+[submodule "core/voice/stt/src/main/cpp/whisper.cpp"]
+	path = core/voice/stt/src/main/cpp/whisper.cpp
+	url = https://github.com/ggerganov/whisper.cpp.git
