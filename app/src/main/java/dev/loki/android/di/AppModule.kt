@@ -8,6 +8,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dev.loki.android.core.conversation.ConversationManager
 import dev.loki.android.core.llm.LlamaCppLlmEngine
+import dev.loki.android.core.llm.LiteRtLlmEngine
 import dev.loki.android.core.llm.LlmEngine
 import dev.loki.android.core.llm.ModelManager
 import dev.loki.android.core.tools.PermissionManager
@@ -53,8 +54,19 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideLlmEngine(modelManager: ModelManager): LlmEngine {
-        return LlamaCppLlmEngine(modelManager)
+    fun provideLlmEngine(
+        @ApplicationContext context: Context,
+        modelManager: ModelManager
+    ): LlmEngine {
+        // Simple heuristic: if we have a .bin file but no .gguf, or if LiteRT is preferred
+        val ggufModel = modelManager.getGgufModelFile()
+        val liteRtModel = modelManager.getLiteRtModelFile()
+
+        return if (liteRtModel != null && ggufModel == null) {
+            LiteRtLlmEngine(context, modelManager)
+        } else {
+            LlamaCppLlmEngine(modelManager)
+        }
     }
 
     @Provides

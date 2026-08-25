@@ -9,6 +9,10 @@ import java.io.File
 class ModelManager(private val context: Context) {
 
     fun getDefaultModelFile(): File? {
+        return getGgufModelFile() ?: getLiteRtModelFile()
+    }
+
+    fun getGgufModelFile(): File? {
         val appFilesDir = context.getExternalFilesDir(null)
         val defaultModel = File(appFilesDir, "model.gguf")
         if (defaultModel.exists()) return defaultModel
@@ -23,5 +27,20 @@ class ModelManager(private val context: Context) {
         return null
     }
 
-    fun isModelAvailable(): Boolean = getDefaultModelFile()?.exists() == true
+    fun getLiteRtModelFile(): File? {
+        val appFilesDir = context.getExternalFilesDir(null)
+        val defaultModel = File(appFilesDir, "model.bin")
+        if (defaultModel.exists()) return defaultModel
+
+        val internalModel = File(context.filesDir, "model.bin")
+        if (internalModel.exists()) return internalModel
+
+        // Look for any .bin file in the external files dir
+        val binFiles = appFilesDir?.listFiles { _, name -> name.endsWith(".bin") }
+        if (!binFiles.isNullOrEmpty()) return binFiles.first()
+
+        return null
+    }
+
+    fun isModelAvailable(): Boolean = getGgufModelFile()?.exists() == true || getLiteRtModelFile()?.exists() == true
 }
