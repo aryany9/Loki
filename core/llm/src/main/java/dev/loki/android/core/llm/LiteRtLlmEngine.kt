@@ -21,6 +21,8 @@ class LiteRtLlmEngine(
     private val modelManager: ModelManager
 ) : LlmEngine {
 
+    override val promptFormat: ModelPromptFormat = ModelPromptFormat.GEMMA
+
     private val mutex = Mutex()
     private var llmInference: LlmInference? = null
 

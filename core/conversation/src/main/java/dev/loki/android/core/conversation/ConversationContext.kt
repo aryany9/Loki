@@ -1,5 +1,6 @@
 package dev.loki.android.core.conversation
 
+import dev.loki.android.core.llm.ModelPromptFormat
 import dev.loki.android.core.tools.ToolResult
 
 /**
@@ -42,7 +43,14 @@ class ConversationContext(
         }
     }
 
-    fun buildPrompt(systemInstructions: String): String {
+    fun buildPrompt(
+        systemInstructions: String,
+        format: ModelPromptFormat = ModelPromptFormat.CHATML
+    ): String {
+        if (format == ModelPromptFormat.GEMMA) {
+            return buildGemmaPrompt(systemInstructions)
+        }
+
         val sb = StringBuilder()
         sb.append("<|im_start|>system\n")
         sb.append(systemInstructions)
@@ -72,6 +80,40 @@ class ConversationContext(
         }
 
         sb.append("<|im_start|>assistant\n")
+        return sb.toString()
+    }
+
+    private fun buildGemmaPrompt(systemInstructions: String): String {
+        val sb = StringBuilder()
+        var isFirstUserTurn = true
+        for (turn in turns) {
+            when (turn) {
+                is ConversationTurn.User -> {
+                    sb.append("<start_of_turn>user\n")
+                    if (isFirstUserTurn) {
+                        sb.append(systemInstructions).append("\n\n")
+                        isFirstUserTurn = false
+                    }
+                    sb.append(turn.text).append("<end_of_turn>\n")
+                }
+                is ConversationTurn.Assistant -> {
+                    sb.append("<start_of_turn>model\n").append(turn.text).append("<end_of_turn>\n")
+                }
+                is ConversationTurn.ToolCall -> {
+                    sb.append("<start_of_turn>model\n")
+                    sb.append("{\"tool\": \"").append(turn.tool).append("\", \"arguments\": ")
+                    sb.append(turn.arguments.entries.joinToString(prefix = "{", postfix = "}") { "\"${it.key}\": \"${it.value}\"" })
+                    sb.append("}<end_of_turn>\n")
+                }
+                is ConversationTurn.ToolExecutionResult -> {
+                    sb.append("<start_of_turn>user\nTool result for ")
+                        .append(turn.tool).append(": ")
+                        .append(if (turn.result.success) turn.result.data.toString() else turn.result.error)
+                        .append("<end_of_turn>\n")
+                }
+            }
+        }
+        sb.append("<start_of_turn>model\n")
         return sb.toString()
     }
 }

@@ -11,6 +11,8 @@ import dev.loki.android.core.llm.LlamaCppLlmEngine
 import dev.loki.android.core.llm.LiteRtLlmEngine
 import dev.loki.android.core.llm.LlmEngine
 import dev.loki.android.core.llm.ModelManager
+import dev.loki.android.core.llm.ModelRuntime
+import dev.loki.android.core.llm.ModelSelection
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.local.DefaultLocalTools
@@ -20,6 +22,8 @@ import dev.loki.android.core.voice.stt.WhisperModelManager
 import dev.loki.android.core.voice.stt.WhisperSttEngine
 import dev.loki.android.core.voice.tts.AndroidTtsEngine
 import dev.loki.android.core.voice.tts.TtsEngine
+import dev.loki.android.core.llm.ModelLibraryManager
+import dev.loki.android.core.llm.ModelRuntimeController
 import javax.inject.Singleton
 
 @Module
@@ -58,7 +62,17 @@ object AppModule {
         @ApplicationContext context: Context,
         modelManager: ModelManager
     ): LlmEngine {
-        // Simple heuristic: if we have a .bin file but no .gguf, or if LiteRT is preferred
+        val manifest = modelManager.modelRegistry.reconcile()
+        val activeModel = modelManager.getActiveModel()
+            ?: ModelSelection.preferredInstalledModel(manifest)
+        if (ModelSelection.runtimeFor(activeModel) == ModelRuntime.LITERT_LM) {
+            return LiteRtLlmEngine(context, modelManager)
+        }
+        if (ModelSelection.runtimeFor(activeModel) == ModelRuntime.LLAMA_CPP) {
+            return LlamaCppLlmEngine(modelManager)
+        }
+
+        // Temporary compatibility fallback for installations not yet migrated to the registry.
         val ggufModel = modelManager.getGgufModelFile()
         val liteRtModel = modelManager.getLiteRtModelFile()
 
@@ -102,6 +116,29 @@ object AppModule {
             toolRegistry = toolRegistry,
             ttsEngine = ttsEngine,
             permissionManager = permissionManager
+        )
+    }
+
+    @Provides
+    @Singleton
+    fun provideModelLibraryManager(
+        modelManager: ModelManager,
+        llmEngine: LlmEngine
+    ): ModelLibraryManager {
+        return ModelLibraryManager(
+            storage = modelManager.modelStorage,
+            registry = modelManager.modelRegistry,
+            runtime = object : ModelRuntimeController {
+                override suspend fun load(model: dev.loki.android.core.llm.ModelRecord): Boolean {
+                    return llmEngine.initializeAsync(
+                        java.io.File(modelManager.modelStorage.rootDirectory, model.artifactPath).absolutePath
+                    )
+                }
+
+                override suspend fun unload(model: dev.loki.android.core.llm.ModelRecord) {
+                    llmEngine.release()
+                }
+            }
         )
     }
 }

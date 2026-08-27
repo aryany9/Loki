@@ -2,6 +2,7 @@ package dev.loki.android.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -22,6 +23,20 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import dev.loki.android.core.conversation.ConversationManager
+import dev.loki.android.core.llm.ModelLibraryManager
+import dev.loki.android.core.llm.GgufModelDetector
+import dev.loki.android.core.llm.ModelAvailability
+import dev.loki.android.core.llm.ModelFormat
+import dev.loki.android.core.llm.ModelImporter
+import dev.loki.android.core.llm.ModelMetadataField
+import dev.loki.android.core.llm.ModelRuntime
+import dev.loki.android.core.llm.ModelSource
+import dev.loki.android.core.llm.ModelRecord
+import dev.loki.android.core.llm.ModelDetection
+import dev.loki.android.core.llm.ModelValidator
+import dev.loki.android.core.llm.LiteRtModelValidator
+import dev.loki.android.core.llm.GgufModelValidator
+import dev.loki.android.core.llm.ValidationResult
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.PermissionState
 import dev.loki.android.core.ui.ChatScreen
@@ -33,14 +48,18 @@ import dev.loki.android.core.ui.theme.LokiTheme
 import dev.loki.android.core.ui.theme.ThemeMode
 import dev.loki.android.core.ui.theme.ThemeRepository
 import dev.loki.android.core.voice.stt.SttEngine
+import dev.loki.android.core.ui.ModelLibraryScreen
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 enum class AppScreen {
     SETUP,
     CHAT,
-    PERMISSIONS
+    PERMISSIONS,
+    MODEL_LIBRARY
 }
+
+private data class PendingImport(val modelId: String, val fileName: String, val file: java.io.File)
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -57,14 +76,27 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var permissionManager: PermissionManager
 
+    @Inject
+    lateinit var modelLibraryManager: ModelLibraryManager
+
     private lateinit var chatViewModel: ChatViewModel
 
     private var permissionRefreshTrigger by mutableStateOf(0)
+    private var pendingImport by mutableStateOf<PendingImport?>(null)
+    private var modelOperationProgress by mutableStateOf<Float?>(null)
+    private var modelOperationError by mutableStateOf<String?>(null)
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
         permissionRefreshTrigger++
+    }
+
+    private val importModelLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        lifecycleScope.launch { importGgufModel(uri) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -80,6 +112,7 @@ class MainActivity : ComponentActivity() {
             val themeMode by themeRepository.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
             val isFirstRunComplete by themeRepository.isFirstRunComplete.collectAsState(initial = true)
             val coroutineScope = rememberCoroutineScope()
+            val modelManifest by modelLibraryManager.manifest.collectAsState()
 
             var currentScreen by remember { mutableStateOf<AppScreen?>(null) }
 
@@ -105,6 +138,13 @@ class MainActivity : ComponentActivity() {
                                         themeRepository.setFirstRunComplete(true)
                                         currentScreen = AppScreen.CHAT
                                     }
+                                },
+                                onOpenModelLibrary = if (modelManifest.models.none {
+                                        it.availability != ModelAvailability.NOT_DOWNLOADED
+                                    }) {
+                                    { currentScreen = AppScreen.MODEL_LIBRARY }
+                                } else {
+                                    null
                                 }
                             )
                         }
@@ -122,11 +162,62 @@ class MainActivity : ComponentActivity() {
                                 }
                             )
                         }
+                        AppScreen.MODEL_LIBRARY -> {
+                            ModelLibraryScreen(
+                                models = modelManifest.models,
+                                onNavigateBack = { currentScreen = AppScreen.CHAT },
+                                onImport = {
+                                    modelOperationError = null
+                                    importModelLauncher.launch(arrayOf("application/octet-stream", "application/*"))
+                                },
+                                onLoad = { modelId ->
+                                    coroutineScope.launch {
+                                        modelOperationError = null
+                                        if (!modelLibraryManager.load(modelId)) {
+                                            modelOperationError = "Unable to load the selected model."
+                                        }
+                                    }
+                                },
+                                onEject = {
+                                    coroutineScope.launch {
+                                        modelOperationError = null
+                                        if (!modelLibraryManager.eject()) {
+                                            modelOperationError = "No loaded model to eject."
+                                        }
+                                    }
+                                },
+                                onDelete = { modelId ->
+                                    coroutineScope.launch {
+                                        modelOperationError = null
+                                        if (!modelLibraryManager.delete(modelId)) {
+                                            modelOperationError = "Unable to delete the selected model."
+                                        }
+                                    }
+                                },
+                                pendingImportName = pendingImport?.fileName,
+                                onConfirmImport = { name, family, runtime, format ->
+                                    val pending = pendingImport ?: return@ModelLibraryScreen
+                                    pendingImport = null
+                                    coroutineScope.launch {
+                                        finishImport(pending, name, family, runtime, format)
+                                    }
+                                },
+                                onCancelImport = {
+                                    pendingImport?.file?.parentFile?.deleteRecursively()
+                                    pendingImport = null
+                                },
+                                operationProgress = modelOperationProgress,
+                                errorMessage = modelOperationError
+                            )
+                        }
                         AppScreen.CHAT, null -> {
                             ChatScreen(
                                 viewModel = chatViewModel,
                                 onNavigateToPermissions = {
                                     currentScreen = AppScreen.PERMISSIONS
+                                },
+                                onNavigateToModelLibrary = {
+                                    currentScreen = AppScreen.MODEL_LIBRARY
                                 }
                             )
                         }
@@ -134,6 +225,76 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private suspend fun importGgufModel(uri: Uri) {
+        modelOperationProgress = 0f
+        modelOperationError = null
+        val name = (uri.lastPathSegment?.substringAfterLast('/') ?: "imported-model.gguf")
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .ifBlank { "imported-model.gguf" }
+        val modelId = "import-${System.currentTimeMillis()}"
+        val importer = ModelImporter(this, modelLibraryManager.managedStorage)
+        val result = importer.copyFromUri(modelId, uri, name) { copied, total ->
+            modelOperationProgress = total?.let { copied.toFloat() / it }
+        }
+        if (result !is dev.loki.android.core.llm.TransferResult.Completed) {
+            modelOperationProgress = null
+            modelOperationError = (result as? dev.loki.android.core.llm.TransferResult.Rejected)?.reason
+                ?: "Unable to import the selected model."
+            return
+        }
+        val target = importer.finalize(modelId, name)
+        modelOperationProgress = null
+        when (GgufModelDetector().detect(target)) {
+            is ModelDetection.Detected -> {
+                finishImport(
+                    PendingImport(modelId, name, target),
+                    name.substringBeforeLast('.'),
+                    "",
+                    ModelRuntime.LLAMA_CPP,
+                    ModelFormat.GGUF,
+                    result.sha256
+                )
+            }
+            ModelDetection.Unknown -> pendingImport = PendingImport(modelId, name, target)
+        }
+    }
+
+    private suspend fun finishImport(
+        pending: PendingImport,
+        displayName: String,
+        family: String,
+        runtime: ModelRuntime,
+        format: ModelFormat,
+        knownSha256: String? = null
+    ) {
+        val validator: ModelValidator = when (runtime) {
+            ModelRuntime.LITERT_LM -> LiteRtModelValidator(this)
+            ModelRuntime.LLAMA_CPP -> GgufModelValidator()
+        }
+        val validation = validator.validate(pending.file)
+        if (validation !is ValidationResult.Valid) {
+            pending.file.parentFile?.deleteRecursively()
+            modelOperationError = (validation as ValidationResult.Invalid).reason
+            return
+        }
+        modelLibraryManager.register(
+            ModelRecord(
+                id = pending.modelId,
+                displayName = displayName,
+                family = ModelMetadataField(family.ifBlank { null }),
+                runtime = runtime,
+                format = format,
+                artifactPath = pending.file.relativeTo(modelLibraryManager.managedStorage.rootDirectory).path,
+                artifactFileName = pending.file.name,
+                sizeBytes = pending.file.length(),
+                source = ModelSource.LOCAL_IMPORT,
+                sha256 = knownSha256,
+                availability = ModelAvailability.DOWNLOADED,
+                importedAtEpochMs = System.currentTimeMillis()
+            )
+        )
     }
 
     override fun onResume() {

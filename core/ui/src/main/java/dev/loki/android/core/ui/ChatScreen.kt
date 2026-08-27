@@ -48,7 +48,8 @@ import dev.loki.android.core.llm.LlmModelState
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel,
-    onNavigateToPermissions: (() -> Unit)? = null
+    onNavigateToPermissions: (() -> Unit)? = null,
+    onNavigateToModelLibrary: (() -> Unit)? = null
 ) {
     val messages by viewModel.messages.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
@@ -83,6 +84,12 @@ fun ChatScreen(
                             modelState = modelState,
                             onRetry = { viewModel.retryLoadModel() }
                         )
+
+                        if (onNavigateToModelLibrary != null) {
+                            IconButton(onClick = onNavigateToModelLibrary) {
+                                Text("▣", fontSize = 16.sp)
+                            }
+                        }
 
                         if (onNavigateToPermissions != null) {
                             IconButton(onClick = onNavigateToPermissions) {

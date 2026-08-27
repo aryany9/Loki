@@ -77,6 +77,25 @@ class ConversationManagerTest {
     }
 
     @Test
+    fun `ToolCallParser rejects explanatory text around JSON`() {
+        val parsed = ToolCallParser.parse("```json\n{\"tool\": \"get_battery_status\", \"arguments\": {}}\n```\nExplanation")
+
+        assertTrue(parsed is ParsedLlmResponse.Malformed)
+    }
+
+    @Test
+    fun `simple greeting does not call the LLM`() = runTest {
+        val toolRegistry = ToolRegistry()
+        val mockLlm = MockLlmEngine(listOf("invalid"))
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, mockLlm, toolRegistry, ttsEngine = null)
+
+        val events = manager.processUtterance("hi", enableTts = false).toList()
+
+        assertEquals("Hello! How can I help you?", (events.last() as ConversationEvent.Completed).finalResponse)
+    }
+
+    @Test
     fun `ConversationManager runs single-step tool loop and fast path`() = runTest {
         val toolRegistry = ToolRegistry()
         toolRegistry.register(TestTimeTool())

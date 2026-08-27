@@ -16,13 +16,18 @@ object ToolCallParser {
 
     fun parse(raw: String): ParsedLlmResponse {
         val trimmed = raw.trim()
-        if (!trimmed.startsWith("{")) {
-            return ParsedLlmResponse.DirectResponse(trimmed)
+        val jsonText = when {
+            trimmed.startsWith("```") && trimmed.endsWith("```") -> {
+                trimmed.removePrefix("```").removeSuffix("```")
+                    .removePrefix("json").trim()
+            }
+            trimmed.startsWith("{") && trimmed.endsWith("}") -> trimmed
+            else -> return ParsedLlmResponse.Malformed(trimmed, "Expected one JSON object")
         }
 
         return try {
-            val element = json.parseToJsonElement(trimmed) as? JsonObject
-                ?: return ParsedLlmResponse.DirectResponse(trimmed)
+            val element = json.parseToJsonElement(jsonText) as? JsonObject
+                ?: return ParsedLlmResponse.Malformed(raw, "Expected a JSON object")
 
             if (element.containsKey("tool")) {
                 val toolName = element["tool"]?.jsonPrimitive?.content ?: ""

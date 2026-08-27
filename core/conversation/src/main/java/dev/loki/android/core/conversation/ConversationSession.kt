@@ -3,6 +3,7 @@ package dev.loki.android.core.conversation
 import android.content.Context
 import dev.loki.android.core.llm.GrammarBuilder
 import dev.loki.android.core.llm.LlmEngine
+import dev.loki.android.core.llm.ModelPromptFormat
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.Tool
 import dev.loki.android.core.tools.ToolErrorCode
@@ -44,6 +45,14 @@ class ConversationSession(
             return@flow
         }
 
+        if (isSimpleGreeting(userInput)) {
+            val response = "Hello! How can I help you?"
+            conversationContext.append(ConversationTurn.User(userInput))
+            conversationContext.append(ConversationTurn.Assistant(response))
+            emit(ConversationEvent.Completed(response))
+            return@flow
+        }
+
         if (source == "VOICE") {
             TurnLogger.logTranscript(turnId, userInput)
         }
@@ -54,6 +63,7 @@ class ConversationSession(
         var iterations = 0
         var lastToolResult: ToolResult? = null
         var finalResponseText = ""
+        var correctiveRetryUsed = false
 
         val availableTools = toolRegistry.getAvailableTools(context, permissionManager)
         val disabledTools = toolRegistry.getDisabledTools(context, permissionManager)
@@ -65,16 +75,17 @@ class ConversationSession(
         try {
             while (iterations < maxIterations) {
                 iterations++
-                val prompt = conversationContext.buildPrompt(systemPrompt)
+                val prompt = conversationContext.buildPrompt(systemPrompt, llmEngine.promptFormat) +
+                    if (correctiveRetryUsed) {
+                        "\nReturn exactly one JSON object and nothing else. Do not use Markdown, explanations, or additional turns."
+                    } else ""
                 TurnLogger.logPrompt(turnId, prompt)
 
                 val generatedSb = StringBuilder()
                 val llmResult = llmEngine.generate(
                     prompt = prompt,
                     grammar = grammar,
-                    onToken = { token ->
-                        generatedSb.append(token)
-                    }
+                    onToken = null
                 )
 
                 if (llmResult.isFailure) {
@@ -176,7 +187,11 @@ class ConversationSession(
 
                     is ParsedLlmResponse.Malformed -> {
                         TurnLogger.logError(turnId, "Malformed LLM response: ${parsed.raw} (${parsed.error})")
-                        finalResponseText = parsed.raw
+                        if (!correctiveRetryUsed) {
+                            correctiveRetryUsed = true
+                            continue
+                        }
+                        finalResponseText = "I couldn't determine that request. Please try again."
                         conversationContext.append(ConversationTurn.Assistant(finalResponseText))
                         break
                     }
@@ -271,5 +286,9 @@ class ConversationSession(
     fun cancel() {
         llmEngine.cancel()
         ttsEngine?.stop()
+    }
+
+    private fun isSimpleGreeting(input: String): Boolean {
+        return input.trim().lowercase() in setOf("hi", "hello", "hey", "good morning", "good afternoon", "good evening")
     }
 }

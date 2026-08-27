@@ -9,8 +9,15 @@ sealed interface LlmModelState {
     data class Error(val message: String) : LlmModelState
 }
 
+enum class ModelPromptFormat {
+    CHATML,
+    GEMMA
+}
+
 interface LlmEngine {
     val modelState: StateFlow<LlmModelState>
+    val promptFormat: ModelPromptFormat
+        get() = ModelPromptFormat.CHATML
 
     fun isReady(): Boolean
 

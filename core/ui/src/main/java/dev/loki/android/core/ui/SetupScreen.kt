@@ -29,7 +29,8 @@ import dev.loki.android.core.tools.PermissionState
 fun SetupScreen(
     permissions: List<PermissionItem>,
     onRequestAllPermissions: () -> Unit,
-    onCompleteSetup: () -> Unit
+    onCompleteSetup: () -> Unit,
+    onOpenModelLibrary: (() -> Unit)? = null
 ) {
     val audioGranted = permissions.firstOrNull { it.permission == android.Manifest.permission.RECORD_AUDIO }?.state == PermissionState.GRANTED
 
@@ -124,6 +125,15 @@ fun SetupScreen(
                             .height(48.dp)
                     ) {
                         Text("Skip for Now", fontSize = 14.sp)
+                    }
+                }
+
+                if (onOpenModelLibrary != null) {
+                    OutlinedButton(
+                        onClick = onOpenModelLibrary,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Open Model Library")
                     }
                 }
             }
