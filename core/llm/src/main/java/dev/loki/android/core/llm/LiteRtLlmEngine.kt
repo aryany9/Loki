@@ -31,6 +31,8 @@ class LiteRtLlmEngine(
     private val mutex = Mutex()
     private var engine: Engine? = null
     private var activeConversation: Conversation? = null
+    private var activeBackend: Backend? = null
+    private var currentModelPath: String? = null
 
     private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.NotLoaded)
     override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
@@ -52,14 +54,15 @@ class LiteRtLlmEngine(
             val path = modelPath ?: modelManager.getLiteRtModelFile()?.absolutePath
             if (path == null || !File(path).exists()) {
                 val err = "No valid .litertlm model file found"
-                Log.e(TAG, err)
+                Log.e(TAG, "[Loki] Error: $err")
                 _modelState.value = LlmModelState.Error(err)
                 return@withContext false
             }
 
+            currentModelPath = path
             val fileName = File(path).name
             _modelState.value = LlmModelState.Loading(fileName)
-            Log.i(TAG, "Initializing LiteRT-LM engine with model: $path")
+            Log.i(TAG, "[Loki] Initializing LiteRT-LM engine with model: $path")
 
             // Release any partial native state before initializing
             releaseNativeResources()
@@ -67,32 +70,34 @@ class LiteRtLlmEngine(
             // 1. Try GPU backend first
             val (gpuSuccess, gpuError) = tryInitEngine(path, Backend.GPU())
             if (gpuSuccess) {
+                activeBackend = Backend.GPU()
                 _modelState.value = LlmModelState.Ready(fileName)
-                Log.i(TAG, "LiteRT-LM model initialized successfully on GPU backend")
+                Log.i(TAG, "[Loki] LiteRT-LM model initialized successfully on GPU backend")
                 return@withContext true
             }
 
-            Log.w(TAG, "GPU backend initialization failed: ${gpuError?.message}")
+            Log.w(TAG, "[Loki] GPU backend initialization failed: ${gpuError?.message}")
 
             // Check if failure is a genuine backend error suitable for CPU retry, vs a model artifact failure
             if (isModelArtifactError(gpuError)) {
                 val err = "Model artifact initialization error (GPU/CPU retry aborted): ${gpuError?.message}"
-                Log.e(TAG, err, gpuError)
+                Log.e(TAG, "[Loki] $err", gpuError)
                 _modelState.value = LlmModelState.Error(err)
                 return@withContext false
             }
 
             // 2. Retry on CPU backend if genuine GPU hardware/driver failure occurred
-            Log.i(TAG, "Attempting CPU backend fallback for LiteRT-LM engine")
+            Log.i(TAG, "[Loki] Attempting CPU backend fallback for LiteRT-LM engine")
             val (cpuSuccess, cpuError) = tryInitEngine(path, Backend.CPU())
             if (cpuSuccess) {
+                activeBackend = Backend.CPU()
                 _modelState.value = LlmModelState.Ready(fileName)
-                Log.i(TAG, "LiteRT-LM model initialized successfully on CPU backend fallback")
+                Log.i(TAG, "[Loki] LiteRT-LM model initialized successfully on CPU backend fallback")
                 return@withContext true
             }
 
             val finalErr = "LiteRT-LM initialization failed on both GPU and CPU: ${cpuError?.message}"
-            Log.e(TAG, finalErr, cpuError)
+            Log.e(TAG, "[Loki] $finalErr", cpuError)
             _modelState.value = LlmModelState.Error(finalErr)
             false
         }
@@ -100,24 +105,33 @@ class LiteRtLlmEngine(
 
     private fun tryInitEngine(modelPath: String, backend: Backend): Pair<Boolean, Throwable?> {
         return try {
+            val cacheDirFile = File(context.cacheDir, "litertlm").apply { mkdirs() }
+            Log.i(TAG, "[Loki] before EngineConfig creation ($backend)")
             val config = EngineConfig(
                 modelPath = modelPath,
-                backend = backend
+                backend = backend,
+                maxNumTokens = 1024,
+                cacheDir = cacheDirFile.absolutePath
             )
+            Log.i(TAG, "[Loki] after EngineConfig creation")
+
+            Log.i(TAG, "[Loki] before Engine construction")
             val newEngine = Engine(config)
+            Log.i(TAG, "[Loki] after Engine construction")
+
+            Log.i(TAG, "[Loki] before Engine.initialize()")
             newEngine.initialize()
+            Log.i(TAG, "[Loki] after Engine.initialize()")
+
             engine = newEngine
             Pair(true, null)
         } catch (t: Throwable) {
+            Log.e(TAG, "[Loki] tryInitEngine exception: ${t.javaClass.simpleName} - ${t.message}", t)
             releaseNativeResources()
             Pair(false, t)
         }
     }
 
-    /**
-     * Determines whether an error is caused by model/artifact corruption or missing sections,
-     * which must fail fast rather than triggering a CPU retry.
-     */
     private fun isModelArtifactError(throwable: Throwable?): Boolean {
         if (throwable == null) return false
         val msg = throwable.message?.lowercase() ?: ""
@@ -128,69 +142,115 @@ class LiteRtLlmEngine(
                 msg.contains("unsupported format")
     }
 
+    private fun isGpuSamplerError(throwable: Throwable?): Boolean {
+        if (throwable == null) return false
+        val msg = throwable.message?.lowercase() ?: ""
+        return msg.contains("opencl") ||
+                msg.contains("top-k") ||
+                msg.contains("topk") ||
+                msg.contains("sampler") ||
+                msg.contains("webgpu") ||
+                msg.contains("vulkan") ||
+                msg.contains("cannot find opencl library")
+    }
+
     override suspend fun generate(
         prompt: String,
         grammar: String?,
         maxTokens: Int,
         onToken: ((String) -> Unit)?
     ): Result<String> = withContext(Dispatchers.Default) {
-        val currentEngine = engine ?: run {
+        Log.i(TAG, "[Loki] generate called with prompt length ${prompt.length}")
+        var currentEngine = engine ?: run {
+            Log.i(TAG, "[Loki] Engine not initialized yet, calling initializeAsync()")
             if (initializeAsync()) engine else null
         } ?: return@withContext Result.failure(IllegalStateException("LiteRT-LM engine not initialized"))
 
         try {
-            val conversation = activeConversation ?: currentEngine.createConversation().also {
-                activeConversation = it
+            if (activeConversation == null) {
+                Log.i(TAG, "[Loki] before createConversation()")
+                activeConversation = currentEngine.createConversation()
+                Log.i(TAG, "[Loki] after createConversation()")
             }
+            val conversation = activeConversation!!
 
             val fullResponse = StringBuilder()
+            Log.i(TAG, "[Loki] before sendMessageAsync()")
             conversation.sendMessageAsync(Message.user(prompt)).collect { partialMessage ->
                 val textContent = partialMessage.contents.contents
                     .filterIsInstance<Content.Text>()
                     .firstOrNull()?.text ?: ""
+                Log.i(TAG, "[Loki] during Flow collection: received token length ${textContent.length}")
                 if (textContent.isNotEmpty()) {
                     onToken?.invoke(textContent)
                     fullResponse.append(textContent)
                 }
             }
+            Log.i(TAG, "[Loki] after Flow collection completed")
 
             Result.success(fullResponse.toString())
         } catch (e: Exception) {
-            Log.e(TAG, "LiteRT-LM generation failed", e)
+            Log.e(TAG, "[Loki] LiteRT-LM generation failed with exception", e)
+
+            // If generation failed due to a GPU sampler/backend error after Engine.initialize() succeeded,
+            // fall back to CPU backend seamlessly if available.
+            if (activeBackend is Backend.GPU && isGpuSamplerError(e) && !isModelArtifactError(e)) {
+                Log.w(TAG, "[Loki] GPU generation/sampler failure detected. Triggering fallback to CPU backend.", e)
+                releaseNativeResources()
+                val path = currentModelPath ?: modelManager.getLiteRtModelFile()?.absolutePath
+                if (path != null) {
+                    val (cpuSuccess, cpuError) = tryInitEngine(path, Backend.CPU())
+                    if (cpuSuccess) {
+                        activeBackend = Backend.CPU()
+                        Log.i(TAG, "[Loki] Engine successfully re-initialized on CPU backend. Retrying generation...")
+                        return@withContext generate(prompt, grammar, maxTokens, onToken)
+                    } else {
+                        Log.e(TAG, "[Loki] CPU fallback re-initialization failed", cpuError)
+                    }
+                }
+            }
+
             Result.failure(e)
         }
     }
 
     override fun cancel() {
         try {
+            Log.i(TAG, "[Loki] before cancelProcess()")
             activeConversation?.cancelProcess()
-            Log.i(TAG, "Signaled cancellation to LiteRT-LM conversation")
+            Log.i(TAG, "[Loki] after cancelProcess()")
         } catch (e: Exception) {
-            Log.w(TAG, "Error cancelling LiteRT-LM conversation", e)
+            Log.w(TAG, "[Loki] Error cancelling LiteRT-LM conversation", e)
         }
     }
 
     override fun release() {
+        Log.i(TAG, "[Loki] releasing native resources")
         releaseNativeResources()
         _modelState.value = LlmModelState.NotLoaded
-        Log.i(TAG, "LiteRT-LM engine released")
+        Log.i(TAG, "[Loki] LiteRT-LM engine released")
     }
 
     private fun releaseNativeResources() {
         try {
+            Log.i(TAG, "[Loki] before conversation.close()")
             activeConversation?.close()
+            Log.i(TAG, "[Loki] after conversation.close()")
         } catch (e: Exception) {
-            Log.w(TAG, "Error closing active conversation", e)
+            Log.w(TAG, "[Loki] Error closing active conversation", e)
         } finally {
             activeConversation = null
         }
 
         try {
+            Log.i(TAG, "[Loki] before engine.close()")
             engine?.close()
+            Log.i(TAG, "[Loki] after engine.close()")
         } catch (e: Exception) {
-            Log.w(TAG, "Error closing engine", e)
+            Log.w(TAG, "[Loki] Error closing engine", e)
         } finally {
             engine = null
+            activeBackend = null
         }
     }
 

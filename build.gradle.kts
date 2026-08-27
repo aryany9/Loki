@@ -8,3 +8,16 @@ plugins {
     alias(libs.plugins.hilt) apply false
     alias(libs.plugins.ksp) apply false
 }
+
+subprojects {
+    configurations.all {
+        resolutionStrategy {
+            eachDependency {
+                if (requested.group == "org.jetbrains.kotlinx" && requested.name.startsWith("kotlinx-coroutines")) {
+                    useVersion("1.11.0")
+                    because("Enforce exact kotlinx-coroutines 1.11.0 alignment for LiteRT-LM binary ABI compatibility containing static close method")
+                }
+            }
+        }
+    }
+}

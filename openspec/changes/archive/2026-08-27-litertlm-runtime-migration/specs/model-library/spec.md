@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: The system maintains a persistent model registry
 The system SHALL represent every installed model as a first-class `ModelRecord` in a persistent JSON manifest. A record MUST include a stable ID, display metadata, managed artifact location, source/origin, size, lifecycle state, and optional integrity metadata. All registered LLM models SHALL use the `.litertlm` model format.
