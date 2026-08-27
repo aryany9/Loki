@@ -1,16 +1,11 @@
 package dev.loki.android.core.conversation
 
 import android.content.Context
-import android.util.Log
-import dev.loki.android.core.llm.GrammarBuilder
 import dev.loki.android.core.llm.LlmEngine
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.ToolResult
 import dev.loki.android.core.voice.tts.TtsEngine
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
 
 sealed interface ConversationEvent {
     data class Thinking(val query: String) : ConversationEvent

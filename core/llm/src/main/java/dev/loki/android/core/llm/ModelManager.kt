@@ -4,7 +4,8 @@ import android.content.Context
 import java.io.File
 
 /**
- * ModelManager handles local GGUF model discovery, storage paths, and availability.
+ * ModelManager handles .litertlm model artifact discovery, managed storage paths, and registry persistence.
+ * Holds NO live runtime/Engine handles.
  */
 class ModelManager(private val context: Context) {
 
@@ -19,50 +20,26 @@ class ModelManager(private val context: Context) {
         return manifest.models.firstOrNull { it.id == manifest.activeModelId }
     }
 
-    fun getDefaultModelFile(): File? {
+    fun getLiteRtModelFile(): File? {
         val active = getActiveModel()
         if (active != null) {
             val managed = File(modelStorage.rootDirectory, active.artifactPath)
             if (managed.isFile) return managed
         }
-        return getGgufModelFile() ?: getLiteRtModelFile()
-    }
 
-    fun getGgufModelFile(): File? {
         val appFilesDir = context.getExternalFilesDir(null)
-        val defaultModel = File(appFilesDir, "model.gguf")
+        val defaultModel = File(appFilesDir, "model.litertlm")
         if (defaultModel.exists()) return defaultModel
 
-        val internalModel = File(context.filesDir, "model.gguf")
+        val internalModel = File(context.filesDir, "model.litertlm")
         if (internalModel.exists()) return internalModel
 
-        // Look for any .gguf file in the external files dir
-        val ggufFiles = appFilesDir?.listFiles { _, name -> name.endsWith(".gguf") }
-        if (!ggufFiles.isNullOrEmpty()) return ggufFiles.first()
+        // Look for any .litertlm file in app storage
+        val litertFiles = appFilesDir?.listFiles { _, name -> name.endsWith(".litertlm", ignoreCase = true) }
+        if (!litertFiles.isNullOrEmpty()) return litertFiles.first()
 
         return null
     }
 
-    fun getLiteRtModelFile(): File? {
-        val active = getActiveModel()
-        if (active?.runtime == ModelRuntime.LITERT_LM) {
-            val managed = File(modelStorage.rootDirectory, active.artifactPath)
-            if (managed.isFile) return managed
-        }
-
-        val appFilesDir = context.getExternalFilesDir(null)
-        val defaultModel = File(appFilesDir, "model.bin")
-        if (defaultModel.exists()) return defaultModel
-
-        val internalModel = File(context.filesDir, "model.bin")
-        if (internalModel.exists()) return internalModel
-
-        // Look for any .bin file in the external files dir
-        val binFiles = appFilesDir?.listFiles { _, name -> name.endsWith(".bin") }
-        if (!binFiles.isNullOrEmpty()) return binFiles.first()
-
-        return null
-    }
-
-    fun isModelAvailable(): Boolean = getGgufModelFile()?.exists() == true || getLiteRtModelFile()?.exists() == true
+    fun isModelAvailable(): Boolean = getLiteRtModelFile()?.exists() == true
 }

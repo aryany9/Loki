@@ -3,9 +3,10 @@ package dev.loki.android.core.llm
 import java.io.File
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -17,10 +18,15 @@ class LegacyModelMigratorTest {
         root = Files.createTempDirectory("loki-legacy").toFile()
     }
 
+    @After
+    fun tearDown() {
+        root.deleteRecursively()
+    }
+
     @Test
-    fun `invalid legacy bin is not adopted`() = runBlocking {
+    fun `invalid legacy file is not adopted`() = runBlocking {
         val files = File(root, "files").apply { mkdirs() }
-        File(files, "model.bin").writeText("not-a-model")
+        File(files, "model.invalid").writeText("not-a-model")
         val storage = ModelStorage(File(root, "managed"))
         val registry = ModelRegistry(storage)
 
@@ -28,7 +34,7 @@ class LegacyModelMigratorTest {
             context = null,
             storage = storage,
             registry = registry,
-            legacyLocations = { listOf(File(files, "model.bin")) }
+            legacyLocations = { listOf(File(files, "model.invalid")) }
         ).migrate()
 
         assertTrue(migrated.isEmpty())
@@ -36,10 +42,10 @@ class LegacyModelMigratorTest {
     }
 
     @Test
-    fun `valid legacy gguf is adopted once`() = runBlocking {
+    fun `valid legacy litertlm is adopted once`() = runBlocking {
         val files = File(root, "files").apply { mkdirs() }
-        val source = File(files, "model.gguf").apply {
-            writeBytes(byteArrayOf('G'.code.toByte(), 'G'.code.toByte(), 'U'.code.toByte(), 'F'.code.toByte()))
+        val source = File(files, "model.litertlm").apply {
+            writeBytes(byteArrayOf(1, 2, 3, 4))
         }
         val storage = ModelStorage(File(root, "managed"))
         val registry = ModelRegistry(storage)

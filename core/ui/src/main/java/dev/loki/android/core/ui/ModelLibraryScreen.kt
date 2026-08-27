@@ -8,11 +8,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -22,10 +24,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.loki.android.core.llm.ModelAvailability
-import dev.loki.android.core.llm.ModelRecord
-import dev.loki.android.core.llm.ModelFormat
-import dev.loki.android.core.llm.ModelRuntime
 import dev.loki.android.core.llm.ModelCatalogEntry
+import dev.loki.android.core.llm.ModelFormat
+import dev.loki.android.core.llm.ModelRecord
+import dev.loki.android.core.llm.ModelRuntime
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,16 +40,14 @@ fun ModelLibraryScreen(
     onDelete: (String) -> Unit,
     pendingImportName: String? = null,
     onConfirmImport: (String, String, ModelRuntime, ModelFormat) -> Unit = { _, _, _, _ -> },
-    onCancelImport: () -> Unit = {}
-    ,catalog: List<ModelCatalogEntry> = emptyList(),
+    onCancelImport: () -> Unit = {},
+    catalog: List<ModelCatalogEntry> = emptyList(),
     onDownload: (ModelCatalogEntry) -> Unit = {},
     operationProgress: Float? = null,
     errorMessage: String? = null
 ) {
     val (name, setName) = remember(pendingImportName) { mutableStateOf(pendingImportName.orEmpty()) }
     val (family, setFamily) = remember { mutableStateOf("") }
-    val (runtime, setRuntime) = remember { mutableStateOf(ModelRuntime.LITERT_LM) }
-    val (format, setFormat) = remember { mutableStateOf(ModelFormat.LITERT_MODEL) }
     val (pendingDeleteId, setPendingDeleteId) = remember { mutableStateOf<String?>(null) }
 
     if (pendingImportName != null) {
@@ -56,17 +56,18 @@ fun ModelLibraryScreen(
             title = { Text("Confirm model metadata") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    androidx.compose.material3.OutlinedTextField(value = name, onValueChange = setName, label = { Text("Model name") })
-                    androidx.compose.material3.OutlinedTextField(value = family, onValueChange = setFamily, label = { Text("Model family (optional)") })
-                    Text("Runtime: ${runtime.name}")
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { setRuntime(ModelRuntime.LITERT_LM); setFormat(ModelFormat.LITERT_MODEL) }) { Text("LiteRT-LM") }
-                        Button(onClick = { setRuntime(ModelRuntime.LLAMA_CPP); setFormat(ModelFormat.GGUF) }) { Text("llama.cpp") }
-                    }
+                    OutlinedTextField(value = name, onValueChange = setName, label = { Text("Model name") })
+                    OutlinedTextField(value = family, onValueChange = setFamily, label = { Text("Model family (optional)") })
+                    Text("Format: .litertlm (LiteRT-LM)")
                 }
             },
             confirmButton = {
-                Button(onClick = { onConfirmImport(name, family, runtime, format) }, enabled = name.isNotBlank()) { Text("Validate and add") }
+                Button(
+                    onClick = { onConfirmImport(name, family, ModelRuntime.LITERT_LM, ModelFormat.LITERT_MODEL) },
+                    enabled = name.isNotBlank()
+                ) {
+                    Text("Validate and add")
+                }
             },
             dismissButton = { Button(onClick = onCancelImport) { Text("Cancel") } }
         )
@@ -99,9 +100,9 @@ fun ModelLibraryScreen(
             modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Button(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import model") }
+            Button(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import .litertlm model") }
             if (operationProgress != null) {
-                androidx.compose.material3.LinearProgressIndicator(
+                LinearProgressIndicator(
                     progress = { operationProgress.coerceIn(0f, 1f) },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -129,7 +130,7 @@ fun ModelLibraryScreen(
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(model.displayName, style = MaterialTheme.typography.titleMedium)
-                            Text("${model.runtime} · ${model.format} · ${model.availability}")
+                            Text("${model.format} · ${model.availability}")
                         }
                         when (model.availability) {
                             ModelAvailability.LOADED -> Button(onClick = onEject) { Text("Eject") }

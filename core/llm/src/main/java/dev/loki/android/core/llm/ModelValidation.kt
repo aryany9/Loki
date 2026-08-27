@@ -1,16 +1,15 @@
 package dev.loki.android.core.llm
 
-import android.content.Context
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
 import java.io.File
-import java.io.RandomAccessFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 sealed interface ModelDetection {
     data class Detected(
-        val runtime: ModelRuntime,
-        val format: ModelFormat,
+        val runtime: ModelRuntime = ModelRuntime.LITERT_LM,
+        val format: ModelFormat = ModelFormat.LITERT_MODEL,
         val family: String? = null,
         val confidence: MetadataConfidence = MetadataConfidence.VERIFIED
     ) : ModelDetection
@@ -26,51 +25,33 @@ interface ModelValidator {
     suspend fun validate(file: File): ValidationResult
 }
 
-class GgufModelDetector : ModelDetector {
+class LiteRtModelDetector : ModelDetector {
     override fun detect(file: File): ModelDetection {
-        if (!file.isFile || file.length() < GGUF_MAGIC.size) return ModelDetection.Unknown
-        return try {
-            RandomAccessFile(file, "r").use { input ->
-                val magic = ByteArray(GGUF_MAGIC.size)
-                input.readFully(magic)
-                if (magic.contentEquals(GGUF_MAGIC)) {
-                    ModelDetection.Detected(ModelRuntime.LLAMA_CPP, ModelFormat.GGUF)
-                } else {
-                    ModelDetection.Unknown
-                }
-            }
-        } catch (_: Exception) {
-            ModelDetection.Unknown
+        if (file.isFile && file.extension.equals("litertlm", ignoreCase = true)) {
+            return ModelDetection.Detected(ModelRuntime.LITERT_LM, ModelFormat.LITERT_MODEL)
         }
-    }
-
-    companion object {
-        private val GGUF_MAGIC = byteArrayOf('G'.code.toByte(), 'G'.code.toByte(), 'U'.code.toByte(), 'F'.code.toByte())
+        return ModelDetection.Unknown
     }
 }
 
-class GgufModelValidator(
-    private val detector: ModelDetector = GgufModelDetector()
-) : ModelValidator {
+class LiteRtModelValidator : ModelValidator {
     override suspend fun validate(file: File): ValidationResult = withContext(Dispatchers.IO) {
-        when (detector.detect(file)) {
-            is ModelDetection.Detected -> ValidationResult.Valid(ModelRuntime.LLAMA_CPP, ModelFormat.GGUF)
-            ModelDetection.Unknown -> ValidationResult.Invalid("File is not a recognized GGUF artifact")
+        if (!file.isFile || !file.canRead()) {
+            return@withContext ValidationResult.Invalid("Model file does not exist or is not readable")
         }
-    }
-}
 
-class LiteRtModelValidator(private val context: Context) : ModelValidator {
-    override suspend fun validate(file: File): ValidationResult = withContext(Dispatchers.IO) {
-        if (!file.isFile) return@withContext ValidationResult.Invalid("Model artifact does not exist")
+        if (!file.extension.equals("litertlm", ignoreCase = true)) {
+            return@withContext ValidationResult.Invalid("File must have a .litertlm extension")
+        }
+
         try {
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(file.absolutePath)
-                .build()
-            LlmInference.createFromOptions(context, options).close()
+            val config = EngineConfig(modelPath = file.absolutePath)
+            Engine(config).use { engine ->
+                engine.initialize()
+            }
             ValidationResult.Valid(ModelRuntime.LITERT_LM, ModelFormat.LITERT_MODEL)
         } catch (error: Exception) {
-            ValidationResult.Invalid("LiteRT-LM model initialization failed: ${error.message}")
+            ValidationResult.Invalid("LiteRT-LM validation failed: ${error.message}")
         }
     }
 }

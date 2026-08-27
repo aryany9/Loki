@@ -13,10 +13,8 @@ class LegacyModelMigrator(
     private val legacyLocations: () -> List<File> = {
         context?.let {
             listOfNotNull(
-                File(it.filesDir, "model.gguf").takeIf { file -> file.isFile },
-                File(it.filesDir, "model.bin").takeIf { file -> file.isFile },
-                it.getExternalFilesDir(null)?.let { dir -> File(dir, "model.gguf") }?.takeIf { file -> file.isFile },
-                it.getExternalFilesDir(null)?.let { dir -> File(dir, "model.bin") }?.takeIf { file -> file.isFile }
+                File(it.filesDir, "model.litertlm").takeIf { file -> file.isFile },
+                it.getExternalFilesDir(null)?.let { dir -> File(dir, "model.litertlm") }?.takeIf { file -> file.isFile }
             )
         } ?: emptyList()
     }
@@ -34,7 +32,7 @@ class LegacyModelMigrator(
     }
 
     private suspend fun adopt(source: File, existing: List<ModelRecord>): ModelRecord? {
-        val detection = GgufModelDetector().detect(source)
+        val detection = LiteRtModelDetector().detect(source)
         if (detection !is ModelDetection.Detected) return null
         val id = "legacy-${source.nameWithoutExtension.lowercase()}-${source.length()}"
         if (existing.any { it.id == id }) return null
@@ -47,8 +45,8 @@ class LegacyModelMigrator(
             id = id,
             displayName = source.nameWithoutExtension,
             family = ModelMetadataField(confidence = MetadataConfidence.UNKNOWN),
-            runtime = ModelRuntime.LLAMA_CPP,
-            format = ModelFormat.GGUF,
+            runtime = ModelRuntime.LITERT_LM,
+            format = ModelFormat.LITERT_MODEL,
             artifactPath = target.relativeTo(storage.rootDirectory).path,
             artifactFileName = target.name,
             sizeBytes = target.length(),

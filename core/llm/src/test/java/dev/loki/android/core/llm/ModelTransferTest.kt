@@ -28,8 +28,8 @@ class ModelTransferTest {
 
     @Test
     fun `copy verifies checksum and finalizes atomically`() = runBlocking {
-        val part = File(root, "model.bin.part")
-        val final = File(root, "model.bin")
+        val part = File(root, "model.litertlm.part")
+        val final = File(root, "model.litertlm")
         val result = transfer.copyToPart(
             ByteArrayInputStream("model-data".toByteArray()),
             part,
@@ -45,8 +45,8 @@ class ModelTransferTest {
     @Test
     fun `successful copy reports bytes and final file`() = runBlocking {
         val bytes = "model-data".toByteArray()
-        val part = File(root, "model.bin.part")
-        val final = File(root, "model.bin")
+        val part = File(root, "model.litertlm.part")
+        val final = File(root, "model.litertlm")
         val result = transfer.copyToPart(ByteArrayInputStream(bytes), part, expectedSizeBytes = bytes.size.toLong())
 
         assertTrue(result is TransferResult.Completed)
@@ -57,12 +57,12 @@ class ModelTransferTest {
     }
 
     @Test
-    fun `gguf detector uses file magic rather than extension`() {
-        val file = File(root, "qwen.bin")
-        file.writeBytes(byteArrayOf('G'.code.toByte(), 'G'.code.toByte(), 'U'.code.toByte(), 'F'.code.toByte()))
+    fun `litert detector detects litertlm extension`() {
+        val file = File(root, "qwen3.litertlm")
+        file.writeBytes(byteArrayOf(1, 2, 3, 4))
 
-        val result = GgufModelDetector().detect(file)
+        val result = LiteRtModelDetector().detect(file)
 
-        assertEquals(ModelFormat.GGUF, (result as ModelDetection.Detected).format)
+        assertEquals(ModelFormat.LITERT_MODEL, (result as ModelDetection.Detected).format)
     }
 }

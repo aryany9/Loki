@@ -7,12 +7,11 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dev.loki.android.core.conversation.ConversationManager
-import dev.loki.android.core.llm.LlamaCppLlmEngine
 import dev.loki.android.core.llm.LiteRtLlmEngine
 import dev.loki.android.core.llm.LlmEngine
+import dev.loki.android.core.llm.ModelLibraryManager
 import dev.loki.android.core.llm.ModelManager
-import dev.loki.android.core.llm.ModelRuntime
-import dev.loki.android.core.llm.ModelSelection
+import dev.loki.android.core.llm.ModelRuntimeController
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.local.DefaultLocalTools
@@ -22,8 +21,7 @@ import dev.loki.android.core.voice.stt.WhisperModelManager
 import dev.loki.android.core.voice.stt.WhisperSttEngine
 import dev.loki.android.core.voice.tts.AndroidTtsEngine
 import dev.loki.android.core.voice.tts.TtsEngine
-import dev.loki.android.core.llm.ModelLibraryManager
-import dev.loki.android.core.llm.ModelRuntimeController
+import java.io.File
 import javax.inject.Singleton
 
 @Module
@@ -62,25 +60,7 @@ object AppModule {
         @ApplicationContext context: Context,
         modelManager: ModelManager
     ): LlmEngine {
-        val manifest = modelManager.modelRegistry.reconcile()
-        val activeModel = modelManager.getActiveModel()
-            ?: ModelSelection.preferredInstalledModel(manifest)
-        if (ModelSelection.runtimeFor(activeModel) == ModelRuntime.LITERT_LM) {
-            return LiteRtLlmEngine(context, modelManager)
-        }
-        if (ModelSelection.runtimeFor(activeModel) == ModelRuntime.LLAMA_CPP) {
-            return LlamaCppLlmEngine(modelManager)
-        }
-
-        // Temporary compatibility fallback for installations not yet migrated to the registry.
-        val ggufModel = modelManager.getGgufModelFile()
-        val liteRtModel = modelManager.getLiteRtModelFile()
-
-        return if (liteRtModel != null && ggufModel == null) {
-            LiteRtLlmEngine(context, modelManager)
-        } else {
-            LlamaCppLlmEngine(modelManager)
-        }
+        return LiteRtLlmEngine(context, modelManager)
     }
 
     @Provides
@@ -131,7 +111,7 @@ object AppModule {
             runtime = object : ModelRuntimeController {
                 override suspend fun load(model: dev.loki.android.core.llm.ModelRecord): Boolean {
                     return llmEngine.initializeAsync(
-                        java.io.File(modelManager.modelStorage.rootDirectory, model.artifactPath).absolutePath
+                        File(modelManager.modelStorage.rootDirectory, model.artifactPath).absolutePath
                     )
                 }
 

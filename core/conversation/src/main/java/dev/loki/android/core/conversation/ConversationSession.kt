@@ -1,9 +1,7 @@
 package dev.loki.android.core.conversation
 
 import android.content.Context
-import dev.loki.android.core.llm.GrammarBuilder
 import dev.loki.android.core.llm.LlmEngine
-import dev.loki.android.core.llm.ModelPromptFormat
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.Tool
 import dev.loki.android.core.tools.ToolErrorCode
@@ -69,7 +67,6 @@ class ConversationSession(
         val disabledTools = toolRegistry.getDisabledTools(context, permissionManager)
         TurnLogger.logTools(turnId, availableTools.size, disabledTools.size)
 
-        val grammar = GrammarBuilder.buildFromToolsList(availableTools)
         val systemPrompt = buildSystemPrompt(availableTools, disabledTools)
 
         try {
@@ -81,10 +78,8 @@ class ConversationSession(
                     } else ""
                 TurnLogger.logPrompt(turnId, prompt)
 
-                val generatedSb = StringBuilder()
                 val llmResult = llmEngine.generate(
                     prompt = prompt,
-                    grammar = grammar,
                     onToken = null
                 )
 

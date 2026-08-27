@@ -23,24 +23,22 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import dev.loki.android.core.conversation.ConversationManager
-import dev.loki.android.core.llm.ModelLibraryManager
-import dev.loki.android.core.llm.GgufModelDetector
+import dev.loki.android.core.llm.LiteRtModelDetector
+import dev.loki.android.core.llm.LiteRtModelValidator
 import dev.loki.android.core.llm.ModelAvailability
+import dev.loki.android.core.llm.ModelDetection
 import dev.loki.android.core.llm.ModelFormat
 import dev.loki.android.core.llm.ModelImporter
+import dev.loki.android.core.llm.ModelLibraryManager
 import dev.loki.android.core.llm.ModelMetadataField
+import dev.loki.android.core.llm.ModelRecord
 import dev.loki.android.core.llm.ModelRuntime
 import dev.loki.android.core.llm.ModelSource
-import dev.loki.android.core.llm.ModelRecord
-import dev.loki.android.core.llm.ModelDetection
-import dev.loki.android.core.llm.ModelValidator
-import dev.loki.android.core.llm.LiteRtModelValidator
-import dev.loki.android.core.llm.GgufModelValidator
 import dev.loki.android.core.llm.ValidationResult
 import dev.loki.android.core.tools.PermissionManager
-import dev.loki.android.core.tools.PermissionState
 import dev.loki.android.core.ui.ChatScreen
 import dev.loki.android.core.ui.ChatViewModel
+import dev.loki.android.core.ui.ModelLibraryScreen
 import dev.loki.android.core.ui.PermissionItem
 import dev.loki.android.core.ui.PermissionsScreen
 import dev.loki.android.core.ui.SetupScreen
@@ -48,9 +46,9 @@ import dev.loki.android.core.ui.theme.LokiTheme
 import dev.loki.android.core.ui.theme.ThemeMode
 import dev.loki.android.core.ui.theme.ThemeRepository
 import dev.loki.android.core.voice.stt.SttEngine
-import dev.loki.android.core.ui.ModelLibraryScreen
-import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
+import kotlinx.coroutines.launch
 
 enum class AppScreen {
     SETUP,
@@ -59,7 +57,7 @@ enum class AppScreen {
     MODEL_LIBRARY
 }
 
-private data class PendingImport(val modelId: String, val fileName: String, val file: java.io.File)
+private data class PendingImport(val modelId: String, val fileName: String, val file: File)
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -96,7 +94,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri == null) return@registerForActivityResult
-        lifecycleScope.launch { importGgufModel(uri) }
+        lifecycleScope.launch { importModel(uri) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -173,9 +171,11 @@ class MainActivity : ComponentActivity() {
                                 onLoad = { modelId ->
                                     coroutineScope.launch {
                                         modelOperationError = null
+                                        modelOperationProgress = -1f
                                         if (!modelLibraryManager.load(modelId)) {
                                             modelOperationError = "Unable to load the selected model."
                                         }
+                                        modelOperationProgress = null
                                     }
                                 },
                                 onEject = {
@@ -199,6 +199,7 @@ class MainActivity : ComponentActivity() {
                                     val pending = pendingImport ?: return@ModelLibraryScreen
                                     pendingImport = null
                                     coroutineScope.launch {
+                                        modelOperationProgress = -1f
                                         finishImport(pending, name, family, runtime, format)
                                     }
                                 },
@@ -227,12 +228,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun importGgufModel(uri: Uri) {
+    private suspend fun importModel(uri: Uri) {
         modelOperationProgress = 0f
         modelOperationError = null
-        val name = (uri.lastPathSegment?.substringAfterLast('/') ?: "imported-model.gguf")
+        val name = (uri.lastPathSegment?.substringAfterLast('/') ?: "imported-model")
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
-            .ifBlank { "imported-model.gguf" }
+            .ifBlank { "imported-model" }
         val modelId = "import-${System.currentTimeMillis()}"
         val importer = ModelImporter(this, modelLibraryManager.managedStorage)
         val result = importer.copyFromUri(modelId, uri, name) { copied, total ->
@@ -245,20 +246,22 @@ class MainActivity : ComponentActivity() {
             return
         }
         val target = importer.finalize(modelId, name)
-        modelOperationProgress = null
-        when (GgufModelDetector().detect(target)) {
-            is ModelDetection.Detected -> {
-                finishImport(
-                    PendingImport(modelId, name, target),
-                    name.substringBeforeLast('.'),
-                    "",
-                    ModelRuntime.LLAMA_CPP,
-                    ModelFormat.GGUF,
-                    result.sha256
-                )
-            }
-            ModelDetection.Unknown -> pendingImport = PendingImport(modelId, name, target)
+
+        val liteRtDetection = LiteRtModelDetector().detect(target)
+        if (liteRtDetection is ModelDetection.Detected) {
+            finishImport(
+                PendingImport(modelId, name, target),
+                name.substringBeforeLast('.'),
+                "",
+                ModelRuntime.LITERT_LM,
+                ModelFormat.LITERT_MODEL,
+                result.sha256
+            )
+            return
         }
+
+        modelOperationProgress = null
+        pendingImport = PendingImport(modelId, name, target)
     }
 
     private suspend fun finishImport(
@@ -269,32 +272,33 @@ class MainActivity : ComponentActivity() {
         format: ModelFormat,
         knownSha256: String? = null
     ) {
-        val validator: ModelValidator = when (runtime) {
-            ModelRuntime.LITERT_LM -> LiteRtModelValidator(this)
-            ModelRuntime.LLAMA_CPP -> GgufModelValidator()
-        }
-        val validation = validator.validate(pending.file)
-        if (validation !is ValidationResult.Valid) {
-            pending.file.parentFile?.deleteRecursively()
-            modelOperationError = (validation as ValidationResult.Invalid).reason
-            return
-        }
-        modelLibraryManager.register(
-            ModelRecord(
-                id = pending.modelId,
-                displayName = displayName,
-                family = ModelMetadataField(family.ifBlank { null }),
-                runtime = runtime,
-                format = format,
-                artifactPath = pending.file.relativeTo(modelLibraryManager.managedStorage.rootDirectory).path,
-                artifactFileName = pending.file.name,
-                sizeBytes = pending.file.length(),
-                source = ModelSource.LOCAL_IMPORT,
-                sha256 = knownSha256,
-                availability = ModelAvailability.DOWNLOADED,
-                importedAtEpochMs = System.currentTimeMillis()
+        try {
+            val validator = LiteRtModelValidator()
+            val validation = validator.validate(pending.file)
+            if (validation !is ValidationResult.Valid) {
+                pending.file.parentFile?.deleteRecursively()
+                modelOperationError = (validation as ValidationResult.Invalid).reason
+                return
+            }
+            modelLibraryManager.register(
+                ModelRecord(
+                    id = pending.modelId,
+                    displayName = displayName,
+                    family = ModelMetadataField(family.ifBlank { null }),
+                    runtime = runtime,
+                    format = format,
+                    artifactPath = pending.file.relativeTo(modelLibraryManager.managedStorage.rootDirectory).path,
+                    artifactFileName = pending.file.name,
+                    sizeBytes = pending.file.length(),
+                    source = ModelSource.LOCAL_IMPORT,
+                    sha256 = knownSha256,
+                    availability = ModelAvailability.DOWNLOADED,
+                    importedAtEpochMs = System.currentTimeMillis()
+                )
             )
-        )
+        } finally {
+            modelOperationProgress = null
+        }
     }
 
     override fun onResume() {

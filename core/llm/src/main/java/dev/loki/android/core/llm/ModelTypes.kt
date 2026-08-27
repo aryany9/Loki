@@ -4,14 +4,12 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 enum class ModelRuntime {
-    LITERT_LM,
-    LLAMA_CPP
+    LITERT_LM
 }
 
 @Serializable
 enum class ModelFormat {
     LITERT_MODEL,
-    GGUF,
     UNKNOWN
 }
 
@@ -49,8 +47,8 @@ data class ModelRecord(
     val id: String,
     val displayName: String,
     val family: ModelMetadataField<String> = ModelMetadataField(),
-    val runtime: ModelRuntime,
-    val format: ModelFormat,
+    val runtime: ModelRuntime = ModelRuntime.LITERT_LM,
+    val format: ModelFormat = ModelFormat.LITERT_MODEL,
     val artifactPath: String,
     val artifactFileName: String,
     val sizeBytes: Long,
@@ -68,8 +66,8 @@ data class ModelCatalogEntry(
     val id: String,
     val displayName: String,
     val family: String? = null,
-    val runtime: ModelRuntime,
-    val format: ModelFormat,
+    val runtime: ModelRuntime = ModelRuntime.LITERT_LM,
+    val format: ModelFormat = ModelFormat.LITERT_MODEL,
     val artifactUrl: String,
     val expectedSizeBytes: Long? = null,
     val sha256: String? = null,
