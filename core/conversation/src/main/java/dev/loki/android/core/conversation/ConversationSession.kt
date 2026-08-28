@@ -69,17 +69,36 @@ class ConversationSession(
 
         val systemPrompt = buildSystemPrompt(availableTools, disabledTools)
 
+        // Initialize persistent native conversation with system prompt ONCE per logical conversation session
+        if (conversationContext.getTurns().size <= 1) {
+            val started = llmEngine.startConversation(systemPrompt)
+            TurnLogger.logTurnStart(turnId, "STATEFUL_INIT (success=$started)")
+        }
+
         try {
+            var currentTurnPrompt = userInput
+
             while (iterations < maxIterations) {
                 iterations++
-                val prompt = conversationContext.buildPrompt(systemPrompt, llmEngine.promptFormat) +
-                    if (correctiveRetryUsed) {
-                        "\nReturn exactly one JSON object and nothing else. Do not use Markdown, explanations, or additional turns."
-                    } else ""
-                TurnLogger.logPrompt(turnId, prompt)
+
+                val promptToSend = if (correctiveRetryUsed) {
+                    "$currentTurnPrompt\nReturn exactly one JSON object and nothing else. Do not use Markdown, explanations, or additional turns."
+                } else {
+                    currentTurnPrompt
+                }
+
+                // DIAGNOSTIC (Requirement 8): Log application history and prompt stats before generation
+                val appTurnsCount = conversationContext.getTurns().size
+                val appTokenEst = conversationContext.estimateTokenCount()
+                android.util.Log.i("ConversationSession", "[Loki/Diagnostic] Generation iteration $iterations:")
+                android.util.Log.i("ConversationSession", "[Loki/Diagnostic]   app history turns count   = $appTurnsCount")
+                android.util.Log.i("ConversationSession", "[Loki/Diagnostic]   app token count (est)     = $appTokenEst")
+                android.util.Log.i("ConversationSession", "[Loki/Diagnostic]   new prompt char length    = ${promptToSend.length}")
+
+                TurnLogger.logPrompt(turnId, promptToSend)
 
                 val llmResult = llmEngine.generate(
-                    prompt = prompt,
+                    prompt = promptToSend,
                     onToken = null
                 )
 
@@ -133,6 +152,9 @@ class ConversationSession(
                                     conversationContext.append(ConversationTurn.Assistant(finalResponseText))
                                     break
                                 }
+
+                                // For next ReAct iteration, send ONLY the tool execution result message
+                                currentTurnPrompt = "Tool result for ${parsed.tool}: ${result.data}"
                             }
                             is ToolExecutionResult.PermissionRequired -> {
                                 TurnLogger.logPermissionCheck(turnId, execResult.permission, execResult.state.name)

@@ -149,6 +149,37 @@ class ConversationManagerTest {
         assertEquals(0, voiceSession2.conversationContext.getTurns().size)
     }
 
+    class TrackingLlmEngine : LlmEngine {
+        val generatePrompts = mutableListOf<String>()
+        var startConversationCallCount = 0
+        var lastSystemPrompt: String? = null
+
+        private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready())
+        override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+
+        override fun isReady(): Boolean = true
+        override suspend fun initializeAsync(modelPath: String?): Boolean = true
+
+        override suspend fun startConversation(systemPrompt: String): Boolean {
+            startConversationCallCount++
+            lastSystemPrompt = systemPrompt
+            return true
+        }
+
+        override suspend fun generate(
+            prompt: String,
+            grammar: String?,
+            maxTokens: Int,
+            onToken: ((String) -> Unit)?
+        ): Result<String> {
+            generatePrompts.add(prompt)
+            return Result.success("""{"response": "Response to: $prompt"}""")
+        }
+
+        override fun cancel() {}
+        override fun release() {}
+    }
+
     @Test
     fun `TurnLogger creates valid correlation IDs`() {
         val id1 = TurnLogger.newTurnId()
@@ -157,4 +188,41 @@ class ConversationManagerTest {
         assertTrue(id2.isNotBlank())
         assertTrue(id1 != id2)
     }
+
+    @Test
+    fun `10 consecutive turns send only new message and do not re-inject full history`() = runTest {
+        val toolRegistry = ToolRegistry()
+        val trackingLlm = TrackingLlmEngine()
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, trackingLlm, toolRegistry, ttsEngine = null)
+        val chatSession = manager.newChatSession()
+
+        // Execute 10 consecutive multi-turn requests
+        for (i in 1..10) {
+            val userMsg = "User prompt for turn $i"
+            val events = chatSession.processUtterance(userMsg, enableTts = false).toList()
+            val completed = events.last() as ConversationEvent.Completed
+            assertTrue(completed.finalResponse.contains("Response to: $userMsg"))
+        }
+
+        // Verify startConversation was called ONCE for the session
+        assertEquals(1, trackingLlm.startConversationCallCount)
+        assertTrue(trackingLlm.lastSystemPrompt?.contains("You are Loki") == true)
+
+        // Verify generate was called exactly 10 times
+        assertEquals(10, trackingLlm.generatePrompts.size)
+
+        // Verify each call to generate received ONLY the new user prompt for that turn, NOT full history
+        for (i in 0 until 10) {
+            val sentPrompt = trackingLlm.generatePrompts[i]
+            val expectedMsg = "User prompt for turn ${i + 1}"
+            assertEquals(expectedMsg, sentPrompt)
+        }
+
+        // Verify application-level history in ConversationContext is maintained and bounded by maxTurns (10 entries)
+        val appTurns = chatSession.conversationContext.getTurns()
+        assertEquals(10, appTurns.size)
+    }
 }
+
+
