@@ -42,4 +42,6 @@ Single-module change plus one dependency addition; no data migration. Rollback =
 
 ## Open Questions
 
-- Confirm the exact LiteRT runtime artifact choice (e.g. `com.google.ai.edge.litert:litert-*` vs `org.tensorflow:tensorflow-lite:2.17+`) with composite-op support for `odml.group_norm` / `odml.scaled_dot_product_attention` — first implementation task resolves this.
+~~- Confirm the exact LiteRT runtime artifact choice (e.g. `com.google.ai.edge.litert:litert-*` vs `org.tensorflow:tensorflow-lite:2.17+`) with composite-op support for `odml.group_norm` / `odml.scaled_dot_product_attention` — first implementation task resolves this.~~
+
+**Resolved (2026-08-29):** Use **`com.google.ai.edge.litert:litert:1.0.1`** — the modern LiteRT runtime (rebranded from `org.tensorflow:tensorflow-lite`), confirmed already active on the device (logcat shows `litert` and `tflite` tags from the LLM module). This runtime natively supports the `odml.*` stablehlo composite ops (group_norm, SDPA) via its builtin CPU/GPU accelerators without requiring select-tf-ops. The `Interpreter` API from this AAR is used for subgraph-level inference (encoder subgraph 0, decoder subgraph 1). The `litertlm-android` AAR does **not** expose a general `Interpreter` — a separate `litert` dependency is required.

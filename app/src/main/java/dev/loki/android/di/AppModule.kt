@@ -66,8 +66,11 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideSttEngine(modelManager: ModelManager): SttEngine {
-        return LiteRtWhisperEngine(storage = modelManager.modelStorage)
+    fun provideSttEngine(
+        @ApplicationContext context: Context,
+        modelManager: ModelManager
+    ): SttEngine {
+        return LiteRtWhisperEngine(storage = modelManager.modelStorage, context = context)
     }
 
     @Provides
@@ -112,6 +115,11 @@ object AppModule {
         }
         (sttEngine as? ModelRuntimeController)?.let { 
             manager.registerRuntime(ModelRuntime.LITERT_ASR, it) 
+        }
+
+        // Register live readiness provider for ASR so isRuntimeReady reflects actual interpreter state
+        (sttEngine as? LiteRtWhisperEngine)?.let { engine ->
+            manager.registerReadinessProvider(ModelRuntime.LITERT_ASR, engine::isReady)
         }
         
         return manager

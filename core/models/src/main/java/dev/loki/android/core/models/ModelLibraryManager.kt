@@ -22,14 +22,36 @@ class ModelLibraryManager(
     private val _manifest = MutableStateFlow(registry.reconcile())
     val manifest: StateFlow<ModelManifest> = _manifest.asStateFlow()
 
+    private val readinessProviders = mutableMapOf<ModelRuntime, () -> Boolean>()
+
     fun registerRuntime(runtime: ModelRuntime, controller: ModelRuntimeController) {
         controllers[runtime] = controller
     }
 
+    /**
+     * Registers a live readiness provider for [runtime]. The provider is called by
+     * [isRuntimeReady] in addition to the manifest check to confirm the runtime context
+     * is currently live (e.g. a TFLite Interpreter is actually constructed).
+     *
+     * Call this alongside [registerRuntime] for engines that perform real initialization
+     * work (e.g. [LiteRtWhisperEngine] building a TFLite Interpreter in `initialize()`).
+     */
+    fun registerReadinessProvider(runtime: ModelRuntime, provider: () -> Boolean) {
+        readinessProviders[runtime] = provider
+    }
+
+    /**
+     * Returns true when the manifest shows a LOADED model for [runtime] AND the registered
+     * readiness provider (if any) confirms the runtime context is live. This makes the
+     * existing [AssistantSession] precheck accurate: it fails fast with a clean Error if
+     * the engine isn't actually initialized, rather than crashing mid-turn.
+     */
     fun isRuntimeReady(runtime: ModelRuntime): Boolean {
         val current = manifest.value
         val activeId = current.activeModels[runtime] ?: return false
-        return current.models.any { it.id == activeId && it.availability == ModelAvailability.LOADED }
+        val manifestReady = current.models.any { it.id == activeId && it.availability == ModelAvailability.LOADED }
+        if (!manifestReady) return false
+        return readinessProviders[runtime]?.invoke() ?: true
     }
 
     suspend fun register(model: ModelRecord): Boolean = mutex.withLock {
