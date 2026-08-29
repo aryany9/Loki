@@ -55,6 +55,17 @@ data class ModelArtifact(
 )
 
 @Serializable
+data class ModelRecordCapabilities(
+    val audioInput: ModelMetadataField<Boolean> = ModelMetadataField(value = false, confidence = MetadataConfidence.UNKNOWN)
+) {
+    val isAudioInputSupported: Boolean
+        get() = audioInput.value == true && (
+            audioInput.confidence == MetadataConfidence.VERIFIED ||
+            audioInput.confidence == MetadataConfidence.USER_CONFIRMED
+        )
+}
+
+@Serializable
 data class ModelRecord(
     val id: String,
     val displayName: String,
@@ -65,7 +76,8 @@ data class ModelRecord(
     val source: ModelSource,
     val availability: ModelAvailability = ModelAvailability.DOWNLOADED,
     val importedAtEpochMs: Long,
-    val lastUsedAtEpochMs: Long? = null
+    val lastUsedAtEpochMs: Long? = null,
+    val capabilities: ModelRecordCapabilities = ModelRecordCapabilities()
 )
 
 @Serializable

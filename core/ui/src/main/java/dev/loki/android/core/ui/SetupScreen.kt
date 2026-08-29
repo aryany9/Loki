@@ -137,14 +137,17 @@ fun SetupScreen(
     }?.state == PermissionState.GRANTED
 
     // Derive the display name of the currently loaded model for each runtime
-    val loadedLlmName = models.firstOrNull {
+    val loadedLlm = models.firstOrNull {
         it.runtime == ModelRuntime.LITERT_LM && it.availability == ModelAvailability.LOADED
-    }?.displayName
+    }
+    val loadedLlmName = loadedLlm?.displayName
+    val isAudioCapable = loadedLlm?.capabilities?.isAudioInputSupported == true
+
     val loadedAsrName = models.firstOrNull {
         it.runtime == ModelRuntime.LITERT_ASR && it.availability == ModelAvailability.LOADED
     }?.displayName
 
-    val bothModelsReady = llmReady && asrReady
+    val bothModelsReady = llmReady && (isAudioCapable || asrReady)
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background
@@ -229,11 +232,16 @@ fun SetupScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
+                val asrDesc = if (isAudioCapable) {
+                    "Optional · Active LLM supports direct audio input."
+                } else {
+                    "On-device Whisper model for offline speech-to-text."
+                }
                 RuntimeProvisionCard(
                     title = "ASR / Voice Recognition",
-                    description = "On-device Whisper model for offline speech-to-text.",
-                    isReady = asrReady,
-                    loadedModelName = loadedAsrName,
+                    description = asrDesc,
+                    isReady = asrReady || isAudioCapable,
+                    loadedModelName = if (isAudioCapable && loadedAsrName == null) "Direct Audio Active" else loadedAsrName,
                     onProvision = { onProvisionRuntime(ModelRuntime.LITERT_ASR) }
                 )
             }

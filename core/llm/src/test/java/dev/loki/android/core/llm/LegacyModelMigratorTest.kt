@@ -1,5 +1,7 @@
 package dev.loki.android.core.llm
 
+import dev.loki.android.core.models.ModelRegistry
+import dev.loki.android.core.models.ModelStorage
 import java.io.File
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
@@ -56,7 +58,8 @@ class LegacyModelMigratorTest {
 
         assertEquals(1, first.size)
         assertTrue(second.isEmpty())
-        assertTrue(File(storage.rootDirectory, first.single().artifactPath).isFile)
+        val artifactRelPath = first.single().artifacts.first().relativePath
+        assertTrue(File(storage.rootDirectory, "models/${first.single().id}/$artifactRelPath").isFile)
         assertFalse(File(storage.rootDirectory, "models.json").readText().isEmpty())
     }
 }

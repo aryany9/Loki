@@ -30,6 +30,7 @@ class ConversationManagerTest {
         override suspend fun initializeAsync(modelPath: String?): Boolean = true
         override suspend fun generate(
             prompt: String,
+            audioBytes: ByteArray?,
             grammar: String?,
             maxTokens: Int,
             onToken: ((String) -> Unit)?
@@ -168,6 +169,7 @@ class ConversationManagerTest {
 
         override suspend fun generate(
             prompt: String,
+            audioBytes: ByteArray?,
             grammar: String?,
             maxTokens: Int,
             onToken: ((String) -> Unit)?

@@ -31,19 +31,21 @@ class ConversationSession(
 
     fun processUtterance(
         userInput: String,
+        audioBytes: ByteArray? = null,
         enableTts: Boolean = true,
         source: String = "TEXT"
     ): Flow<ConversationEvent> = flow {
         val turnId = TurnLogger.newTurnId()
         TurnLogger.logTurnStart(turnId, source)
 
-        if (userInput.isBlank()) {
+        val hasAudio = audioBytes != null && audioBytes.isNotEmpty()
+        if (userInput.isBlank() && !hasAudio) {
             TurnLogger.logError(turnId, "Empty user input received")
             emit(ConversationEvent.Error("Empty user input"))
             return@flow
         }
 
-        if (isSimpleGreeting(userInput)) {
+        if (isSimpleGreeting(userInput) && !hasAudio) {
             val response = "Hello! How can I help you?"
             conversationContext.append(ConversationTurn.User(userInput))
             conversationContext.append(ConversationTurn.Assistant(response))
@@ -51,12 +53,13 @@ class ConversationSession(
             return@flow
         }
 
-        if (source == "VOICE") {
+        if (source == "VOICE" && userInput.isNotBlank()) {
             TurnLogger.logTranscript(turnId, userInput)
         }
 
-        conversationContext.append(ConversationTurn.User(userInput))
-        emit(ConversationEvent.Thinking(userInput))
+        val displayInput = if (userInput.isNotBlank()) userInput else if (hasAudio) "[Voice Audio]" else ""
+        conversationContext.append(ConversationTurn.User(displayInput))
+        emit(ConversationEvent.Thinking(displayInput))
 
         var iterations = 0
         var lastToolResult: ToolResult? = null
@@ -99,6 +102,7 @@ class ConversationSession(
 
                 val llmResult = llmEngine.generate(
                     prompt = promptToSend,
+                    audioBytes = if (iterations == 1) audioBytes else null,
                     onToken = null
                 )
 

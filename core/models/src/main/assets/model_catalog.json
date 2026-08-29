@@ -17,6 +17,23 @@
         }
       ],
       "capabilities": ["voice-recognition", "offline-stt"]
+    },
+    {
+      "id": "gemma-4-E4B-it",
+      "displayName": "Gemma 4 E4B-it",
+      "family": "Gemma",
+      "runtime": "LITERT_LM",
+      "format": "LITERT_MODEL",
+      "artifacts": [
+        {
+          "fileName": "gemma-4-E4B-it.litertlm",
+          "relativePath": "gemma-4-E4B-it.litertlm",
+          "sizeBytes": 3659530240,
+          "sha256": "0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0",
+          "url": "https://huggingface.co/google/gemma-4-E4B-it-litertlm/resolve/main/gemma-4-E4B-it.litertlm"
+        }
+      ],
+      "capabilities": ["audio-input", "text-generation"]
     }
   ]
 }

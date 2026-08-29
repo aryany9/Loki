@@ -56,7 +56,10 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(project(":core:models"))
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.litert.android)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
+    testImplementation("org.mockito:mockito-core:5.14.2")
 }
