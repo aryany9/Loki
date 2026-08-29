@@ -1,5 +1,13 @@
 package dev.loki.android.core.llm
 
+import dev.loki.android.core.models.DownloadResult
+import dev.loki.android.core.models.ModelArtifact
+import dev.loki.android.core.models.ModelCatalog
+import dev.loki.android.core.models.ModelCatalogEntry
+import dev.loki.android.core.models.ModelDownloader
+import dev.loki.android.core.models.ModelFormat
+import dev.loki.android.core.models.ModelRuntime
+import dev.loki.android.core.models.ModelStorage
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.nio.file.Files
@@ -39,13 +47,16 @@ class ModelCatalogTest {
     fun `downloader finalizes verified artifact`() = runBlocking {
         val bytes = "catalog-model".toByteArray()
         val storage = ModelStorage(root)
-        val entry = entry().copy(
-            expectedSizeBytes = bytes.size.toLong(),
-            sha256 = "c7e2f5c43ef2cc4c6c2d2cc9e6be6e0eaf8fd852c0d09c6f6b7d1a1e7a8e5a4f"
+        val artifact = ModelArtifact(
+            fileName = "catalog-model.bin",
+            relativePath = "catalog-model.bin",
+            sizeBytes = bytes.size.toLong(),
+            sha256 = "842a3f32416c236b918668f2bb3713115373c8a2181f32f29941d7aab3051e83",
+            url = "https://example.test/catalog-model.bin"
         )
-        val result = ModelDownloader(storage).download(entry, ByteArrayInputStream(bytes))
+        val result = ModelDownloader(storage).downloadArtifact("catalog-model", artifact, ByteArrayInputStream(bytes))
 
-        assertTrue(result is DownloadResult.Failed)
+        assertTrue(result is DownloadResult.Completed)
     }
 
     private fun entry() = ModelCatalogEntry(
@@ -54,6 +65,13 @@ class ModelCatalogTest {
         family = null,
         runtime = ModelRuntime.LITERT_LM,
         format = ModelFormat.LITERT_MODEL,
-        artifactUrl = "https://example.test/catalog-model.bin"
+        artifacts = listOf(
+            ModelArtifact(
+                fileName = "catalog-model.bin",
+                relativePath = "catalog-model.bin",
+                sizeBytes = 100L,
+                url = "https://example.test/catalog-model.bin"
+            )
+        )
     )
 }

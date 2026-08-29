@@ -11,7 +11,8 @@ sealed interface ModelDetection {
         val runtime: ModelRuntime = ModelRuntime.LITERT_LM,
         val format: ModelFormat = ModelFormat.LITERT_MODEL,
         val family: String? = null,
-        val confidence: MetadataConfidence = MetadataConfidence.VERIFIED
+        val confidence: MetadataConfidence = MetadataConfidence.VERIFIED,
+        val supportsAudio: Boolean = false
     ) : ModelDetection
 
     data object Unknown : ModelDetection
@@ -28,7 +29,12 @@ interface ModelValidator {
 class LiteRtModelDetector : ModelDetector {
     override fun detect(file: File): ModelDetection {
         if (file.isFile && file.extension.equals("litertlm", ignoreCase = true)) {
-            return ModelDetection.Detected(ModelRuntime.LITERT_LM, ModelFormat.LITERT_MODEL)
+            val containerInfo = LitertLmContainerInspector.inspect(file)
+            return ModelDetection.Detected(
+                runtime = ModelRuntime.LITERT_LM,
+                format = ModelFormat.LITERT_MODEL,
+                supportsAudio = containerInfo.supportsAudioInput
+            )
         }
         return ModelDetection.Unknown
     }

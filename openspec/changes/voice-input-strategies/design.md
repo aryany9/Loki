@@ -8,6 +8,7 @@ AI Edge Gallery reference (audio-capable path): PCM 16-bit @ 16 kHz wrapped in a
 
 **Goals:**
 - Capability metadata on the model record, with confidence levels; capability decides strategy — never the engine.
+- Model-agnostic structural inspection (`LitertLmContainerInspector`) of `.litertlm` container headers (`LITERTLM` magic + component section table for `tf_lite_audio_encoder_hw` / `tf_lite_audio_adapter`) during import and manifest reconciliation, avoiding brittle filename heuristics.
 - Two voice-input strategies selected per turn: direct-audio and STT-transcribe.
 - Direct-audio path participates fully in the ReAct JSON tool-calling loop.
 - 30 s recording cap for both strategies.
@@ -15,14 +16,19 @@ AI Edge Gallery reference (audio-capable path): PCM 16-bit @ 16 kHz wrapped in a
 - Whisper remains a permanent fallback; ASR readiness required only when STT strategy is selected.
 
 **Non-Goals:**
-- No `.litertlm` artifact probing in v1 (deferred; catalog + user toggle only).
+- No full-file scanning or runtime weight execution for probing; inspection reads at most the first 64 KB header prefix.
 - No removal or rewrite of the Whisper stage (see parallel `real-whisper-transcription` change).
-- No vision-input support, no HF model-card metadata parsing.
+- No HF model-card metadata network fetching.
 - No streaming partial transcripts for the audio path.
 
 ## Decisions
 
-1. **Capability lives in `ModelRecord`** as `ModelRecordCapabilities` (confidence-tagged `audioInput` via the existing `ModelMetadataField` pattern). Precedence: USER_CONFIRMED (import toggle) > VERIFIED (bundled catalog) > UNKNOWN (treated as text-only). Rationale: user-confirmed claims trump curated ones; a false "audio" claim is worse than a false negative because it fails the turn, so the toggle defaults to false (Gallery's approach).
+1. **Capability lives in `ModelRecord`** as `ModelRecordCapabilities` (confidence-tagged `audioInput` via the existing `ModelMetadataField` pattern). Precedence:
+   - **Structural Artifact Inspection (`LitertLmContainerInspector`)**: Inspects the first 64 KB of the `.litertlm` artifact. If `tf_lite_audio_encoder_hw` or `tf_lite_audio_adapter` sections are present, assigns `audioInput = true` with `VERIFIED` confidence.
+   - **Bundled Catalog (`ModelCatalogEntry.capabilities`)**: Assigns `audioInput = true` with `VERIFIED` confidence.
+   - **User Confirmation (Import Dialog Toggle)**: Assigns `audioInput = true` with `USER_CONFIRMED` confidence when explicitly toggled.
+   - **Manifest Reconciliation**: When loading on startup, `ModelRegistry.reconcile()` structurally inspects local artifact files via `LitertLmContainerInspector` to set accurate capability metadata without string matching on filenames.
+   - **Default/Unconfirmed**: Defaults to text-only (`audioInput = false`, `UNKNOWN`). Rationale: structural inspection directly validates container modalities with zero network requests or filename assumptions.
 2. **Strategy is selected per turn in the voice pipeline** (`AssistantSession`/turn orchestration) by reading the active LLM record's capability. A `VoiceInputStrategy` abstraction (direct-audio vs stt-transcribe) keeps `if (supportsAudio)` out of the conversation layers.
 3. **Direct-audio goes through the ReAct tool loop** (decision 1b). The same system prompt and JSON protocol govern; the audio bytes are part of the user turn sent to the LLM. Consequence: no app-visible transcript on this path — turn logging records the strategy and recording metadata (duration, demotion events) instead of transcript text.
 4. **`EngineConfig.audioBackend = Backend.CPU()` is passed unconditionally** — harmless for text-only models and avoids engine re-initialization when the user switches between audio-capable and text-only models.

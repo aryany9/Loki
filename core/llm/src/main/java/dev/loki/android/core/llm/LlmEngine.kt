@@ -68,6 +68,19 @@ interface LlmEngine {
         grammar: String? = null,
         maxTokens: Int = 256,
         onToken: ((String) -> Unit)? = null
+    ): Result<String> = generate(prompt, null, grammar, maxTokens, onToken)
+
+    /**
+     * Generates a model response with optional direct audio input (WAV byte array).
+     * When [audioBytes] is non-null and the engine/model supports multimodal audio,
+     * the audio is sent as part of the turn (e.g. `Content.AudioBytes`).
+     */
+    suspend fun generate(
+        prompt: String,
+        audioBytes: ByteArray?,
+        grammar: String? = null,
+        maxTokens: Int = 256,
+        onToken: ((String) -> Unit)? = null
     ): Result<String>
 
     fun cancel()

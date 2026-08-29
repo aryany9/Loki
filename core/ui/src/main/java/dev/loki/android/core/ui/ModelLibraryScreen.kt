@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -21,6 +22,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.loki.android.core.models.ModelAvailability
@@ -39,7 +41,7 @@ fun ModelLibraryScreen(
     onEject: (ModelRuntime) -> Unit,
     onDelete: (String) -> Unit,
     pendingImportName: String? = null,
-    onConfirmImport: (String, String, ModelRuntime, ModelFormat) -> Unit = { _, _, _, _ -> },
+    onConfirmImport: (String, String, ModelRuntime, ModelFormat, Boolean) -> Unit = { _, _, _, _, _ -> },
     onCancelImport: () -> Unit = {},
     catalog: List<ModelCatalogEntry> = emptyList(),
     onDownload: (ModelCatalogEntry) -> Unit = {},
@@ -48,6 +50,7 @@ fun ModelLibraryScreen(
 ) {
     val (name, setName) = remember(pendingImportName) { mutableStateOf(pendingImportName.orEmpty()) }
     val (family, setFamily) = remember { mutableStateOf("") }
+    val (supportsAudio, setSupportsAudio) = remember(pendingImportName) { mutableStateOf(false) }
     val (pendingDeleteId, setPendingDeleteId) = remember { mutableStateOf<String?>(null) }
 
     if (pendingImportName != null) {
@@ -59,11 +62,21 @@ fun ModelLibraryScreen(
                     OutlinedTextField(value = name, onValueChange = setName, label = { Text("Model name") })
                     OutlinedTextField(value = family, onValueChange = setFamily, label = { Text("Model family (optional)") })
                     Text("Format: .litertlm (LiteRT-LM)")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Checkbox(
+                            checked = supportsAudio,
+                            onCheckedChange = setSupportsAudio
+                        )
+                        Text("Supports direct audio input (e.g. Gemma 4 E4B)")
+                    }
                 }
             },
             confirmButton = {
                 Button(
-                    onClick = { onConfirmImport(name, family, ModelRuntime.LITERT_LM, ModelFormat.LITERT_MODEL) },
+                    onClick = { onConfirmImport(name, family, ModelRuntime.LITERT_LM, ModelFormat.LITERT_MODEL, supportsAudio) },
                     enabled = name.isNotBlank()
                 ) {
                     Text("Validate and add")
@@ -116,7 +129,8 @@ fun ModelLibraryScreen(
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(entry.displayName)
-                            Text("${entry.runtime} · ${entry.format}")
+                            val audioTag = if (entry.capabilities.any { it.equals("audio-input", ignoreCase = true) }) " · Direct Audio" else ""
+                            Text("${entry.runtime} · ${entry.format}$audioTag", style = MaterialTheme.typography.bodySmall)
                         }
                         Button(onClick = { onDownload(entry) }) { Text("Download") }
                     }
@@ -130,7 +144,8 @@ fun ModelLibraryScreen(
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(model.displayName, style = MaterialTheme.typography.titleMedium)
-                            Text("${model.format} · ${model.availability}")
+                            val audioTag = if (model.capabilities.isAudioInputSupported) " · Direct Audio" else ""
+                            Text("${model.format} · ${model.availability}$audioTag", style = MaterialTheme.typography.bodySmall)
                         }
                         when (model.availability) {
                             ModelAvailability.LOADED -> Button(onClick = { onEject(model.runtime) }) { Text("Eject") }

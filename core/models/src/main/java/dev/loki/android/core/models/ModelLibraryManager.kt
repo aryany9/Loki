@@ -18,9 +18,16 @@ class ModelLibraryManager(
     val managedStorage: ModelStorage = storage
     private val mutex = Mutex()
     private val controllers = mutableMapOf<ModelRuntime, ModelRuntimeController>()
-    
+
     private val _manifest = MutableStateFlow(registry.reconcile())
     val manifest: StateFlow<ModelManifest> = _manifest.asStateFlow()
+
+    init {
+        val reconciled = registry.reconcile()
+        if (reconciled != registry.load()) {
+            registry.save(reconciled)
+        }
+    }
 
     private val readinessProviders = mutableMapOf<ModelRuntime, () -> Boolean>()
 

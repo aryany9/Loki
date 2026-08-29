@@ -4,7 +4,7 @@ Loki downloads arbitrary `.litertlm` models from Hugging Face, but the voice pip
 
 ## What Changes
 
-- Add per-model capability metadata to `ModelRecord` (`ModelRecordCapabilities` with confidence-tagged `audioInput`), populated from bundled catalog entries (VERIFIED) and a user toggle at import time (USER_CONFIRMED). Catalog `capabilities` tags must no longer be dropped at registration.
+- Add per-model capability metadata to `ModelRecord` (`ModelRecordCapabilities` with confidence-tagged `audioInput`), populated from structural `.litertlm` container inspection (`LitertLmContainerInspector`, VERIFIED), bundled catalog entries (VERIFIED), and user confirmation at import time (USER_CONFIRMED). Structural inspection parses the container header table (~first 64 KB) for `tf_lite_audio_encoder_hw` / `tf_lite_audio_adapter` components without relying on filename heuristics.
 - Extend `LiteRtLlmEngine` to pass `audioBackend = Backend.CPU()` in `EngineConfig` and to support sending multimodal turns (`Content.AudioBytes` + `Content.Text`) via `sendMessageAsync(Contents.of(...))`; engine capability reporting becomes a function of the loaded model record.
 - Introduce a per-turn `VoiceInputStrategy` selection in the voice pipeline: **direct-audio** when the active LLM model record declares audio input, **STT-transcribe** otherwise. Recording cap: 30 s, matching the Whisper window.
 - Direct-audio path goes through the existing ReAct JSON tool-calling loop (full assistant parity). WAV packaging of 16 kHz PCM 16-bit per AI Edge Gallery's `genByteArrayForWav` pattern.

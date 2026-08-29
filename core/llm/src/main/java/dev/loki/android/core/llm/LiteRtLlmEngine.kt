@@ -57,25 +57,33 @@ class LiteRtLlmEngine(
     private val modelManager: ModelManager
 ) : LlmEngine, ModelRuntimeController {
 
+    private var loadedModelRecord: ModelRecord? = null
+
     override suspend fun load(model: ModelRecord): Boolean {
         val artifact = model.artifacts.firstOrNull { it.fileName.endsWith(".litertlm") }
             ?: return false
         val path = File(modelManager.getStorageRoot(), "models/${model.id}/${artifact.relativePath}").absolutePath
-        return initializeAsync(path)
+        val success = initializeAsync(path)
+        if (success) {
+            loadedModelRecord = model
+        }
+        return success
     }
 
     override suspend fun unload(model: ModelRecord) {
+        loadedModelRecord = null
         release()
     }
 
     override val promptFormat: ModelPromptFormat = ModelPromptFormat.GEMMA
 
-    override val capabilities: ModelCapabilities = ModelCapabilities(
-        supportsText = true,
-        supportsToolCalling = true,
-        supportsAudioInput = false,
-        supportsVisionInput = false
-    )
+    override val capabilities: ModelCapabilities
+        get() = ModelCapabilities(
+            supportsText = true,
+            supportsToolCalling = true,
+            supportsAudioInput = loadedModelRecord?.capabilities?.isAudioInputSupported ?: false,
+            supportsVisionInput = false
+        )
 
     private val mutex = Mutex()
     private var engine: Engine? = null
@@ -202,6 +210,7 @@ class LiteRtLlmEngine(
             val config = EngineConfig(
                 modelPath = modelPath,
                 backend = backend,
+                audioBackend = Backend.CPU(),
                 maxNumTokens = kvCapacity,
                 cacheDir = cacheDirFile.absolutePath
             )
@@ -238,11 +247,10 @@ class LiteRtLlmEngine(
                 val tokenCount = try { activeConversation!!.getTokenCount() } catch (e: Exception) { -1 }
                 Log.i(TAG, "[Loki/Diagnostic] Conversation created with AgentConfig:")
                 Log.i(TAG, "[Loki/Diagnostic]   systemInstruction chars = ${agentConfig.systemInstruction.length}")
-                Log.i(TAG, "[Loki/Diagnostic]   getTokenCount() = $tokenCount")
-                Log.i(TAG, "[Loki/Diagnostic]   active KV capacity = $activeKvCapacity")
+                Log.i(TAG, "[Loki/Diagnostic]   prefilled token count   = $tokenCount")
                 true
-            } catch (t: Throwable) {
-                Log.e(TAG, "[Loki] startConversation failed: ${t.javaClass.simpleName} - ${t.message}", t)
+            } catch (e: Exception) {
+                Log.e(TAG, "[Loki] Failed to create Conversation with AgentConfig: ${e.message}", e)
                 false
             }
         }
@@ -251,7 +259,7 @@ class LiteRtLlmEngine(
         startConversation(AgentConfig(systemInstruction = systemPrompt))
 
     override fun resetConversation() {
-        Log.i(TAG, "[Loki] resetConversation() called — closing native Conversation, Engine stays alive")
+        Log.i(TAG, "[Loki] resetConversation() called")
         closeConversationInternal()
     }
 
@@ -279,6 +287,7 @@ class LiteRtLlmEngine(
 
     override suspend fun generate(
         prompt: String,
+        audioBytes: ByteArray?,
         grammar: String?,
         maxTokens: Int,
         onToken: ((String) -> Unit)?
@@ -299,10 +308,17 @@ class LiteRtLlmEngine(
             val available = if (conversationTokensUsed >= 0) activeKvCapacity - conversationTokensUsed else -1
             Log.i(TAG, "[Loki/Diagnostic] Before generation:")
             Log.i(TAG, "[Loki/Diagnostic]   prompt chars = ${prompt.length}")
+            Log.i(TAG, "[Loki/Diagnostic]   audio bytes  = ${audioBytes?.size ?: 0}")
             Log.i(TAG, "[Loki/Diagnostic]   tokens used  = $conversationTokensUsed / $activeKvCapacity")
 
+            val userMessage = if (audioBytes != null && audioBytes.isNotEmpty()) {
+                Message.user(Contents.of(Content.AudioBytes(audioBytes), Content.Text(prompt)))
+            } else {
+                Message.user(prompt)
+            }
+
             val fullResponse = StringBuilder()
-            conversation.sendMessageAsync(Message.user(prompt)).collect { partialMessage ->
+            conversation.sendMessageAsync(userMessage).collect { partialMessage ->
                 val textContent = partialMessage.contents.contents
                     .filterIsInstance<Content.Text>()
                     .firstOrNull()?.text ?: ""
@@ -325,7 +341,7 @@ class LiteRtLlmEngine(
                     if (cpuSuccess) {
                         activeBackend = Backend.CPU()
                         Log.i(TAG, "[Loki] Engine successfully re-initialized on CPU backend. Retrying generation...")
-                        return@withContext generate(prompt, grammar, maxTokens, onToken)
+                        return@withContext generate(prompt, audioBytes, grammar, maxTokens, onToken)
                     } else {
                         Log.e(TAG, "[Loki] CPU fallback re-initialization failed", cpuError)
                     }

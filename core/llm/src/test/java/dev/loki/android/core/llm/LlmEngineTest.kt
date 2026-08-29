@@ -1,5 +1,14 @@
 package dev.loki.android.core.llm
 
+import dev.loki.android.core.models.AgentConfig
+import dev.loki.android.core.models.ExecutionBackend
+import dev.loki.android.core.models.GenerationConfig
+import dev.loki.android.core.models.MetadataConfidence
+import dev.loki.android.core.models.ModelCapabilities
+import dev.loki.android.core.models.ModelMetadataField
+import dev.loki.android.core.models.ModelRecord
+import dev.loki.android.core.models.ModelRecordCapabilities
+import dev.loki.android.core.models.RuntimeConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
@@ -82,6 +91,8 @@ class LlmEngineTest {
     @Test
     fun `LlmEngine default startConversation delegates to AgentConfig`() = runBlocking {
         var capturedInstruction: String? = null
+        var capturedAudioBytes: ByteArray? = null
+
         val testEngine = object : LlmEngine {
             override val modelState: StateFlow<LlmModelState> = MutableStateFlow(LlmModelState.Ready())
             override fun isReady(): Boolean = true
@@ -92,10 +103,14 @@ class LlmEngineTest {
             }
             override suspend fun generate(
                 prompt: String,
+                audioBytes: ByteArray?,
                 grammar: String?,
                 maxTokens: Int,
                 onToken: ((String) -> Unit)?
-            ): Result<String> = Result.success("ok")
+            ): Result<String> {
+                capturedAudioBytes = audioBytes
+                return Result.success("ok: $prompt")
+            }
             override fun cancel() {}
             override fun release() {}
         }
@@ -105,5 +120,9 @@ class LlmEngineTest {
         assertEquals("Test system prompt", capturedInstruction)
         assertTrue(testEngine.capabilities.supportsText)
         assertTrue(testEngine.capabilities.supportsToolCalling)
+
+        val result = testEngine.generate("Hello", byteArrayOf(1, 2, 3))
+        assertTrue(result.isSuccess)
+        assertEquals(3, capturedAudioBytes?.size)
     }
 }

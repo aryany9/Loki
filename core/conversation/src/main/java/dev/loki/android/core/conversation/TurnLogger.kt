@@ -69,6 +69,18 @@ object TurnLogger {
         Log.i(TAG, "[$turnId] Tool execution: $tool (success=$success) -> $details")
     }
 
+    fun logStrategy(turnId: String, strategy: String, durationMs: Long? = null) {
+        if (durationMs != null) {
+            Log.i(TAG, "[$turnId] Strategy: $strategy (recordingDuration=${durationMs}ms)")
+        } else {
+            Log.i(TAG, "[$turnId] Strategy: $strategy")
+        }
+    }
+
+    fun logDemotion(turnId: String, reason: String) {
+        Log.w(TAG, "[$turnId] Strategy demoted to STT fallback: $reason")
+    }
+
     fun logFinalResponse(turnId: String, response: String) {
         Log.i(TAG, "[$turnId] Final response: \"$response\"")
     }

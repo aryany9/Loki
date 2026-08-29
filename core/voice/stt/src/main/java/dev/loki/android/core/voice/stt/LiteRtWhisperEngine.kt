@@ -150,6 +150,13 @@ class LiteRtWhisperEngine(
         }
     }.flowOn(Dispatchers.IO)
 
+    override suspend fun transcribeAudio(pcmAudio: FloatArray): String {
+        if (!isInitialized || pcmAudio.isEmpty()) return ""
+        return withContext(Dispatchers.Default) {
+            transcribePcmAudio(pcmAudio)
+        }.trim()
+    }
+
     /**
      * Full Whisper inference pipeline:
      * 1. Pad/crop PCM to 30 s window.

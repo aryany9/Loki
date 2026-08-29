@@ -13,6 +13,7 @@ sealed interface SttEvent {
 interface SttEngine {
     val isListening: Boolean
     fun startListening(): Flow<SttEvent>
+    suspend fun transcribeAudio(pcmAudio: FloatArray): String = ""
     fun stopListening()
     fun cancel()
     fun release()

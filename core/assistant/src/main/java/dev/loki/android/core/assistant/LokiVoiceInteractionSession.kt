@@ -169,8 +169,13 @@ fun VoiceSessionOverlay(
                     )
                 }
                 is AssistantState.Listening -> {
+                    val promptText = when {
+                        state.partialTranscript.isNotEmpty() -> state.partialTranscript
+                        state.strategy == VoiceInputStrategy.DIRECT_AUDIO -> "🎙️ Listening (Direct Audio)..."
+                        else -> "🎙️ Listening..."
+                    }
                     Text(
-                        text = if (state.partialTranscript.isNotEmpty()) state.partialTranscript else "🎙️ Listening...",
+                        text = promptText,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.primary
@@ -186,8 +191,14 @@ fun VoiceSessionOverlay(
                             strokeWidth = 2.dp,
                             color = MaterialTheme.colorScheme.secondary
                         )
+                        val processingText = when {
+                            state.isDemoted && state.query.isNotEmpty() -> "${state.query} (STT fallback)"
+                            state.isDemoted -> "Transcribing with STT fallback..."
+                            state.query.isNotEmpty() -> state.query
+                            else -> "Thinking..."
+                        }
                         Text(
-                            text = if (state.query.isNotEmpty()) state.query else "Thinking...",
+                            text = processingText,
                             fontSize = 15.sp,
                             color = MaterialTheme.colorScheme.secondary
                         )

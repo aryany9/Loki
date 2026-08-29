@@ -17,9 +17,9 @@ import kotlin.math.sqrt
  */
 class AudioRecorder(
     private val sampleRate: Int = 16000,
-    private val silenceThresholdRms: Float = 300f,
-    private val silenceDurationMs: Long = 400L,
-    private val maxRecordingMs: Long = 8000L
+    private val silenceDurationMs: Long = 700L,
+    private val initialSilenceTimeoutMs: Long = 4500L,
+    private val maxRecordingMs: Long = 30000L
 ) {
     private var audioRecord: AudioRecord? = null
     @Volatile private var isRecording = false
@@ -57,6 +57,8 @@ class AudioRecorder(
         val startTime = System.currentTimeMillis()
         var speechDetected = false
         var lastSpeechTime = startTime
+        var noiseFloor = 100f
+        var chunksProcessed = 0
 
         try {
             while (isActive && isRecording) {
@@ -74,15 +76,34 @@ class AudioRecorder(
                     }
                     val rms = sqrt(sum / readCount).toFloat()
                     onRmsUpdate?.invoke(rms)
+                    chunksProcessed++
 
                     val now = System.currentTimeMillis()
-                    if (rms > silenceThresholdRms) {
+
+                    if (chunksProcessed <= 3) {
+                        noiseFloor = maxOf(noiseFloor, rms)
+                    } else if (!speechDetected) {
+                        // Slowly adapt background noise floor
+                        noiseFloor = noiseFloor * 0.9f + rms * 0.1f
+                    }
+
+                    val speechThreshold = maxOf(noiseFloor * 2.2f, 500f)
+                    val silenceThreshold = maxOf(noiseFloor * 1.3f, 300f)
+
+                    if (rms > speechThreshold) {
                         speechDetected = true
+                        lastSpeechTime = now
+                    } else if (speechDetected && rms > silenceThreshold) {
                         lastSpeechTime = now
                     }
 
                     if (speechDetected && (now - lastSpeechTime > silenceDurationMs)) {
-                        Log.i(TAG, "VAD silence threshold reached after ${now - startTime}ms")
+                        Log.i(TAG, "Speech completion detected (silence duration reached: ${now - lastSpeechTime}ms, total: ${now - startTime}ms)")
+                        break
+                    }
+
+                    if (!speechDetected && (now - startTime > initialSilenceTimeoutMs)) {
+                        Log.i(TAG, "Initial silence timeout reached (${initialSilenceTimeoutMs}ms)")
                         break
                     }
 

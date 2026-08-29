@@ -27,6 +27,7 @@ import dev.loki.android.core.llm.ModelImporter
 import dev.loki.android.core.models.DownloadResult
 import dev.loki.android.core.models.LiteRtModelDetector
 import dev.loki.android.core.models.LiteRtModelValidator
+import dev.loki.android.core.models.MetadataConfidence
 import dev.loki.android.core.models.ModelArtifact
 import dev.loki.android.core.models.ModelAvailability
 import dev.loki.android.core.models.ModelCatalog
@@ -37,6 +38,7 @@ import dev.loki.android.core.models.ModelFormat
 import dev.loki.android.core.models.ModelLibraryManager
 import dev.loki.android.core.models.ModelMetadataField
 import dev.loki.android.core.models.ModelRecord
+import dev.loki.android.core.models.ModelRecordCapabilities
 import dev.loki.android.core.models.ModelRuntime
 import dev.loki.android.core.models.ModelSource
 import dev.loki.android.core.models.ValidationResult
@@ -126,10 +128,13 @@ class MainActivity : ComponentActivity() {
             var currentScreen by remember { mutableStateOf<AppScreen?>(null) }
 
             // Navigation gate: runtime readiness drives routing, not isFirstRunComplete.
-            // Auto-transition SETUP → CHAT once both mandatory runtimes are LOADED.
-            // Never auto-transition CHAT → SETUP mid-session to avoid disrupting active use.
-            val bothReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_LM) &&
-                modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_ASR)
+            // Auto-transition SETUP → CHAT once mandatory runtimes are LOADED.
+            // When active LLM is direct-audio capable, ASR is optional.
+            val activeLlmId = modelManifest.activeModels[ModelRuntime.LITERT_LM]
+            val activeLlmRecord = modelManifest.models.firstOrNull { it.id == activeLlmId }
+            val isAudioCapable = activeLlmRecord?.capabilities?.isAudioInputSupported == true
+            val isLlmReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_LM)
+            val bothReady = isLlmReady && (isAudioCapable || modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_ASR))
 
             LaunchedEffect(modelManifest) {
                 when {
@@ -227,12 +232,12 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                                 pendingImportName = pendingImport?.fileName,
-                                onConfirmImport = { name, family, runtime, format ->
+                                onConfirmImport = { name, family, runtime, format, supportsAudio ->
                                     val pending = pendingImport ?: return@ModelLibraryScreen
                                     pendingImport = null
                                     coroutineScope.launch {
                                         modelOperationProgress = -1f
-                                        finishImport(pending, name, family, runtime, format)
+                                        finishImport(pending, name, family, runtime, format, supportsAudio)
                                     }
                                 },
                                 onCancelImport = {
@@ -288,12 +293,13 @@ class MainActivity : ComponentActivity() {
         val liteRtDetection = LiteRtModelDetector().detect(target)
         if (liteRtDetection is ModelDetection.Detected) {
             finishImport(
-                PendingImport(modelId, name, target),
-                name.substringBeforeLast('.'),
-                "",
-                ModelRuntime.LITERT_LM,
-                ModelFormat.LITERT_MODEL,
-                result.sha256
+                pending = PendingImport(modelId, name, target),
+                displayName = name.substringBeforeLast('.'),
+                family = "",
+                runtime = ModelRuntime.LITERT_LM,
+                format = ModelFormat.LITERT_MODEL,
+                supportsAudio = liteRtDetection.supportsAudio,
+                knownSha256 = result.sha256
             )
             return
         }
@@ -308,6 +314,7 @@ class MainActivity : ComponentActivity() {
         family: String,
         runtime: ModelRuntime,
         format: ModelFormat,
+        supportsAudio: Boolean = false,
         knownSha256: String? = null
     ) {
         try {
@@ -318,13 +325,35 @@ class MainActivity : ComponentActivity() {
                 modelOperationError = (validation as ValidationResult.Invalid).reason
                 return
             }
-            
+
+            val sha256 = knownSha256 ?: dev.loki.android.core.models.ModelTransfer.calculateSha256(pending.file)
+            val containerInfo = dev.loki.android.core.models.LitertLmContainerInspector.inspect(pending.file)
+            val isDirectAudio = if (containerInfo.isLitertLmContainer) {
+                containerInfo.supportsAudioInput
+            } else {
+                supportsAudio
+            }
+            val confidence = if (containerInfo.isLitertLmContainer) {
+                MetadataConfidence.VERIFIED
+            } else if (supportsAudio) {
+                MetadataConfidence.USER_CONFIRMED
+            } else {
+                MetadataConfidence.UNKNOWN
+            }
+
             val artifact = ModelArtifact(
                 fileName = pending.fileName,
                 relativePath = pending.fileName,
                 sizeBytes = pending.file.length(),
-                sha256 = knownSha256,
+                sha256 = sha256,
                 url = ""
+            )
+
+            val capabilities = ModelRecordCapabilities(
+                audioInput = ModelMetadataField(
+                    value = isDirectAudio,
+                    confidence = confidence
+                )
             )
 
             modelLibraryManager.register(
@@ -337,7 +366,8 @@ class MainActivity : ComponentActivity() {
                     artifacts = listOf(artifact),
                     source = ModelSource.LOCAL_IMPORT,
                     availability = ModelAvailability.DOWNLOADED,
-                    importedAtEpochMs = System.currentTimeMillis()
+                    importedAtEpochMs = System.currentTimeMillis(),
+                    capabilities = capabilities
                 )
             )
         } finally {
@@ -467,6 +497,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val hasAudioInput = entry.capabilities.any { it.equals("audio-input", ignoreCase = true) }
+            val capabilities = ModelRecordCapabilities(
+                audioInput = ModelMetadataField(
+                    value = hasAudioInput,
+                    confidence = MetadataConfidence.VERIFIED
+                )
+            )
+
             modelLibraryManager.register(
                 ModelRecord(
                     id = entry.id,
@@ -477,7 +515,8 @@ class MainActivity : ComponentActivity() {
                     artifacts = downloadedArtifacts,
                     source = ModelSource.BUNDLED_CATALOG,
                     availability = ModelAvailability.DOWNLOADED,
-                    importedAtEpochMs = System.currentTimeMillis()
+                    importedAtEpochMs = System.currentTimeMillis(),
+                    capabilities = capabilities
                 )
             )
         } catch (e: Exception) {

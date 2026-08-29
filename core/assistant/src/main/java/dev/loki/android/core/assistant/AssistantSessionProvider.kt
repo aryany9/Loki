@@ -5,9 +5,9 @@ import dev.loki.android.core.models.ModelLibraryManager
 import dev.loki.android.core.voice.stt.SttEngine
 
 interface AssistantSessionProvider {
-    fun getConversationManager(): ConversationManager
-    fun getSttEngine(): SttEngine
-    fun getModelLibraryManager(): ModelLibraryManager
+    fun getConversationManager(): ConversationManager?
+    fun getSttEngine(): SttEngine?
+    fun getModelLibraryManager(): ModelLibraryManager?
 
     companion object {
         var instance: AssistantSessionProvider? = null

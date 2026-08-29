@@ -66,9 +66,36 @@ class ModelRegistry(
             val allArtifactsExist = model.artifacts.all { artifact ->
                 File(storage.rootDirectory, "models/${model.id}/${artifact.relativePath}").isFile
             }
+
+            val primaryArtifact = model.artifacts.firstOrNull()
+            val artifactFile = if (primaryArtifact != null) {
+                File(storage.rootDirectory, "models/${model.id}/${primaryArtifact.relativePath}")
+            } else null
+
+            val updatedCapabilities = if (artifactFile != null && artifactFile.isFile && model.runtime == ModelRuntime.LITERT_LM) {
+                val containerInfo = LitertLmContainerInspector.inspect(artifactFile)
+                if (containerInfo.isLitertLmContainer) {
+                    if (containerInfo.supportsAudioInput) {
+                        ModelRecordCapabilities(
+                            audioInput = ModelMetadataField(value = true, confidence = MetadataConfidence.VERIFIED)
+                        )
+                    } else if (model.capabilities.audioInput.confidence != MetadataConfidence.USER_CONFIRMED) {
+                        ModelRecordCapabilities(
+                            audioInput = ModelMetadataField(value = false, confidence = MetadataConfidence.VERIFIED)
+                        )
+                    } else {
+                        model.capabilities
+                    }
+                } else {
+                    model.capabilities
+                }
+            } else {
+                model.capabilities
+            }
             
-            model.withAvailability(
-                if (allArtifactsExist) {
+            model.copy(
+                capabilities = updatedCapabilities,
+                availability = if (allArtifactsExist) {
                     val isActive = manifest.activeModels[model.runtime] == model.id
                     if (isActive && model.availability == ModelAvailability.LOADED) {
                         ModelAvailability.LOADED
