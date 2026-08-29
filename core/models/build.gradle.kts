@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.loki.android.core.conversation"
+    namespace = "dev.loki.android.core.models"
     compileSdk = 35
 
     defaultConfig {
@@ -25,22 +25,14 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
-
-    buildFeatures {
-        buildConfig = true
-    }
 }
 
 dependencies {
-    implementation(project(":core:models"))
-    implementation(project(":core:tools"))
-    implementation(project(":core:llm"))
-    implementation(project(":core:voice:stt"))
-    implementation(project(":core:voice:tts"))
+    implementation(platform(libs.kotlinx.coroutines.bom))
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.litertlm.android)
 
     testImplementation(libs.junit)
-    testImplementation(libs.kotlinx.coroutines.test)
 }

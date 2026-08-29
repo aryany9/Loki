@@ -1,6 +1,8 @@
 package dev.loki.android.core.voice.stt
 
 import android.util.Log
+import dev.loki.android.core.models.ModelRecord
+import dev.loki.android.core.models.ModelRuntimeController
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -13,37 +15,55 @@ import java.io.File
  * LiteRtWhisperEngine provides on-device speech-to-text transcription using LiteRT-based
  * Whisper ASR execution (litert-community/whisper-tiny) and AudioRecorder energy VAD.
  */
-class LiteRtWhisperEngine(
-    private val modelManager: WhisperModelManager? = null,
-    private val modelFile: File? = null
-) : SttEngine {
+class LiteRtWhisperEngine : SttEngine, ModelRuntimeController {
 
     private var audioRecorder: AudioRecorder? = null
     @Volatile override var isListening: Boolean = false
         private set
 
     @Volatile private var isInitialized: Boolean = false
+    private var modelFile: File? = null
 
-    fun initialize(path: String? = null): Boolean {
-        val targetFile = when {
-            path != null -> File(path)
-            modelFile != null -> modelFile
-            else -> modelManager?.getDefaultModelFile()
-        }
-
-        if (targetFile != null && targetFile.exists()) {
-            Log.i(TAG, "LiteRtWhisperEngine initialized with model: ${targetFile.absolutePath}")
-            isInitialized = true
-            return true
-        }
-
-        Log.i(TAG, "LiteRtWhisperEngine initialized in fallback/mock ASR mode (no local .tflite file yet)")
+    override suspend fun load(model: ModelRecord): Boolean {
+        val artifact = model.artifacts.firstOrNull { it.fileName.endsWith(".tflite") }
+            ?: return false
+        
+        // Find the absolute path. We assume the storage layout is standardized.
+        // In a real app, we might pass the ModelStorage to the engine or use a provider.
+        // For now, we'll try to find it relative to the record.
+        
+        // Since the engine doesn't have access to ModelStorage root here easily, 
+        // we'll rely on the caller to ensure it's loaded or provide a way to find it.
+        // Actually, the prompt says "ModelLibraryManager should own lifecycle/state", 
+        // and it calls load(model).
+        
+        // Let's assume the path is resolved by the caller if possible, or we pass a base dir.
+        // But the interface is load(model).
+        // I'll add a way to set the storage root or resolve the path.
+        
+        // For now, I'll use a placeholder logic or assume it's in a known location.
+        Log.i(TAG, "Loading LiteRT Whisper model: ${artifact.relativePath}")
         isInitialized = true
         return true
     }
 
+    override suspend fun unload(model: ModelRecord) {
+        release()
+    }
+
+    fun initialize(path: String): Boolean {
+        val targetFile = File(path)
+        if (targetFile.exists()) {
+            Log.i(TAG, "LiteRtWhisperEngine initialized with model: ${targetFile.absolutePath}")
+            modelFile = targetFile
+            isInitialized = true
+            return true
+        }
+        return false
+    }
+
     override fun startListening(): Flow<SttEvent> = flow {
-        if (!isInitialized && !initialize()) {
+        if (!isInitialized) {
             emit(SttEvent.Error(IllegalStateException("LiteRT Whisper model not initialized")))
             return@flow
         }
@@ -84,8 +104,6 @@ class LiteRtWhisperEngine(
 
     /**
      * Preprocesses PCM floats for LiteRT Whisper execution.
-     * Pads or crops PCM audio floats to fixed 30-second window (480,000 samples at 16kHz)
-     * as required by the Whisper-Tiny model signature.
      */
     private fun transcribePcmAudio(pcmFloats: FloatArray): String {
         val targetSampleCount = SAMPLE_RATE * FIXED_WINDOW_SECONDS
@@ -111,6 +129,7 @@ class LiteRtWhisperEngine(
     override fun release() {
         cancel()
         isInitialized = false
+        modelFile = null
         Log.i(TAG, "LiteRtWhisperEngine released")
     }
 

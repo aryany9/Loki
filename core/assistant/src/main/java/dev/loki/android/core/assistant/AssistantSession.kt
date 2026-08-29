@@ -2,6 +2,7 @@ package dev.loki.android.core.assistant
 
 import android.util.Log
 import dev.loki.android.core.conversation.ConversationEvent
+import dev.loki.android.core.models.ModelRuntime
 import dev.loki.android.core.voice.stt.SttEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -29,12 +30,29 @@ class AssistantSession(
 
     fun startTurn() {
         cancelTurn()
-        _state.value = AssistantState.Listening()
-        Log.i(TAG, "Turn started -> State: Listening")
 
         val provider = AssistantSessionProvider.instance
+        val modelManager = provider?.getModelLibraryManager()
         val sttEngine = provider?.getSttEngine()
         val conversationManager = provider?.getConversationManager()
+
+        if (modelManager != null) {
+            if (!modelManager.isRuntimeReady(ModelRuntime.LITERT_LM)) {
+                val err = "LLM model not loaded. Please complete setup."
+                Log.w(TAG, err)
+                _state.value = AssistantState.Error(err)
+                return
+            }
+            if (!modelManager.isRuntimeReady(ModelRuntime.LITERT_ASR)) {
+                val err = "Voice recognition model not loaded. Please complete setup."
+                Log.w(TAG, err)
+                _state.value = AssistantState.Error(err)
+                return
+            }
+        }
+
+        _state.value = AssistantState.Listening()
+        Log.i(TAG, "Turn started -> State: Listening")
 
         if (sttEngine == null || conversationManager == null) {
             val err = "Assistant provider components not initialized"

@@ -1,11 +1,12 @@
-package dev.loki.android.core.llm
+package dev.loki.android.core.models
 
 import kotlinx.serialization.Serializable
 
 @Serializable
 enum class ModelRuntime {
     LITERT_LM,
-    LITERT_ASR
+    LITERT_ASR,
+    CUSTOM_TTS
 }
 
 @Serializable
@@ -45,19 +46,23 @@ data class ModelMetadataField<T>(
 )
 
 @Serializable
+data class ModelArtifact(
+    val fileName: String,
+    val relativePath: String,
+    val sizeBytes: Long,
+    val sha256: String? = null,
+    val url: String
+)
+
+@Serializable
 data class ModelRecord(
     val id: String,
     val displayName: String,
     val family: ModelMetadataField<String> = ModelMetadataField(),
-    val runtime: ModelRuntime = ModelRuntime.LITERT_LM,
-    val format: ModelFormat = ModelFormat.LITERT_MODEL,
-    val artifactPath: String,
-    val artifactFileName: String,
-    val sizeBytes: Long,
+    val runtime: ModelRuntime,
+    val format: ModelFormat,
+    val artifacts: List<ModelArtifact>,
     val source: ModelSource,
-    val sourceUrl: String? = null,
-    val sha256: String? = null,
-    val capabilities: List<String> = emptyList(),
     val availability: ModelAvailability = ModelAvailability.DOWNLOADED,
     val importedAtEpochMs: Long,
     val lastUsedAtEpochMs: Long? = null
@@ -68,22 +73,26 @@ data class ModelCatalogEntry(
     val id: String,
     val displayName: String,
     val family: String? = null,
-    val runtime: ModelRuntime = ModelRuntime.LITERT_LM,
-    val format: ModelFormat = ModelFormat.LITERT_MODEL,
-    val artifactUrl: String,
-    val expectedSizeBytes: Long? = null,
-    val sha256: String? = null,
+    val runtime: ModelRuntime,
+    val format: ModelFormat,
+    val artifacts: List<ModelArtifact>,
     val capabilities: List<String> = emptyList()
+)
+
+@Serializable
+data class ModelCatalog(
+    val schemaVersion: Int = 1,
+    val models: List<ModelCatalogEntry> = emptyList()
 )
 
 @Serializable
 data class ModelManifest(
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION,
-    val activeModelId: String? = null,
+    val activeModels: Map<ModelRuntime, String> = emptyMap(),
     val models: List<ModelRecord> = emptyList()
 ) {
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 1
+        const val CURRENT_SCHEMA_VERSION = 2
     }
 }
 
@@ -130,4 +139,3 @@ data class ModelCapabilities(
     val supportsAudioInput: Boolean = false,
     val supportsVisionInput: Boolean = false
 )
-

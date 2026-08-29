@@ -1,4 +1,4 @@
-package dev.loki.android.core.llm
+package dev.loki.android.core.models
 
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig

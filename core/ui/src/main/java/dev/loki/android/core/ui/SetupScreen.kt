@@ -28,6 +28,8 @@ import dev.loki.android.core.tools.PermissionState
 @Composable
 fun SetupScreen(
     permissions: List<PermissionItem>,
+    llmReady: Boolean,
+    asrReady: Boolean,
     onRequestAllPermissions: () -> Unit,
     onCompleteSetup: () -> Unit,
     onOpenModelLibrary: (() -> Unit)? = null
@@ -90,6 +92,23 @@ fun SetupScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "AI Models Status",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "• LLM (Reasoning): ${if (llmReady) "✅ Loaded" else "❌ Required"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (llmReady) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            text = "• ASR (Voice): ${if (asrReady) "✅ Loaded" else "❌ Required"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (asrReady) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        )
                     }
                 }
             }
@@ -98,8 +117,20 @@ fun SetupScreen(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                val buttonText = when {
+                    !audioGranted -> "Grant Permissions"
+                    !llmReady || !asrReady -> "Download & Load Models"
+                    else -> "Get Started"
+                }
+
                 Button(
-                    onClick = if (!audioGranted) onRequestAllPermissions else onCompleteSetup,
+                    onClick = {
+                        when {
+                            !audioGranted -> onRequestAllPermissions()
+                            !llmReady || !asrReady -> onOpenModelLibrary?.invoke()
+                            else -> onCompleteSetup()
+                        }
+                    },
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -110,7 +141,7 @@ fun SetupScreen(
                     )
                 ) {
                     Text(
-                        text = if (!audioGranted) "Grant Permissions & Continue" else "Get Started",
+                        text = buttonText,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold
                     )

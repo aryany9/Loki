@@ -23,18 +23,19 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import dev.loki.android.core.conversation.ConversationManager
-import dev.loki.android.core.llm.LiteRtModelDetector
-import dev.loki.android.core.llm.LiteRtModelValidator
-import dev.loki.android.core.llm.ModelAvailability
-import dev.loki.android.core.llm.ModelDetection
-import dev.loki.android.core.llm.ModelFormat
 import dev.loki.android.core.llm.ModelImporter
-import dev.loki.android.core.llm.ModelLibraryManager
-import dev.loki.android.core.llm.ModelMetadataField
-import dev.loki.android.core.llm.ModelRecord
-import dev.loki.android.core.llm.ModelRuntime
-import dev.loki.android.core.llm.ModelSource
-import dev.loki.android.core.llm.ValidationResult
+import dev.loki.android.core.models.LiteRtModelDetector
+import dev.loki.android.core.models.LiteRtModelValidator
+import dev.loki.android.core.models.ModelArtifact
+import dev.loki.android.core.models.ModelAvailability
+import dev.loki.android.core.models.ModelDetection
+import dev.loki.android.core.models.ModelFormat
+import dev.loki.android.core.models.ModelLibraryManager
+import dev.loki.android.core.models.ModelMetadataField
+import dev.loki.android.core.models.ModelRecord
+import dev.loki.android.core.models.ModelRuntime
+import dev.loki.android.core.models.ModelSource
+import dev.loki.android.core.models.ValidationResult
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.ui.ChatScreen
 import dev.loki.android.core.ui.ChatViewModel
@@ -128,6 +129,8 @@ class MainActivity : ComponentActivity() {
                         AppScreen.SETUP -> {
                             SetupScreen(
                                 permissions = permissionsList,
+                                llmReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_LM),
+                                asrReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_ASR),
                                 onRequestAllPermissions = {
                                     requestRequiredPermissions()
                                 },
@@ -178,10 +181,10 @@ class MainActivity : ComponentActivity() {
                                         modelOperationProgress = null
                                     }
                                 },
-                                onEject = {
+                                onEject = { runtime ->
                                     coroutineScope.launch {
                                         modelOperationError = null
-                                        if (!modelLibraryManager.eject()) {
+                                        if (!modelLibraryManager.eject(runtime)) {
                                             modelOperationError = "No loaded model to eject."
                                         }
                                     }
@@ -239,9 +242,9 @@ class MainActivity : ComponentActivity() {
         val result = importer.copyFromUri(modelId, uri, name) { copied, total ->
             modelOperationProgress = total?.let { copied.toFloat() / it }
         }
-        if (result !is dev.loki.android.core.llm.TransferResult.Completed) {
+        if (result !is dev.loki.android.core.models.TransferResult.Completed) {
             modelOperationProgress = null
-            modelOperationError = (result as? dev.loki.android.core.llm.TransferResult.Rejected)?.reason
+            modelOperationError = (result as? dev.loki.android.core.models.TransferResult.Rejected)?.reason
                 ?: "Unable to import the selected model."
             return
         }
@@ -280,6 +283,15 @@ class MainActivity : ComponentActivity() {
                 modelOperationError = (validation as ValidationResult.Invalid).reason
                 return
             }
+            
+            val artifact = ModelArtifact(
+                fileName = pending.fileName,
+                relativePath = pending.fileName,
+                sizeBytes = pending.file.length(),
+                sha256 = knownSha256,
+                url = ""
+            )
+
             modelLibraryManager.register(
                 ModelRecord(
                     id = pending.modelId,
@@ -287,11 +299,8 @@ class MainActivity : ComponentActivity() {
                     family = ModelMetadataField(family.ifBlank { null }),
                     runtime = runtime,
                     format = format,
-                    artifactPath = pending.file.relativeTo(modelLibraryManager.managedStorage.rootDirectory).path,
-                    artifactFileName = pending.file.name,
-                    sizeBytes = pending.file.length(),
+                    artifacts = listOf(artifact),
                     source = ModelSource.LOCAL_IMPORT,
-                    sha256 = knownSha256,
                     availability = ModelAvailability.DOWNLOADED,
                     importedAtEpochMs = System.currentTimeMillis()
                 )

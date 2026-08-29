@@ -1,4 +1,4 @@
-package dev.loki.android.core.llm
+package dev.loki.android.core.models
 
 import java.io.File
 import java.io.InputStream
@@ -45,13 +45,13 @@ class ModelTransfer {
     }
 
     fun finalizePart(partFile: File, finalFile: File) {
-        require(partFile.isFile) { "Temporary model artifact does not exist" }
+        require(partFile.isFile) { "Temporary model artifact does not exist: ${partFile.absolutePath}" }
         finalFile.parentFile?.mkdirs()
         if (finalFile.exists() && !finalFile.delete()) {
-            throw IllegalStateException("Unable to replace model artifact")
+            throw IllegalStateException("Unable to replace model artifact: ${finalFile.absolutePath}")
         }
         if (!partFile.renameTo(finalFile)) {
-            throw IllegalStateException("Unable to finalize model artifact")
+            throw IllegalStateException("Unable to finalize model artifact: ${finalFile.absolutePath}")
         }
     }
 

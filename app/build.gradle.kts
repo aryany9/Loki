@@ -50,6 +50,7 @@ android {
 
 dependencies {
     implementation(platform(libs.kotlinx.coroutines.bom))
+    implementation(project(":core:models"))
     implementation(project(":core:assistant"))
     implementation(project(":core:conversation"))
     implementation(project(":core:llm"))

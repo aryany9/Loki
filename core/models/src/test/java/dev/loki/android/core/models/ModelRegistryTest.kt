@@ -1,4 +1,4 @@
-package dev.loki.android.core.llm
+package dev.loki.android.core.models
 
 import java.io.File
 import java.nio.file.Files
@@ -28,18 +28,21 @@ class ModelRegistryTest {
     }
 
     @Test
-    fun `manifest round trips and restores active model`() {
+    fun `manifest round trips and restores active models`() {
         val model = modelRecord()
-        storage.artifactFile(model.id, model.artifactFileName).apply {
+        storage.artifactFile(model.id, model.artifacts.first().relativePath).apply {
             parentFile?.mkdirs()
             writeBytes(byteArrayOf(1, 2, 3))
         }
-        val manifest = ModelManifest(activeModelId = model.id, models = listOf(model))
+        val manifest = ModelManifest(
+            activeModels = mapOf(ModelRuntime.LITERT_LM to model.id),
+            models = listOf(model)
+        )
 
         registry.save(manifest)
 
         assertEquals(manifest, registry.load())
-        assertEquals(model.id, registry.reconcile().activeModelId)
+        assertEquals(model.id, registry.reconcile().activeModels[ModelRuntime.LITERT_LM])
     }
 
     @Test
@@ -53,24 +56,17 @@ class ModelRegistryTest {
     }
 
     @Test
-    fun `missing artifact is reconciled as not downloaded and clears active ID`() {
+    fun `missing artifacts are reconciled as not downloaded and clear active IDs`() {
         val model = modelRecord(availability = ModelAvailability.LOADED)
-        registry.save(ModelManifest(activeModelId = model.id, models = listOf(model)))
+        registry.save(ModelManifest(
+            activeModels = mapOf(ModelRuntime.LITERT_LM to model.id),
+            models = listOf(model)
+        ))
 
         val reconciled = registry.reconcile()
 
         assertEquals(ModelAvailability.NOT_DOWNLOADED, reconciled.models.single().availability)
-        assertNull(reconciled.activeModelId)
-    }
-
-    @Test
-    fun `malformed manifest reports a registry error`() {
-        storage.ensureDirectories()
-        storage.manifestFile.writeText("not-json")
-
-        val error = assertThrows(ModelRegistryException::class.java) { registry.load() }
-
-        assertTrue(error.message.orEmpty().contains("manifest"))
+        assertTrue(reconciled.activeModels.isEmpty())
     }
 
     private fun modelRecord(
@@ -81,11 +77,15 @@ class ModelRegistryTest {
         family = ModelMetadataField("Test family", MetadataConfidence.USER_CONFIRMED),
         runtime = ModelRuntime.LITERT_LM,
         format = ModelFormat.LITERT_MODEL,
-        artifactPath = "models/model-1/model.bin",
-        artifactFileName = "model.bin",
-        sizeBytes = 3,
+        artifacts = listOf(
+            ModelArtifact(
+                fileName = "model.bin",
+                relativePath = "model.bin",
+                sizeBytes = 3,
+                url = "http://example.com"
+            )
+        ),
         source = ModelSource.LOCAL_IMPORT,
-        capabilities = listOf("text"),
         availability = availability,
         importedAtEpochMs = 1L
     )

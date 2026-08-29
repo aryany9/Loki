@@ -23,11 +23,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import dev.loki.android.core.llm.ModelAvailability
-import dev.loki.android.core.llm.ModelCatalogEntry
-import dev.loki.android.core.llm.ModelFormat
-import dev.loki.android.core.llm.ModelRecord
-import dev.loki.android.core.llm.ModelRuntime
+import dev.loki.android.core.models.ModelAvailability
+import dev.loki.android.core.models.ModelCatalogEntry
+import dev.loki.android.core.models.ModelFormat
+import dev.loki.android.core.models.ModelRecord
+import dev.loki.android.core.models.ModelRuntime
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,7 +36,7 @@ fun ModelLibraryScreen(
     onNavigateBack: () -> Unit,
     onImport: () -> Unit,
     onLoad: (String) -> Unit,
-    onEject: () -> Unit,
+    onEject: (ModelRuntime) -> Unit,
     onDelete: (String) -> Unit,
     pendingImportName: String? = null,
     onConfirmImport: (String, String, ModelRuntime, ModelFormat) -> Unit = { _, _, _, _ -> },
@@ -133,7 +133,7 @@ fun ModelLibraryScreen(
                             Text("${model.format} · ${model.availability}")
                         }
                         when (model.availability) {
-                            ModelAvailability.LOADED -> Button(onClick = onEject) { Text("Eject") }
+                            ModelAvailability.LOADED -> Button(onClick = { onEject(model.runtime) }) { Text("Eject") }
                             ModelAvailability.DOWNLOADED -> Button(onClick = { onLoad(model.id) }) { Text("Load") }
                             ModelAvailability.NOT_DOWNLOADED -> Unit
                         }

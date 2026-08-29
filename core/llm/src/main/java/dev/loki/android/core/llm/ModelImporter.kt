@@ -2,6 +2,9 @@ package dev.loki.android.core.llm
 
 import android.content.Context
 import android.net.Uri
+import dev.loki.android.core.models.ModelStorage
+import dev.loki.android.core.models.ModelTransfer
+import dev.loki.android.core.models.TransferResult
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
