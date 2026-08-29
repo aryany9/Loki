@@ -42,6 +42,4 @@ Single-module change plus one dependency addition; no data migration. Rollback =
 
 ## Open Questions
 
-~~- Confirm the exact LiteRT runtime artifact choice (e.g. `com.google.ai.edge.litert:litert-*` vs `org.tensorflow:tensorflow-lite:2.17+`) with composite-op support for `odml.group_norm` / `odml.scaled_dot_product_attention` — first implementation task resolves this.~~
-
-**Resolved (2026-08-29):** The project already has a complete **whisper.cpp JNI backend** (`core/voice/stt/src/main/cpp/`) — `lokiwhisper` native library built from whisper.cpp source, with `WhisperBridge.kt` exposing `nativeInitWhisper`, `nativeFreeWhisper`, and `nativeTranscribe`. This is the GGUF route, not TFLite. No new runtime dependency is required. `LiteRtWhisperEngine` shall delegate inference to `WhisperBridge` instead of the hardcoded placeholder. The artifact accepted by whisper.cpp is a GGML `.bin` or `.gguf` format model file (resolved from storage via `ModelStorage`). The TFLite `.tflite` artifact filter in `load()` must be relaxed to also accept `.bin`/`.gguf` for the whisper.cpp GGUF model variant.
+- Confirm the exact LiteRT runtime artifact choice (e.g. `com.google.ai.edge.litert:litert-*` vs `org.tensorflow:tensorflow-lite:2.17+`) with composite-op support for `odml.group_norm` / `odml.scaled_dot_product_attention` — first implementation task resolves this.
