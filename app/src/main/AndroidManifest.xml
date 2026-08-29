@@ -4,7 +4,8 @@
     <uses-feature
         android:name="android.hardware.telephony"
         android:required="false" />
-
+    <!-- Internet permission — required for downloading local models -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Audio recording permission — required for voice sessions -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Phone and Contacts permissions for assistant tools -->

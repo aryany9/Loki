@@ -3,6 +3,7 @@ package dev.loki.android.core.voice.stt
 import android.util.Log
 import dev.loki.android.core.models.ModelRecord
 import dev.loki.android.core.models.ModelRuntimeController
+import dev.loki.android.core.models.ModelStorage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -14,37 +15,43 @@ import java.io.File
 /**
  * LiteRtWhisperEngine provides on-device speech-to-text transcription using LiteRT-based
  * Whisper ASR execution (litert-community/whisper-tiny) and AudioRecorder energy VAD.
+ *
+ * [storage] is the centralized [ModelStorage] instance; it is used by [load] to resolve
+ * the artifact path from the model registry rather than accepting a raw path externally.
  */
-class LiteRtWhisperEngine : SttEngine, ModelRuntimeController {
+class LiteRtWhisperEngine(
+    private val storage: ModelStorage
+) : SttEngine, ModelRuntimeController {
 
     private var audioRecorder: AudioRecorder? = null
     @Volatile override var isListening: Boolean = false
         private set
 
     @Volatile private var isInitialized: Boolean = false
+//    @Volatile private var nativeHandle: Long = 0L
     private var modelFile: File? = null
 
+    /**
+     * Resolves the `.tflite` artifact through [storage] and initializes the engine.
+     * Returns false if no `.tflite` artifact is present, the file does not exist on disk,
+     * or initialization fails.
+     */
     override suspend fun load(model: ModelRecord): Boolean {
         val artifact = model.artifacts.firstOrNull { it.fileName.endsWith(".tflite") }
             ?: return false
-        
-        // Find the absolute path. We assume the storage layout is standardized.
-        // In a real app, we might pass the ModelStorage to the engine or use a provider.
-        // For now, we'll try to find it relative to the record.
-        
-        // Since the engine doesn't have access to ModelStorage root here easily, 
-        // we'll rely on the caller to ensure it's loaded or provide a way to find it.
-        // Actually, the prompt says "ModelLibraryManager should own lifecycle/state", 
-        // and it calls load(model).
-        
-        // Let's assume the path is resolved by the caller if possible, or we pass a base dir.
-        // But the interface is load(model).
-        // I'll add a way to set the storage root or resolve the path.
-        
-        // For now, I'll use a placeholder logic or assume it's in a known location.
-        Log.i(TAG, "Loading LiteRT Whisper model: ${artifact.relativePath}")
-        isInitialized = true
-        return true
+
+//        val artifact = model.artifacts.firstOrNull {
+//            it.fileName.endsWith(".bin") || it.fileName.endsWith(".gguf") || it.fileName.endsWith(".tflite")
+//        } ?: model.artifacts.firstOrNull() ?: return false
+
+        val resolvedFile = storage.artifactFile(model.id, artifact.relativePath)
+        if (!resolvedFile.exists()) {
+            Log.w(TAG, "Artifact not found on disk: ${resolvedFile.absolutePath}")
+            return false
+        }
+
+        Log.i(TAG, "Loading LiteRT Whisper model from: ${resolvedFile.absolutePath}")
+        return initialize(resolvedFile.absolutePath)
     }
 
     override suspend fun unload(model: ModelRecord) {
@@ -64,7 +71,7 @@ class LiteRtWhisperEngine : SttEngine, ModelRuntimeController {
 
     override fun startListening(): Flow<SttEvent> = flow {
         if (!isInitialized) {
-            emit(SttEvent.Error(IllegalStateException("LiteRT Whisper model not initialized")))
+            emit(SttEvent.Error(IllegalStateException("Whisper model not initialized")))
             return@flow
         }
 

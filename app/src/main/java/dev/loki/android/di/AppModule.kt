@@ -10,6 +10,8 @@ import dev.loki.android.core.conversation.ConversationManager
 import dev.loki.android.core.llm.LiteRtLlmEngine
 import dev.loki.android.core.llm.LlmEngine
 import dev.loki.android.core.llm.ModelManager
+import dev.loki.android.core.models.ModelCatalog
+import dev.loki.android.core.models.ModelCatalogRepository
 import dev.loki.android.core.models.ModelLibraryManager
 import dev.loki.android.core.models.ModelRuntime
 import dev.loki.android.core.models.ModelRuntimeController
@@ -64,8 +66,8 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideSttEngine(): SttEngine {
-        return LiteRtWhisperEngine()
+    fun provideSttEngine(modelManager: ModelManager): SttEngine {
+        return LiteRtWhisperEngine(storage = modelManager.modelStorage)
     }
 
     @Provides
@@ -113,5 +115,11 @@ object AppModule {
         }
         
         return manager
+    }
+
+    @Provides
+    @Singleton
+    fun provideBundledCatalog(@ApplicationContext context: Context): ModelCatalog {
+        return ModelCatalogRepository().loadBundled(context.assets)
     }
 }

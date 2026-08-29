@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    {
+      "id": "whisper-tiny-litert",
+      "displayName": "Whisper Tiny (ASR)",
+      "family": "Whisper",
+      "runtime": "LITERT_ASR",
+      "format": "TFLITE",
+      "artifacts": [
+        {
+          "fileName": "whisper_tiny_30s_f32.tflite",
+          "relativePath": "whisper_tiny_30s_f32.tflite",
+          "sizeBytes": 150979184,
+          "sha256": "0c8f0e2a1855909a0c027b4ac3c586fdd299e2b47bf1a4fdab51191bca1e0e89",
+          "url": "https://huggingface.co/litert-community/whisper-tiny/resolve/main/whisper_tiny_30s_f32.tflite"
+        }
+      ],
+      "capabilities": ["voice-recognition", "offline-stt"]
+    }
+  ]
+}
