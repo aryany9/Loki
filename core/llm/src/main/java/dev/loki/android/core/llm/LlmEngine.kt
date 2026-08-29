@@ -1,5 +1,7 @@
 package dev.loki.android.core.llm
 
+import dev.loki.android.core.models.AgentConfig
+import dev.loki.android.core.models.ModelCapabilities
 import kotlinx.coroutines.flow.StateFlow
 
 sealed interface LlmModelState {

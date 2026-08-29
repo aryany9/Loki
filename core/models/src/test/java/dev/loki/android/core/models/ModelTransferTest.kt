@@ -1,4 +1,4 @@
-package dev.loki.android.core.llm
+package dev.loki.android.core.models
 
 import java.io.ByteArrayInputStream
 import java.io.File

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import dev.loki.android.core.conversation.ConversationEvent
 import dev.loki.android.core.conversation.ConversationManager
 import dev.loki.android.core.llm.LlmModelState
+import dev.loki.android.core.models.ModelRuntime
 import dev.loki.android.core.voice.stt.SttEngine
 import dev.loki.android.core.voice.stt.SttEvent
 import kotlinx.coroutines.flow.MutableStateFlow

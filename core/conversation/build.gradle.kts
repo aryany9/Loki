@@ -32,6 +32,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:models"))
     implementation(project(":core:tools"))
     implementation(project(":core:llm"))
     implementation(project(":core:voice:stt"))

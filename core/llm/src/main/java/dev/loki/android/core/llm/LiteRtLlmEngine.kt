@@ -10,6 +10,12 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
+import dev.loki.android.core.models.AgentConfig
+import dev.loki.android.core.models.ExecutionBackend
+import dev.loki.android.core.models.ModelCapabilities
+import dev.loki.android.core.models.ModelRecord
+import dev.loki.android.core.models.ModelRuntimeController
+import dev.loki.android.core.models.RuntimeConfig
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,7 +55,18 @@ import kotlinx.coroutines.withContext
 class LiteRtLlmEngine(
     private val context: Context,
     private val modelManager: ModelManager
-) : LlmEngine {
+) : LlmEngine, ModelRuntimeController {
+
+    override suspend fun load(model: ModelRecord): Boolean {
+        val artifact = model.artifacts.firstOrNull { it.fileName.endsWith(".litertlm") }
+            ?: return false
+        val path = File(modelManager.getStorageRoot(), "models/${model.id}/${artifact.relativePath}").absolutePath
+        return initializeAsync(path)
+    }
+
+    override suspend fun unload(model: ModelRecord) {
+        release()
+    }
 
     override val promptFormat: ModelPromptFormat = ModelPromptFormat.GEMMA
 

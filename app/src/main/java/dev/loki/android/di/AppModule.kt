@@ -9,19 +9,20 @@ import dagger.hilt.components.SingletonComponent
 import dev.loki.android.core.conversation.ConversationManager
 import dev.loki.android.core.llm.LiteRtLlmEngine
 import dev.loki.android.core.llm.LlmEngine
-import dev.loki.android.core.llm.ModelLibraryManager
 import dev.loki.android.core.llm.ModelManager
-import dev.loki.android.core.llm.ModelRuntimeController
+import dev.loki.android.core.models.ModelCatalog
+import dev.loki.android.core.models.ModelCatalogRepository
+import dev.loki.android.core.models.ModelLibraryManager
+import dev.loki.android.core.models.ModelRuntime
+import dev.loki.android.core.models.ModelRuntimeController
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.local.DefaultLocalTools
 import dev.loki.android.core.ui.theme.ThemeRepository
+import dev.loki.android.core.voice.stt.LiteRtWhisperEngine
 import dev.loki.android.core.voice.stt.SttEngine
-import dev.loki.android.core.voice.stt.WhisperModelManager
-import dev.loki.android.core.voice.stt.WhisperSttEngine
 import dev.loki.android.core.voice.tts.AndroidTtsEngine
 import dev.loki.android.core.voice.tts.TtsEngine
-import java.io.File
 import javax.inject.Singleton
 
 @Module
@@ -65,14 +66,8 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideWhisperModelManager(@ApplicationContext context: Context): WhisperModelManager {
-        return WhisperModelManager(context)
-    }
-
-    @Provides
-    @Singleton
-    fun provideSttEngine(whisperModelManager: WhisperModelManager): SttEngine {
-        return WhisperSttEngine(whisperModelManager)
+    fun provideSttEngine(modelManager: ModelManager): SttEngine {
+        return LiteRtWhisperEngine(storage = modelManager.modelStorage)
     }
 
     @Provides
@@ -103,22 +98,28 @@ object AppModule {
     @Singleton
     fun provideModelLibraryManager(
         modelManager: ModelManager,
-        llmEngine: LlmEngine
+        llmEngine: LlmEngine,
+        sttEngine: SttEngine
     ): ModelLibraryManager {
-        return ModelLibraryManager(
+        val manager = ModelLibraryManager(
             storage = modelManager.modelStorage,
-            registry = modelManager.modelRegistry,
-            runtime = object : ModelRuntimeController {
-                override suspend fun load(model: dev.loki.android.core.llm.ModelRecord): Boolean {
-                    return llmEngine.initializeAsync(
-                        File(modelManager.modelStorage.rootDirectory, model.artifactPath).absolutePath
-                    )
-                }
-
-                override suspend fun unload(model: dev.loki.android.core.llm.ModelRecord) {
-                    llmEngine.release()
-                }
-            }
+            registry = modelManager.modelRegistry
         )
+        
+        // Register runtimes
+        (llmEngine as? ModelRuntimeController)?.let { 
+            manager.registerRuntime(ModelRuntime.LITERT_LM, it) 
+        }
+        (sttEngine as? ModelRuntimeController)?.let { 
+            manager.registerRuntime(ModelRuntime.LITERT_ASR, it) 
+        }
+        
+        return manager
+    }
+
+    @Provides
+    @Singleton
+    fun provideBundledCatalog(@ApplicationContext context: Context): ModelCatalog {
+        return ModelCatalogRepository().loadBundled(context.assets)
     }
 }

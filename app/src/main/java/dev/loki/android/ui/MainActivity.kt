@@ -23,18 +23,23 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import dev.loki.android.core.conversation.ConversationManager
-import dev.loki.android.core.llm.LiteRtModelDetector
-import dev.loki.android.core.llm.LiteRtModelValidator
-import dev.loki.android.core.llm.ModelAvailability
-import dev.loki.android.core.llm.ModelDetection
-import dev.loki.android.core.llm.ModelFormat
 import dev.loki.android.core.llm.ModelImporter
-import dev.loki.android.core.llm.ModelLibraryManager
-import dev.loki.android.core.llm.ModelMetadataField
-import dev.loki.android.core.llm.ModelRecord
-import dev.loki.android.core.llm.ModelRuntime
-import dev.loki.android.core.llm.ModelSource
-import dev.loki.android.core.llm.ValidationResult
+import dev.loki.android.core.models.DownloadResult
+import dev.loki.android.core.models.LiteRtModelDetector
+import dev.loki.android.core.models.LiteRtModelValidator
+import dev.loki.android.core.models.ModelArtifact
+import dev.loki.android.core.models.ModelAvailability
+import dev.loki.android.core.models.ModelCatalog
+import dev.loki.android.core.models.ModelCatalogEntry
+import dev.loki.android.core.models.ModelDetection
+import dev.loki.android.core.models.ModelDownloader
+import dev.loki.android.core.models.ModelFormat
+import dev.loki.android.core.models.ModelLibraryManager
+import dev.loki.android.core.models.ModelMetadataField
+import dev.loki.android.core.models.ModelRecord
+import dev.loki.android.core.models.ModelRuntime
+import dev.loki.android.core.models.ModelSource
+import dev.loki.android.core.models.ValidationResult
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.ui.ChatScreen
 import dev.loki.android.core.ui.ChatViewModel
@@ -47,8 +52,12 @@ import dev.loki.android.core.ui.theme.ThemeMode
 import dev.loki.android.core.ui.theme.ThemeRepository
 import dev.loki.android.core.voice.stt.SttEngine
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class AppScreen {
     SETUP,
@@ -76,6 +85,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var modelLibraryManager: ModelLibraryManager
+
+    @Inject
+    lateinit var bundledCatalog: ModelCatalog
 
     private lateinit var chatViewModel: ChatViewModel
 
@@ -108,15 +120,31 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val themeMode by themeRepository.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
-            val isFirstRunComplete by themeRepository.isFirstRunComplete.collectAsState(initial = true)
             val coroutineScope = rememberCoroutineScope()
             val modelManifest by modelLibraryManager.manifest.collectAsState()
 
             var currentScreen by remember { mutableStateOf<AppScreen?>(null) }
 
-            LaunchedEffect(isFirstRunComplete) {
-                if (currentScreen == null) {
-                    currentScreen = if (!isFirstRunComplete) AppScreen.SETUP else AppScreen.CHAT
+            // Navigation gate: runtime readiness drives routing, not isFirstRunComplete.
+            // Auto-transition SETUP → CHAT once both mandatory runtimes are LOADED.
+            // Never auto-transition CHAT → SETUP mid-session to avoid disrupting active use.
+            val bothReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_LM) &&
+                modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_ASR)
+
+            LaunchedEffect(modelManifest) {
+                when {
+                    currentScreen == null -> {
+                        // Cold start: route based on readiness
+                        currentScreen = if (bothReady) AppScreen.CHAT else AppScreen.SETUP
+                    }
+                    currentScreen == AppScreen.SETUP && bothReady -> {
+                        // Both runtimes became ready while on Setup — auto-advance
+                        currentScreen = AppScreen.CHAT
+                    }
+                    currentScreen == AppScreen.CHAT && !bothReady -> {
+                        // A required runtime was lost while in Chat (e.g., model deleted) — return to Setup
+                        currentScreen = AppScreen.SETUP
+                    }
                 }
             }
 
@@ -128,6 +156,10 @@ class MainActivity : ComponentActivity() {
                         AppScreen.SETUP -> {
                             SetupScreen(
                                 permissions = permissionsList,
+                                models = modelManifest.models,
+                                catalog = bundledCatalog.models,
+                                llmReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_LM),
+                                asrReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_ASR),
                                 onRequestAllPermissions = {
                                     requestRequiredPermissions()
                                 },
@@ -137,12 +169,8 @@ class MainActivity : ComponentActivity() {
                                         currentScreen = AppScreen.CHAT
                                     }
                                 },
-                                onOpenModelLibrary = if (modelManifest.models.none {
-                                        it.availability != ModelAvailability.NOT_DOWNLOADED
-                                    }) {
-                                    { currentScreen = AppScreen.MODEL_LIBRARY }
-                                } else {
-                                    null
+                                onProvisionRuntime = {
+                                    currentScreen = AppScreen.MODEL_LIBRARY
                                 }
                             )
                         }
@@ -163,7 +191,11 @@ class MainActivity : ComponentActivity() {
                         AppScreen.MODEL_LIBRARY -> {
                             ModelLibraryScreen(
                                 models = modelManifest.models,
-                                onNavigateBack = { currentScreen = AppScreen.CHAT },
+                                onNavigateBack = {
+                                    // Return to Setup if not all runtimes are ready yet,
+                                    // otherwise return to Chat.
+                                    currentScreen = if (bothReady) AppScreen.CHAT else AppScreen.SETUP
+                                },
                                 onImport = {
                                     modelOperationError = null
                                     importModelLauncher.launch(arrayOf("application/octet-stream", "application/*"))
@@ -178,10 +210,10 @@ class MainActivity : ComponentActivity() {
                                         modelOperationProgress = null
                                     }
                                 },
-                                onEject = {
+                                onEject = { runtime ->
                                     coroutineScope.launch {
                                         modelOperationError = null
-                                        if (!modelLibraryManager.eject()) {
+                                        if (!modelLibraryManager.eject(runtime)) {
                                             modelOperationError = "No loaded model to eject."
                                         }
                                     }
@@ -206,6 +238,12 @@ class MainActivity : ComponentActivity() {
                                 onCancelImport = {
                                     pendingImport?.file?.parentFile?.deleteRecursively()
                                     pendingImport = null
+                                },
+                                catalog = bundledCatalog.models,
+                                onDownload = { entry ->
+                                    coroutineScope.launch {
+                                        downloadCatalogEntry(entry)
+                                    }
                                 },
                                 operationProgress = modelOperationProgress,
                                 errorMessage = modelOperationError
@@ -239,9 +277,9 @@ class MainActivity : ComponentActivity() {
         val result = importer.copyFromUri(modelId, uri, name) { copied, total ->
             modelOperationProgress = total?.let { copied.toFloat() / it }
         }
-        if (result !is dev.loki.android.core.llm.TransferResult.Completed) {
+        if (result !is dev.loki.android.core.models.TransferResult.Completed) {
             modelOperationProgress = null
-            modelOperationError = (result as? dev.loki.android.core.llm.TransferResult.Rejected)?.reason
+            modelOperationError = (result as? dev.loki.android.core.models.TransferResult.Rejected)?.reason
                 ?: "Unable to import the selected model."
             return
         }
@@ -280,6 +318,15 @@ class MainActivity : ComponentActivity() {
                 modelOperationError = (validation as ValidationResult.Invalid).reason
                 return
             }
+            
+            val artifact = ModelArtifact(
+                fileName = pending.fileName,
+                relativePath = pending.fileName,
+                sizeBytes = pending.file.length(),
+                sha256 = knownSha256,
+                url = ""
+            )
+
             modelLibraryManager.register(
                 ModelRecord(
                     id = pending.modelId,
@@ -287,11 +334,8 @@ class MainActivity : ComponentActivity() {
                     family = ModelMetadataField(family.ifBlank { null }),
                     runtime = runtime,
                     format = format,
-                    artifactPath = pending.file.relativeTo(modelLibraryManager.managedStorage.rootDirectory).path,
-                    artifactFileName = pending.file.name,
-                    sizeBytes = pending.file.length(),
+                    artifacts = listOf(artifact),
                     source = ModelSource.LOCAL_IMPORT,
-                    sha256 = knownSha256,
                     availability = ModelAvailability.DOWNLOADED,
                     importedAtEpochMs = System.currentTimeMillis()
                 )
@@ -360,6 +404,86 @@ class MainActivity : ComponentActivity() {
         }
         if (ungranted.isNotEmpty()) {
             requestPermissionLauncher.launch(ungranted.toTypedArray())
+        }
+    }
+
+    /**
+     * Downloads all artifacts for a [ModelCatalogEntry] using [ModelDownloader] and registers
+     * the resulting [ModelRecord] with [ModelLibraryManager].
+     *
+     * Progress is reflected through [modelOperationProgress] and errors through [modelOperationError].
+     */
+    private suspend fun downloadCatalogEntry(entry: ModelCatalogEntry) {
+        // Skip if already registered
+        if (modelLibraryManager.manifest.value.models.any { it.id == entry.id }) {
+            modelOperationError = "${entry.displayName} is already in the model library."
+            return
+        }
+
+        modelOperationError = null
+        modelOperationProgress = 0f
+
+        val downloader = ModelDownloader(modelLibraryManager.managedStorage)
+        val downloadedArtifacts = mutableListOf<ModelArtifact>()
+        val totalArtifacts = entry.artifacts.size
+
+        try {
+            entry.artifacts.forEachIndexed { index, artifact ->
+                val connection = withContext(Dispatchers.IO) {
+                    (URL(artifact.url).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 15_000
+                        readTimeout = 60_000
+                        requestMethod = "GET"
+                        connect()
+                    }
+                }
+
+                val result = withContext(Dispatchers.IO) {
+                    connection.inputStream.use { stream ->
+                        downloader.downloadArtifact(
+                            modelId = entry.id,
+                            artifact = artifact,
+                            input = stream,
+                            onProgress = { bytesCopied, totalBytes ->
+                                val artifactProgress = totalBytes?.let { bytesCopied.toFloat() / it } ?: -1f
+                                // Weight progress across multiple artifacts
+                                modelOperationProgress = (index + artifactProgress.coerceIn(0f, 1f)) / totalArtifacts
+                            }
+                        )
+                    }
+                }
+
+                when (result) {
+                    is DownloadResult.Completed -> {
+                        downloadedArtifacts.add(
+                            artifact.copy(sha256 = result.sha256)
+                        )
+                    }
+                    is DownloadResult.Failed -> {
+                        modelOperationError = "Download failed: ${result.reason}"
+                        modelOperationProgress = null
+                        return
+                    }
+                }
+            }
+
+            modelLibraryManager.register(
+                ModelRecord(
+                    id = entry.id,
+                    displayName = entry.displayName,
+                    family = ModelMetadataField(entry.family),
+                    runtime = entry.runtime,
+                    format = entry.format,
+                    artifacts = downloadedArtifacts,
+                    source = ModelSource.BUNDLED_CATALOG,
+                    availability = ModelAvailability.DOWNLOADED,
+                    importedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        } catch (e: Exception) {
+            modelOperationError = "Download error: ${e.message ?: "Unknown error"}"
+        } finally {
+            modelOperationProgress = null
         }
     }
 }

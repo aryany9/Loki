@@ -28,6 +28,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:models"))
     implementation(project(":core:llm"))
     implementation(project(":core:conversation"))
     implementation(project(":core:voice:stt"))

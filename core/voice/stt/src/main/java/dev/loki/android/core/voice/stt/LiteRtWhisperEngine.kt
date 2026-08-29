@@ -1,6 +1,9 @@
 package dev.loki.android.core.voice.stt
 
 import android.util.Log
+import dev.loki.android.core.models.ModelRecord
+import dev.loki.android.core.models.ModelRuntimeController
+import dev.loki.android.core.models.ModelStorage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -12,39 +15,63 @@ import java.io.File
 /**
  * LiteRtWhisperEngine provides on-device speech-to-text transcription using LiteRT-based
  * Whisper ASR execution (litert-community/whisper-tiny) and AudioRecorder energy VAD.
+ *
+ * [storage] is the centralized [ModelStorage] instance; it is used by [load] to resolve
+ * the artifact path from the model registry rather than accepting a raw path externally.
  */
 class LiteRtWhisperEngine(
-    private val modelManager: WhisperModelManager? = null,
-    private val modelFile: File? = null
-) : SttEngine {
+    private val storage: ModelStorage
+) : SttEngine, ModelRuntimeController {
 
     private var audioRecorder: AudioRecorder? = null
     @Volatile override var isListening: Boolean = false
         private set
 
     @Volatile private var isInitialized: Boolean = false
+//    @Volatile private var nativeHandle: Long = 0L
+    private var modelFile: File? = null
 
-    fun initialize(path: String? = null): Boolean {
-        val targetFile = when {
-            path != null -> File(path)
-            modelFile != null -> modelFile
-            else -> modelManager?.getDefaultModelFile()
+    /**
+     * Resolves the `.tflite` artifact through [storage] and initializes the engine.
+     * Returns false if no `.tflite` artifact is present, the file does not exist on disk,
+     * or initialization fails.
+     */
+    override suspend fun load(model: ModelRecord): Boolean {
+        val artifact = model.artifacts.firstOrNull { it.fileName.endsWith(".tflite") }
+            ?: return false
+
+//        val artifact = model.artifacts.firstOrNull {
+//            it.fileName.endsWith(".bin") || it.fileName.endsWith(".gguf") || it.fileName.endsWith(".tflite")
+//        } ?: model.artifacts.firstOrNull() ?: return false
+
+        val resolvedFile = storage.artifactFile(model.id, artifact.relativePath)
+        if (!resolvedFile.exists()) {
+            Log.w(TAG, "Artifact not found on disk: ${resolvedFile.absolutePath}")
+            return false
         }
 
-        if (targetFile != null && targetFile.exists()) {
+        Log.i(TAG, "Loading LiteRT Whisper model from: ${resolvedFile.absolutePath}")
+        return initialize(resolvedFile.absolutePath)
+    }
+
+    override suspend fun unload(model: ModelRecord) {
+        release()
+    }
+
+    fun initialize(path: String): Boolean {
+        val targetFile = File(path)
+        if (targetFile.exists()) {
             Log.i(TAG, "LiteRtWhisperEngine initialized with model: ${targetFile.absolutePath}")
+            modelFile = targetFile
             isInitialized = true
             return true
         }
-
-        Log.i(TAG, "LiteRtWhisperEngine initialized in fallback/mock ASR mode (no local .tflite file yet)")
-        isInitialized = true
-        return true
+        return false
     }
 
     override fun startListening(): Flow<SttEvent> = flow {
-        if (!isInitialized && !initialize()) {
-            emit(SttEvent.Error(IllegalStateException("LiteRT Whisper model not initialized")))
+        if (!isInitialized) {
+            emit(SttEvent.Error(IllegalStateException("Whisper model not initialized")))
             return@flow
         }
 
@@ -84,8 +111,6 @@ class LiteRtWhisperEngine(
 
     /**
      * Preprocesses PCM floats for LiteRT Whisper execution.
-     * Pads or crops PCM audio floats to fixed 30-second window (480,000 samples at 16kHz)
-     * as required by the Whisper-Tiny model signature.
      */
     private fun transcribePcmAudio(pcmFloats: FloatArray): String {
         val targetSampleCount = SAMPLE_RATE * FIXED_WINDOW_SECONDS
@@ -111,6 +136,7 @@ class LiteRtWhisperEngine(
     override fun release() {
         cancel()
         isInitialized = false
+        modelFile = null
         Log.i(TAG, "LiteRtWhisperEngine released")
     }
 
