@@ -1,6 +1,12 @@
 package dev.loki.android.core.llm
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LlmEngineTest {
@@ -15,5 +21,89 @@ class LlmEngineTest {
     fun `LlmModelState default loading state`() {
         val state = LlmModelState.Loading("Qwen3.8-4B")
         assertEquals("Qwen3.8-4B", state.modelName)
+    }
+
+    @Test
+    fun `AgentConfig default initialization`() {
+        val config = AgentConfig()
+        assertEquals(AgentConfig.DEFAULT_SYSTEM_PROMPT, config.systemInstruction)
+        assertEquals(0.7f, config.generationConfig.temperature, 0.001f)
+        assertEquals(40, config.generationConfig.topK)
+        assertEquals(0.95f, config.generationConfig.topP, 0.001f)
+        assertNull(config.generationConfig.seed)
+        assertNull(config.generationConfig.maxOutputTokens)
+        assertEquals(ExecutionBackend.AUTOMATIC, config.runtimeConfig.backend)
+        assertNull(config.runtimeConfig.contextKvCapacity)
+    }
+
+    @Test
+    fun `AgentConfig custom configuration creation`() {
+        val genConfig = GenerationConfig(
+            temperature = 0.2f,
+            topK = 20,
+            topP = 0.8f,
+            seed = 42,
+            maxOutputTokens = 512
+        )
+        val runtimeConfig = RuntimeConfig(
+            backend = ExecutionBackend.GPU,
+            contextKvCapacity = 4096
+        )
+        val agentConfig = AgentConfig(
+            systemInstruction = "Custom instruction",
+            generationConfig = genConfig,
+            runtimeConfig = runtimeConfig
+        )
+
+        assertEquals("Custom instruction", agentConfig.systemInstruction)
+        assertEquals(0.2f, agentConfig.generationConfig.temperature, 0.001f)
+        assertEquals(20, agentConfig.generationConfig.topK)
+        assertEquals(0.8f, agentConfig.generationConfig.topP, 0.001f)
+        assertEquals(Integer.valueOf(42), agentConfig.generationConfig.seed)
+        assertEquals(Integer.valueOf(512), agentConfig.generationConfig.maxOutputTokens)
+        assertEquals(ExecutionBackend.GPU, agentConfig.runtimeConfig.backend)
+        assertEquals(Integer.valueOf(4096), agentConfig.runtimeConfig.contextKvCapacity)
+    }
+
+    @Test
+    fun `ModelCapabilities reports reliable capability defaults`() {
+        val capabilities = ModelCapabilities(
+            supportsText = true,
+            supportsToolCalling = true,
+            supportsAudioInput = false,
+            supportsVisionInput = false
+        )
+        assertTrue(capabilities.supportsText)
+        assertTrue(capabilities.supportsToolCalling)
+        assertFalse(capabilities.supportsAudioInput)
+        assertFalse(capabilities.supportsVisionInput)
+    }
+
+    @Test
+    fun `LlmEngine default startConversation delegates to AgentConfig`() = runBlocking {
+        var capturedInstruction: String? = null
+        val testEngine = object : LlmEngine {
+            override val modelState: StateFlow<LlmModelState> = MutableStateFlow(LlmModelState.Ready())
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun startConversation(agentConfig: AgentConfig): Boolean {
+                capturedInstruction = agentConfig.systemInstruction
+                return true
+            }
+            override suspend fun generate(
+                prompt: String,
+                grammar: String?,
+                maxTokens: Int,
+                onToken: ((String) -> Unit)?
+            ): Result<String> = Result.success("ok")
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        val success = testEngine.startConversation("Test system prompt")
+        assertTrue(success)
+        assertEquals("Test system prompt", capturedInstruction)
+        assertTrue(testEngine.capabilities.supportsText)
+        assertTrue(testEngine.capabilities.supportsToolCalling)
     }
 }

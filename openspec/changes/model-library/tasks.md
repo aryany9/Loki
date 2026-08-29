@@ -37,7 +37,7 @@
 
 - [x] 6.1 Add `MODEL_LIBRARY` to the existing `AppScreen` routing and provide a primary entry point from the Chat model status control.
 - [x] 6.2 Implement Model Library state collection and Compose UI for installed/catalog models, runtime/format metadata, active state, and lifecycle actions.
-- [ ] 6.3 Add SAF import and download progress/error presentation, metadata confirmation for uncertain imports, and explicit delete confirmation.
+- [x] 6.3 Add SAF import and download progress/error presentation, metadata confirmation for uncertain imports, and explicit delete confirmation.
 - [x] 6.4 Direct Setup or the initial app state to Model Library when no usable model exists, without changing chat/voice memory behavior.
 - [x] 6.5 Add Compose/UI tests for entry, empty state, model list, load/eject/delete actions, progress, and actionable failures.
 

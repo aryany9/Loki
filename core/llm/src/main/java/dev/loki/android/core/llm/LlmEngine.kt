@@ -18,13 +18,15 @@ interface LlmEngine {
     val modelState: StateFlow<LlmModelState>
     val promptFormat: ModelPromptFormat
         get() = ModelPromptFormat.CHATML
+    val capabilities: ModelCapabilities
+        get() = ModelCapabilities()
 
     fun isReady(): Boolean
 
     suspend fun initializeAsync(modelPath: String? = null): Boolean
 
     /**
-     * Initializes (or re-initializes) the persistent native Conversation with a system prompt.
+     * Initializes (or re-initializes) the persistent native Conversation with an AgentConfig.
      *
      * For LiteRT-LM, this creates a [com.google.ai.edge.litertlm.Conversation] via
      * [com.google.ai.edge.litertlm.ConversationConfig.systemInstruction] so the system prompt is
@@ -37,7 +39,11 @@ interface LlmEngine {
      *
      * @return true if the conversation was created/reset successfully; false on error.
      */
-    suspend fun startConversation(systemPrompt: String): Boolean = true
+    suspend fun startConversation(systemPrompt: String): Boolean =
+        startConversation(AgentConfig(systemInstruction = systemPrompt))
+
+    suspend fun startConversation(agentConfig: AgentConfig): Boolean = true
+
 
     /**
      * Closes and resets the persistent native Conversation, clearing all KV-cache state.

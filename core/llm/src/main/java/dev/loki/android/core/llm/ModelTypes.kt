@@ -4,12 +4,14 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 enum class ModelRuntime {
-    LITERT_LM
+    LITERT_LM,
+    LITERT_ASR
 }
 
 @Serializable
 enum class ModelFormat {
     LITERT_MODEL,
+    TFLITE,
     UNKNOWN
 }
 
@@ -87,3 +89,45 @@ data class ModelManifest(
 
 fun ModelRecord.withAvailability(availability: ModelAvailability): ModelRecord =
     copy(availability = availability)
+
+@Serializable
+enum class ExecutionBackend {
+    AUTOMATIC,
+    GPU,
+    CPU
+}
+
+@Serializable
+data class GenerationConfig(
+    val temperature: Float = 0.7f,
+    val topK: Int = 40,
+    val topP: Float = 0.95f,
+    val seed: Int? = null,
+    val maxOutputTokens: Int? = null
+)
+
+@Serializable
+data class RuntimeConfig(
+    val backend: ExecutionBackend = ExecutionBackend.AUTOMATIC,
+    val contextKvCapacity: Int? = null
+)
+
+@Serializable
+data class AgentConfig(
+    val systemInstruction: String = DEFAULT_SYSTEM_PROMPT,
+    val generationConfig: GenerationConfig = GenerationConfig(),
+    val runtimeConfig: RuntimeConfig = RuntimeConfig()
+) {
+    companion object {
+        const val DEFAULT_SYSTEM_PROMPT = "You are Loki, a private offline Android assistant running on the user's device."
+    }
+}
+
+@Serializable
+data class ModelCapabilities(
+    val supportsText: Boolean = true,
+    val supportsToolCalling: Boolean = true,
+    val supportsAudioInput: Boolean = false,
+    val supportsVisionInput: Boolean = false
+)
+

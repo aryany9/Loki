@@ -8,15 +8,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * AssistantSession is the coordinator between the Android VoiceInteractionSession
- * lifecycle and the underlying ConversationManager pipeline.
+ * AssistantSession coordinates the Android VoiceInteractionSession lifecycle,
+ * LiteRtWhisperEngine STT transcription, ConversationManager single-turn execution,
+ * and AndroidTtsEngine playback with multi-stage cancellation and error-to-Idle recovery.
  */
 class AssistantSession(
     private val onDismissCallback: (() -> Unit)? = null
@@ -28,7 +28,7 @@ class AssistantSession(
     val state: StateFlow<AssistantState> = _state.asStateFlow()
 
     fun startTurn() {
-        activeTurnJob?.cancel()
+        cancelTurn()
         _state.value = AssistantState.Listening()
         Log.i(TAG, "Turn started -> State: Listening")
 
@@ -37,13 +37,18 @@ class AssistantSession(
         val conversationManager = provider?.getConversationManager()
 
         if (sttEngine == null || conversationManager == null) {
-            Log.w(TAG, "AssistantSessionProvider not initialized yet")
+            val err = "Assistant provider components not initialized"
+            Log.w(TAG, err)
+            _state.value = AssistantState.Error(err)
             return
         }
 
         activeTurnJob = scope.launch {
             try {
                 var finalTranscript = ""
+                var sttFailed = false
+                var sttErrorMessage = ""
+
                 sttEngine.startListening().collect { event ->
                     when (event) {
                         is SttEvent.PartialResult -> {
@@ -53,15 +58,22 @@ class AssistantSession(
                             finalTranscript = event.text
                         }
                         is SttEvent.Error -> {
-                            Log.e(TAG, "STT Error", event.error)
-                            _state.value = AssistantState.Error(event.error.message ?: "STT error")
+                            sttFailed = true
+                            sttErrorMessage = event.error.message ?: "STT processing error"
+                            Log.e(TAG, "STT Error during voice turn", event.error)
+                            _state.value = AssistantState.Error(sttErrorMessage)
                         }
                         else -> {}
                     }
                 }
 
+                if (sttFailed) {
+                    Log.w(TAG, "Voice turn aborted due to STT failure: $sttErrorMessage")
+                    return@launch
+                }
+
                 if (finalTranscript.isBlank()) {
-                    Log.i(TAG, "No speech detected in turn")
+                    Log.i(TAG, "No speech detected in turn, returning to Idle")
                     _state.value = AssistantState.Idle
                     return@launch
                 }
@@ -78,17 +90,18 @@ class AssistantSession(
                             _state.value = AssistantState.Speaking(responseText = event.finalResponse)
                         }
                         is ConversationEvent.Error -> {
+                            Log.e(TAG, "Conversation execution error: ${event.message}")
                             _state.value = AssistantState.Error(message = event.message)
                         }
                         else -> {}
                     }
                 }
             } catch (e: CancellationException) {
-                Log.i(TAG, "Turn cancelled")
+                Log.i(TAG, "Turn cancelled across active stages")
                 _state.value = AssistantState.Idle
                 throw e
             } catch (e: Throwable) {
-                Log.e(TAG, "Turn failed with exception", e)
+                Log.e(TAG, "Turn failed with unhandled exception", e)
                 _state.value = AssistantState.Error(e.message ?: "Error processing request")
             }
         }
@@ -114,12 +127,23 @@ class AssistantSession(
 
     fun cancelTurn() {
         if (activeTurnJob != null || _state.value !is AssistantState.Idle) {
-            Log.i(TAG, "cancelTurn() invoked")
+            Log.i(TAG, "cancelTurn() invoked — stopping STT, LLM generation, tools, and TTS playback")
             activeTurnJob?.cancel()
             activeTurnJob = null
+
             val provider = AssistantSessionProvider.instance
-            provider?.getSttEngine()?.cancel()
-            provider?.getConversationManager()?.cancel()
+            try {
+                provider?.getSttEngine()?.cancel()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error cancelling STT engine", e)
+            }
+
+            try {
+                provider?.getConversationManager()?.cancel()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error cancelling ConversationManager", e)
+            }
+
             _state.value = AssistantState.Idle
         }
     }
