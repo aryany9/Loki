@@ -41,15 +41,30 @@ The system SHALL provide `LiteRtLlmEngine` as the sole concrete implementation o
 - **WHEN** `LiteRtLlmEngine` is initialized with a valid `.litertlm` model
 - **THEN** inference executes locally on-device without intermediary Java compatibility shims or native JNI bridge layers
 
-### Requirement: GPU-preferred backend initialization with isolated CPU fallback
-The system SHALL attempt GPU backend initialization first for `.litertlm` models. If and only if GPU initialization fails due to a genuine device or hardware backend failure, the engine SHALL automatically fall back to CPU backend initialization.
+### Requirement: Structured engine configuration via AgentConfig
+The LLM engine MUST accept structured configuration through `AgentConfig`, encapsulating system instructions, generation hyperparameters (`GenerationConfig`: temperature, topK, topP, seed, maxOutputTokens), and runtime settings (`RuntimeConfig`: execution backend and context KV capacity). The engine SHALL apply this configuration at session initialization without hardcoded overrides.
 
-#### Scenario: GPU initialization succeeds
-- **WHEN** a `.litertlm` model is initialized on a device with compatible GPU drivers
-- **THEN** the model loads on the GPU backend and is marked ready
+#### Scenario: Initializing engine with custom AgentConfig
+- **WHEN** `LiteRtLlmEngine` is initialized with an `AgentConfig` specifying a system instruction, temperature, topK, topP, and an execution backend
+- **THEN** the engine initializes using the specified system instruction and runtime settings without hardcoded generator overrides
+
+### Requirement: Dynamic KV cache capacity validation
+The engine MUST distinguish context KV cache capacity (`contextKvCapacity`) from output generation token limits (`maxOutputTokens`), and validate `contextKvCapacity` dynamically against the model's supported limits rather than static hardcoded values.
+
+#### Scenario: Validating KV cache capacity against model limit
+- **GIVEN** a model record with a supported context window
+- **WHEN** configuring `RuntimeConfig.contextKvCapacity`
+- **THEN** the engine validates and clamps the requested capacity to the supported range instead of assuming a fixed default
+
+### Requirement: Execution backend selection with fallback
+The engine SHALL support `ExecutionBackend` selection (`AUTOMATIC`, `GPU`, `CPU`) via `RuntimeConfig`. When set to `AUTOMATIC`, the engine SHALL prefer the GPU backend and automatically fall back to the CPU backend only on genuine device or hardware backend failures (e.g. OpenCL/driver or GPU memory limitation), logging the diagnostic and proceeding.
+
+#### Scenario: Explicit CPU backend selection
+- **WHEN** `ExecutionBackend.CPU` is configured
+- **THEN** the engine initializes directly on the CPU backend without attempting GPU initialization
 
 #### Scenario: Genuine GPU failure triggers CPU fallback
-- **WHEN** GPU backend initialization fails due to an OpenCL/driver or GPU memory limitation
+- **WHEN** GPU backend initialization fails due to an OpenCL/driver or GPU memory limitation under `ExecutionBackend.AUTOMATIC`
 - **THEN** `LiteRtLlmEngine` catches the backend error, logs the failure, and attempts initialization on the CPU backend
 - **AND** marks the engine ready if CPU initialization succeeds
 
@@ -59,6 +74,15 @@ The system SHALL NOT trigger CPU fallback when model loading fails due to an inv
 #### Scenario: Missing tokenizer fails immediately
 - **WHEN** a `.litertlm` model artifact is missing required tokenizer sections
 - **THEN** initialization fails immediately and reports the root-cause error without attempting a CPU fallback
+
+### Requirement: Token-level native cancellation
+Calling `cancel()` on `LiteRtLlmEngine` MUST invoke native `Conversation.cancelProcess()` to stop active token generation immediately, and the engine SHALL surface a cancelled status cleanly without corrupting native runtime state.
+
+#### Scenario: User cancels active generation turn
+- **GIVEN** an active token generation loop running on `LiteRtLlmEngine`
+- **WHEN** `cancel()` is called
+- **THEN** native token generation is cancelled immediately via `cancelProcess()`
+- **AND** the engine returns a cancelled status cleanly and is ready for the next request
 
 ### Requirement: Idempotent engine lifecycle and clean resource release
 `LiteRtLlmEngine` SHALL guarantee safe and idempotent lifecycle management, ensuring native LiteRT-LM `Engine` and `Conversation` resources are completely released on unload without resource leaks.
