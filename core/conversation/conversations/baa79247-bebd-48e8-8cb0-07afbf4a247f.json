@@ -1,0 +1,1 @@
+{"id":"baa79247-bebd-48e8-8cb0-07afbf4a247f","title":"What time is it?","createdAt":1788114674156,"updatedAt":1788114674240,"turns":[{"type":"user","text":"What time is it?","timestamp":1788114674154},{"type":"tool_result","tool":"get_current_time","result":{"success":true,"data":{"formatted":"3:00 PM on Monday"}},"timestamp":1788114674188}]}

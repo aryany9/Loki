@@ -1,0 +1,1 @@
+{"id":"6d754277-cd92-469c-9b8b-bfb96ec8c090","title":"New Chat","createdAt":1788114679418,"updatedAt":1788114679427,"turns":[{"type":"tool_call","tool":"get_current_time","arguments":{},"timestamp":1788114679416},{"type":"tool_result","tool":"get_current_time","result":{"success":true,"data":{"formatted":"3:00 PM"}},"timestamp":1788114679419}]}

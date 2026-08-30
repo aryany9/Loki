@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    {
+      "id": "whisper-tiny-litert",
+      "displayName": "Whisper Tiny (ASR)",
+      "family": "Whisper",
+      "runtime": "LITERT_ASR",
+      "format": "TFLITE",
+      "artifacts": [
+        {
+          "fileName": "whisper_tiny_30s_f32.tflite",
+          "relativePath": "whisper_tiny_30s_f32.tflite",
+          "sizeBytes": 150979184,
+          "sha256": "0c8f0e2a1855909a0c027b4ac3c586fdd299e2b47bf1a4fdab51191bca1e0e89",
+          "url": "https://huggingface.co/litert-community/whisper-tiny/resolve/main/whisper_tiny_30s_f32.tflite"
+        }
+      ],
+      "capabilities": ["voice-recognition", "offline-stt"]
+    },
+    {
+      "id": "gemma-4-E4B-it",
+      "displayName": "Gemma 4 E4B-it",
+      "family": "Gemma",
+      "runtime": "LITERT_LM",
+      "format": "LITERT_MODEL",
+      "artifacts": [
+        {
+          "fileName": "gemma-4-E4B-it.litertlm",
+          "relativePath": "gemma-4-E4B-it.litertlm",
+          "sizeBytes": 3659530240,
+          "sha256": "0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0",
+          "url": "https://huggingface.co/google/gemma-4-E4B-it-litertlm/resolve/main/gemma-4-E4B-it.litertlm"
+        }
+      ],
+      "capabilities": ["audio-input", "text-generation", "vision"]
+    }
+  ]
+}

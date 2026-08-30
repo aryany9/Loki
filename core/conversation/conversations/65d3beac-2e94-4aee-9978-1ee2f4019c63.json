@@ -1,0 +1,1 @@
+{"id":"65d3beac-2e94-4aee-9978-1ee2f4019c63","title":"What time is it?","createdAt":1788114675806,"updatedAt":1788114675915,"turns":[{"type":"user","text":"What time is it?","timestamp":1788114675803},{"type":"tool_call","tool":"get_current_time","arguments":{},"timestamp":1788114675844}]}

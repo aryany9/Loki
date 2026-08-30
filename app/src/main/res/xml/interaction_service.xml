@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    VoiceInteractionService metadata.
+    - sessionService: fully-qualified class name of the VoiceInteractionSessionService.
+      Android binds to this service to create VoiceInteractionSession instances.
+    - recognitionService: companion RecognitionService required by Android framework.
+    - supportsAssist: declares that this service supports the Android Assistant role.
+    - supportsLaunchVoiceAssistFromKeyguard: allows the session to start from the
+      lock screen via the standard Android assistant invocation mechanism.
+-->
+<voice-interaction-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="dev.loki.android.core.assistant.LokiVoiceInteractionSessionService"
+    android:recognitionService="dev.loki.android.core.assistant.LokiRecognitionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true" />

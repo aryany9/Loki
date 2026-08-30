@@ -1,0 +1,331 @@
+package dev.loki.android.core.ui
+
+import android.content.ContextWrapper
+import dev.loki.android.core.conversation.ConversationManager
+import dev.loki.android.core.conversation.ConversationStore
+import dev.loki.android.core.conversation.ConversationTurn
+import dev.loki.android.core.llm.LlmEngine
+import dev.loki.android.core.llm.LlmModelState
+import dev.loki.android.core.models.AgentConfig
+import dev.loki.android.core.models.ModelCapabilities
+import dev.loki.android.core.models.RuntimeConfig
+import dev.loki.android.core.tools.ToolRegistry
+import java.nio.file.Files
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class ChatViewModelTest {
+
+    private val testDispatcher = StandardTestDispatcher()
+
+    class StreamingFakeLlmEngine : LlmEngine {
+        private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready("TestModel"))
+        override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+        override val capabilities: ModelCapabilities = ModelCapabilities(supportsText = true)
+
+        var responseText: String = "Hello there, I am Loki."
+        var tokenListToEmit: List<String> = listOf("{\"response\": ", "\"Hello", " there", ", I", " am", " Loki.\"}")
+
+        override fun isReady(): Boolean = true
+        override suspend fun initializeAsync(modelPath: String?, runtimeConfig: RuntimeConfig, force: Boolean): Boolean = true
+        override suspend fun startConversation(agentConfig: AgentConfig): Boolean = true
+
+        override suspend fun generate(
+            prompt: String,
+            audioBytes: ByteArray?,
+            grammar: String?,
+            maxTokens: Int,
+            onToken: ((String) -> Unit)?
+        ): Result<String> {
+            tokenListToEmit.forEach { token ->
+                onToken?.invoke(token)
+            }
+            return Result.success("""{"response": "$responseText"}""")
+        }
+
+        override fun cancel() {}
+        override fun release() {}
+    }
+
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(testDispatcher)
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
+    }
+
+    @Test
+    fun `sendMessage transitions from thinking to streaming to finalized response`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+        val tempDir = Files.createTempDirectory("cvm_test1").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+        val viewModel = ChatViewModel(conversationManager = manager)
+
+        advanceUntilIdle()
+
+        // Initial state has empty messages (home greeting is rendered in UI)
+        assertEquals(0, viewModel.messages.value.size)
+
+        // Send a message
+        viewModel.sendMessage("Tell me about yourself")
+        advanceUntilIdle()
+
+        val messages = viewModel.messages.value
+        // Should have user msg + finalized assistant msg = 2 messages total
+        assertEquals(2, messages.size)
+
+        val userMsg = messages[0]
+        assertEquals(MessageSender.USER, userMsg.sender)
+        assertEquals("Tell me about yourself", userMsg.text)
+
+        val assistantMsg = messages[1]
+        assertEquals(MessageSender.ASSISTANT, assistantMsg.sender)
+        assertEquals(fakeLlm.responseText, assistantMsg.text)
+        assertFalse("Message should not be thinking after completion", assistantMsg.isThinking)
+        assertFalse("Message should not be streaming after completion", assistantMsg.isStreaming)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `sendMessage preserves toolName on finalized message after tool execution`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val tempDir = Files.createTempDirectory("cvm_test2").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val toolFakeLlm = object : LlmEngine {
+            private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready("TestModel"))
+            override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+            override val capabilities: ModelCapabilities = ModelCapabilities(supportsText = true, supportsToolCalling = true)
+
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?, runtimeConfig: RuntimeConfig, force: Boolean): Boolean = true
+            override suspend fun startConversation(agentConfig: AgentConfig): Boolean = true
+
+            override suspend fun generate(
+                prompt: String,
+                audioBytes: ByteArray?,
+                grammar: String?,
+                maxTokens: Int,
+                onToken: ((String) -> Unit)?
+            ): Result<String> {
+                return Result.success("""{"tool": "get_current_time", "arguments": {}}""")
+            }
+
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        val toolRegistry = ToolRegistry().apply {
+            register(object : dev.loki.android.core.tools.LocalTool {
+                override val name: String = "get_current_time"
+                override val description: String = "Get time"
+                override val parameters: Map<String, dev.loki.android.core.tools.ToolParam> = emptyMap()
+                override suspend fun execute(context: android.content.Context, arguments: Map<String, Any?>): dev.loki.android.core.tools.ToolResult {
+                    return dev.loki.android.core.tools.ToolResult.success(mapOf("formatted" to "3:00 PM"))
+                }
+            })
+        }
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = toolFakeLlm,
+            toolRegistry = toolRegistry,
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        viewModel.sendMessage("What time is it?")
+        advanceUntilIdle()
+
+        val messages = viewModel.messages.value
+        assertEquals(2, messages.size)
+
+        val assistantMsg = messages[1]
+        assertEquals(MessageSender.ASSISTANT, assistantMsg.sender)
+        assertEquals("get_current_time", assistantMsg.toolName)
+        assertTrue(assistantMsg.toolResult != null)
+        assertEquals(true, assistantMsg.toolResult?.success)
+        assertFalse(assistantMsg.isThinking)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `cancelGeneration finalizes assistant message with partial text and cancels engine`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val tempDir = Files.createTempDirectory("cvm_test3").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        var engineCancelCalled = false
+        val cancelFakeLlm = object : LlmEngine {
+            private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready("TestModel"))
+            override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+            override val capabilities: ModelCapabilities = ModelCapabilities(supportsText = true)
+
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?, runtimeConfig: RuntimeConfig, force: Boolean): Boolean = true
+            override suspend fun startConversation(agentConfig: AgentConfig): Boolean = true
+
+            override suspend fun generate(
+                prompt: String,
+                audioBytes: ByteArray?,
+                grammar: String?,
+                maxTokens: Int,
+                onToken: ((String) -> Unit)?
+            ): Result<String> {
+                onToken?.invoke("Partial streamed response")
+                kotlinx.coroutines.awaitCancellation()
+            }
+
+            override fun cancel() {
+                engineCancelCalled = true
+            }
+            override fun release() {}
+        }
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = cancelFakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        viewModel.sendMessage("Generate a long response")
+        advanceUntilIdle()
+
+        viewModel.cancelGeneration()
+        advanceUntilIdle()
+
+        assertTrue("Engine cancel should be invoked", engineCancelCalled)
+
+        val messages = viewModel.messages.value
+        assertEquals(2, messages.size)
+
+        val assistantMsg = messages[1]
+        assertEquals(MessageSender.ASSISTANT, assistantMsg.sender)
+        assertFalse("Message should not be thinking after cancel", assistantMsg.isThinking)
+        assertFalse("Message should not be streaming after cancel", assistantMsg.isStreaming)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `ChatViewModel restores stored conversation turns at startup and starts new conversation`() = runTest(testDispatcher) {
+        val tempDir = Files.createTempDirectory("chat_vm_test").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+
+        // Pre-populate a conversation in store
+        val conv = store.createConversation(title = "Restored Chat")
+        store.appendTurn(conv.id, ConversationTurn.User("Previous question"))
+        store.appendTurn(conv.id, ConversationTurn.Assistant("Previous answer"))
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        val restoredMessages = viewModel.messages.value
+        assertEquals(2, restoredMessages.size)
+        assertEquals("Previous question", restoredMessages[0].text)
+        assertEquals(MessageSender.USER, restoredMessages[0].sender)
+        assertEquals("Previous answer", restoredMessages[1].text)
+        assertEquals(MessageSender.ASSISTANT, restoredMessages[1].sender)
+
+        // Test newConversation
+        viewModel.newConversation()
+        advanceUntilIdle()
+        val newMessages = viewModel.messages.value
+        assertEquals(0, newMessages.size)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `conversations flow refreshes on init, new, select, and delete`() = runTest(testDispatcher) {
+        val tempDir = Files.createTempDirectory("chat_vm_conv_test").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+
+        val conv1 = store.createConversation(title = "Chat 1")
+        store.appendTurn(conv1.id, ConversationTurn.User("Hello 1"), autoTitle = false)
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        // Initially contains conv1
+        assertEquals(1, viewModel.conversations.value.size)
+        assertEquals(conv1.id, viewModel.conversations.value[0].id)
+
+        // Create new conversation
+        viewModel.newConversation()
+        advanceUntilIdle()
+        assertEquals(2, viewModel.conversations.value.size)
+        assertEquals(0, viewModel.messages.value.size)
+
+        // Select conv1
+        viewModel.selectConversation(conv1.id)
+        advanceUntilIdle()
+        assertEquals("Hello 1", viewModel.messages.value[0].text)
+        assertEquals(1, viewModel.messages.value.size)
+
+        // Delete conv1
+        viewModel.deleteConversation(conv1.id)
+        advanceUntilIdle()
+        assertEquals(1, viewModel.conversations.value.size)
+        assertFalse(viewModel.conversations.value.any { it.id == conv1.id })
+
+        tempDir.deleteRecursively()
+    }
+}
