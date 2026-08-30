@@ -14,5 +14,7 @@ data class ChatMessage(
     val text: String,
     val timestamp: Long = System.currentTimeMillis(),
     val toolResult: ToolResult? = null,
-    val isThinking: Boolean = false
+    val toolName: String? = null,
+    val isThinking: Boolean = false,
+    val isStreaming: Boolean = false
 )

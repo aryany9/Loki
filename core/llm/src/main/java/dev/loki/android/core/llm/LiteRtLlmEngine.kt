@@ -78,12 +78,15 @@ class LiteRtLlmEngine(
     override val promptFormat: ModelPromptFormat = ModelPromptFormat.GEMMA
 
     override val capabilities: ModelCapabilities
-        get() = ModelCapabilities(
-            supportsText = true,
-            supportsToolCalling = true,
-            supportsAudioInput = loadedModelRecord?.capabilities?.isAudioInputSupported ?: false,
-            supportsVisionInput = false
-        )
+        get() {
+            val record = loadedModelRecord ?: modelManager.getActiveModel()
+            return ModelCapabilities(
+                supportsText = true,
+                supportsToolCalling = true,
+                supportsAudioInput = record?.capabilities?.isAudioInputSupported ?: false,
+                supportsVisionInput = false
+            )
+        }
 
     private val mutex = Mutex()
     private var engine: Engine? = null
@@ -97,22 +100,23 @@ class LiteRtLlmEngine(
 
     override fun isReady(): Boolean = engine != null && engine?.isInitialized() == true
 
-    suspend fun initializeAsync(
-        modelPath: String? = null,
-        runtimeConfig: RuntimeConfig = RuntimeConfig()
+    override suspend fun initializeAsync(
+        modelPath: String?,
+        runtimeConfig: RuntimeConfig,
+        force: Boolean
     ): Boolean = withContext(Dispatchers.IO) {
-        if (isReady()) {
+        if (isReady() && !force) {
             _modelState.value = LlmModelState.Ready()
             return@withContext true
         }
 
         mutex.withLock {
-            if (isReady()) {
+            if (isReady() && !force) {
                 _modelState.value = LlmModelState.Ready()
                 return@withContext true
             }
 
-            val path = modelPath ?: modelManager.getLiteRtModelFile()?.absolutePath
+            val path = modelPath ?: currentModelPath ?: modelManager.getLiteRtModelFile()?.absolutePath
             if (path == null || !File(path).exists()) {
                 val err = "No valid .litertlm model file found"
                 Log.e(TAG, "[Loki] Error: $err")
@@ -120,10 +124,14 @@ class LiteRtLlmEngine(
                 return@withContext false
             }
 
+            if (loadedModelRecord == null) {
+                loadedModelRecord = modelManager.getActiveModel()
+            }
+
             currentModelPath = path
             val fileName = File(path).name
             _modelState.value = LlmModelState.Loading(fileName)
-            Log.i(TAG, "[Loki] Initializing LiteRT-LM engine with model: $path")
+            Log.i(TAG, "[Loki] Initializing LiteRT-LM engine with model: $path (force=$force)")
 
             releaseNativeResources()
 
@@ -195,7 +203,7 @@ class LiteRtLlmEngine(
     }
 
     override suspend fun initializeAsync(modelPath: String?): Boolean =
-        initializeAsync(modelPath, RuntimeConfig())
+        initializeAsync(modelPath, RuntimeConfig(), force = false)
 
     private fun tryInitEngine(modelPath: String, backend: Backend, kvCapacity: Int): Pair<Boolean, Throwable?> {
         return try {
@@ -231,22 +239,33 @@ class LiteRtLlmEngine(
         withContext(Dispatchers.IO) {
             val currentEngine = engine ?: run {
                 Log.w(TAG, "[Loki] startConversation called but engine not initialized; initializing now")
-                if (!initializeAsync(runtimeConfig = agentConfig.runtimeConfig)) return@withContext false
+                if (!initializeAsync(modelPath = null, runtimeConfig = agentConfig.runtimeConfig, force = false)) return@withContext false
                 engine
             } ?: return@withContext false
 
             closeConversationInternal()
 
             return@withContext try {
-                Log.i(TAG, "[Loki] before createConversation() with systemInstruction")
+                Log.i(TAG, "[Loki] before createConversation() with AgentConfig (SamplerConfig + systemInstruction)")
                 val systemContents = Contents.of(agentConfig.systemInstruction)
-                val convConfig = ConversationConfig(systemInstruction = systemContents)
+                val genConfig = agentConfig.generationConfig
+                val samplerConfig = com.google.ai.edge.litertlm.SamplerConfig(
+                    topK = genConfig.topK,
+                    topP = genConfig.topP.toDouble(),
+                    temperature = genConfig.temperature.toDouble(),
+                    seed = genConfig.seed ?: 0
+                )
+                val convConfig = ConversationConfig(
+                    systemInstruction = systemContents,
+                    samplerConfig = samplerConfig
+                )
                 activeConversation = currentEngine.createConversation(convConfig)
-                Log.i(TAG, "[Loki] after createConversation() with systemInstruction")
+                Log.i(TAG, "[Loki] after createConversation() with AgentConfig")
 
                 val tokenCount = try { activeConversation!!.getTokenCount() } catch (e: Exception) { -1 }
                 Log.i(TAG, "[Loki/Diagnostic] Conversation created with AgentConfig:")
                 Log.i(TAG, "[Loki/Diagnostic]   systemInstruction chars = ${agentConfig.systemInstruction.length}")
+                Log.i(TAG, "[Loki/Diagnostic]   samplerConfig (temp=${genConfig.temperature}, topK=${genConfig.topK}, topP=${genConfig.topP}, seed=${genConfig.seed ?: 0})")
                 Log.i(TAG, "[Loki/Diagnostic]   prefilled token count   = $tokenCount")
                 true
             } catch (e: Exception) {
@@ -318,7 +337,7 @@ class LiteRtLlmEngine(
             }
 
             val fullResponse = StringBuilder()
-            conversation.sendMessageAsync(userMessage).collect { partialMessage ->
+            conversation.sendMessageAsync(userMessage, maxOutputToken = maxTokens).collect { partialMessage ->
                 val textContent = partialMessage.contents.contents
                     .filterIsInstance<Content.Text>()
                     .firstOrNull()?.text ?: ""

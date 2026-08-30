@@ -1,4 +1,7 @@
-## ADDED Requirements
+## Purpose
+Integration of the assistant with the Android system via Voice Interaction Services.
+
+## Requirements
 
 ### Requirement: Loki declared as Android Assistant
 The application SHALL declare a `VoiceInteractionService` and request the `ROLE_ASSISTANT` role in its Android manifest, enabling users to select Loki as their default digital assistant in Android system settings.

@@ -9,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
@@ -65,7 +66,9 @@ enum class AppScreen {
     SETUP,
     CHAT,
     PERMISSIONS,
-    MODEL_LIBRARY
+    MODEL_LIBRARY,
+    AGENT_PLAYGROUND,
+    SETTINGS
 }
 
 private data class PendingImport(val modelId: String, val fileName: String, val file: File)
@@ -91,7 +94,12 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var bundledCatalog: ModelCatalog
 
+    @Inject
+    lateinit var agentConfigRepository: dev.loki.android.core.ui.AgentConfigRepository
+
     private lateinit var chatViewModel: ChatViewModel
+    private lateinit var agentPlaygroundViewModel: dev.loki.android.core.ui.AgentPlaygroundViewModel
+    private lateinit var settingsViewModel: dev.loki.android.core.ui.SettingsViewModel
 
     private var permissionRefreshTrigger by mutableStateOf(0)
     private var pendingImport by mutableStateOf<PendingImport?>(null)
@@ -115,9 +123,26 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        lifecycleScope.launch {
+            val savedConfig = agentConfigRepository.getAgentConfig()
+            conversationManager.setAgentConfig(savedConfig)
+        }
+
         chatViewModel = ChatViewModel(
             conversationManager = conversationManager,
             sttEngine = sttEngine
+        )
+
+        agentPlaygroundViewModel = dev.loki.android.core.ui.AgentPlaygroundViewModel(
+            context = this,
+            conversationManager = conversationManager,
+            agentConfigRepository = agentConfigRepository,
+            modelLibraryManager = modelLibraryManager
+        )
+
+        settingsViewModel = dev.loki.android.core.ui.SettingsViewModel(
+            themeRepository = themeRepository,
+            conversationManager = conversationManager
         )
 
         setContent {
@@ -157,113 +182,163 @@ class MainActivity : ComponentActivity() {
 
             LokiTheme(themeMode = themeMode) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    when (currentScreen) {
-                        AppScreen.SETUP -> {
-                            SetupScreen(
-                                permissions = permissionsList,
-                                models = modelManifest.models,
-                                catalog = bundledCatalog.models,
-                                llmReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_LM),
-                                asrReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_ASR),
-                                onRequestAllPermissions = {
-                                    requestRequiredPermissions()
-                                },
-                                onCompleteSetup = {
-                                    coroutineScope.launch {
-                                        themeRepository.setFirstRunComplete(true)
+                    androidx.compose.animation.AnimatedContent(
+                        targetState = currentScreen,
+                        transitionSpec = {
+                            (androidx.compose.animation.fadeIn(animationSpec = androidx.compose.animation.core.tween(220)) +
+                             androidx.compose.animation.slideInHorizontally(animationSpec = androidx.compose.animation.core.tween(220)) { width -> width / 8 })
+                                .togetherWith(
+                                    androidx.compose.animation.fadeOut(animationSpec = androidx.compose.animation.core.tween(180)) +
+                                    androidx.compose.animation.slideOutHorizontally(animationSpec = androidx.compose.animation.core.tween(180)) { width -> -width / 8 }
+                                )
+                        },
+                        label = "ScreenTransition"
+                    ) { screen ->
+                        when (screen) {
+                            AppScreen.SETUP -> {
+                                SetupScreen(
+                                    permissions = permissionsList,
+                                    models = modelManifest.models,
+                                    catalog = bundledCatalog.models,
+                                    llmReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_LM),
+                                    asrReady = modelLibraryManager.isRuntimeReady(ModelRuntime.LITERT_ASR),
+                                    onRequestAllPermissions = {
+                                        requestRequiredPermissions()
+                                    },
+                                    onCompleteSetup = {
+                                        coroutineScope.launch {
+                                            themeRepository.setFirstRunComplete(true)
+                                            currentScreen = AppScreen.CHAT
+                                        }
+                                    },
+                                    onProvisionRuntime = {
+                                        currentScreen = AppScreen.MODEL_LIBRARY
+                                    },
+                                    onNavigateToAgentPlayground = {
+                                        currentScreen = AppScreen.AGENT_PLAYGROUND
+                                    }
+                                )
+                            }
+                            AppScreen.PERMISSIONS -> {
+                                PermissionsScreen(
+                                    permissions = permissionsList,
+                                    onRequestPermission = { perm ->
+                                        requestPermissionLauncher.launch(arrayOf(perm))
+                                    },
+                                    onOpenSettings = {
+                                        permissionManager.openAppSettings(this@MainActivity)
+                                    },
+                                    onNavigateBack = {
                                         currentScreen = AppScreen.CHAT
                                     }
-                                },
-                                onProvisionRuntime = {
-                                    currentScreen = AppScreen.MODEL_LIBRARY
-                                }
-                            )
-                        }
-                        AppScreen.PERMISSIONS -> {
-                            PermissionsScreen(
-                                permissions = permissionsList,
-                                onRequestPermission = { perm ->
-                                    requestPermissionLauncher.launch(arrayOf(perm))
-                                },
-                                onOpenSettings = {
-                                    permissionManager.openAppSettings(this@MainActivity)
-                                },
-                                onNavigateBack = {
-                                    currentScreen = AppScreen.CHAT
-                                }
-                            )
-                        }
-                        AppScreen.MODEL_LIBRARY -> {
-                            ModelLibraryScreen(
-                                models = modelManifest.models,
-                                onNavigateBack = {
-                                    // Return to Setup if not all runtimes are ready yet,
-                                    // otherwise return to Chat.
-                                    currentScreen = if (bothReady) AppScreen.CHAT else AppScreen.SETUP
-                                },
-                                onImport = {
-                                    modelOperationError = null
-                                    importModelLauncher.launch(arrayOf("application/octet-stream", "application/*"))
-                                },
-                                onLoad = { modelId ->
-                                    coroutineScope.launch {
+                                )
+                            }
+                            AppScreen.MODEL_LIBRARY -> {
+                                ModelLibraryScreen(
+                                    models = modelManifest.models,
+                                    onNavigateBack = {
+                                        // Return to Setup if not all runtimes are ready yet,
+                                        // otherwise return to Chat.
+                                        currentScreen = if (bothReady) AppScreen.CHAT else AppScreen.SETUP
+                                    },
+                                    onImport = {
                                         modelOperationError = null
-                                        modelOperationProgress = -1f
-                                        if (!modelLibraryManager.load(modelId)) {
-                                            modelOperationError = "Unable to load the selected model."
+                                        importModelLauncher.launch(arrayOf("application/octet-stream", "application/*"))
+                                    },
+                                    onLoad = { modelId ->
+                                        coroutineScope.launch {
+                                            modelOperationError = null
+                                            modelOperationProgress = -1f
+                                            if (!modelLibraryManager.load(modelId)) {
+                                                 modelOperationError = "Unable to load the selected model."
+                                            }
+                                            modelOperationProgress = null
                                         }
-                                        modelOperationProgress = null
-                                    }
-                                },
-                                onEject = { runtime ->
-                                    coroutineScope.launch {
-                                        modelOperationError = null
-                                        if (!modelLibraryManager.eject(runtime)) {
-                                            modelOperationError = "No loaded model to eject."
+                                    },
+                                    onEject = { runtime ->
+                                        coroutineScope.launch {
+                                            modelOperationError = null
+                                            if (!modelLibraryManager.eject(runtime)) {
+                                                modelOperationError = "No loaded model to eject."
+                                            }
                                         }
-                                    }
-                                },
-                                onDelete = { modelId ->
-                                    coroutineScope.launch {
-                                        modelOperationError = null
-                                        if (!modelLibraryManager.delete(modelId)) {
-                                            modelOperationError = "Unable to delete the selected model."
+                                    },
+                                    onDelete = { modelId ->
+                                        coroutineScope.launch {
+                                            modelOperationError = null
+                                            if (!modelLibraryManager.delete(modelId)) {
+                                                modelOperationError = "Unable to delete the selected model."
+                                            }
                                         }
+                                    },
+                                    pendingImportName = pendingImport?.fileName,
+                                    onConfirmImport = { name, family, runtime, format, supportsAudio ->
+                                        val pending = pendingImport ?: return@ModelLibraryScreen
+                                        pendingImport = null
+                                        coroutineScope.launch {
+                                            modelOperationProgress = -1f
+                                            finishImport(pending, name, family, runtime, format, supportsAudio)
+                                        }
+                                    },
+                                    onCancelImport = {
+                                        pendingImport?.file?.parentFile?.deleteRecursively()
+                                        pendingImport = null
+                                    },
+                                    catalog = bundledCatalog.models,
+                                    onDownload = { entry ->
+                                        coroutineScope.launch {
+                                            downloadCatalogEntry(entry)
+                                        }
+                                    },
+                                    operationProgress = modelOperationProgress,
+                                    errorMessage = modelOperationError
+                                )
+                            }
+                            AppScreen.AGENT_PLAYGROUND -> {
+                                dev.loki.android.core.ui.AgentPlaygroundScreen(
+                                    viewModel = agentPlaygroundViewModel,
+                                    onNavigateBack = {
+                                        currentScreen = AppScreen.CHAT
+                                    },
+                                    onNavigateToModelLibrary = {
+                                        currentScreen = AppScreen.MODEL_LIBRARY
                                     }
-                                },
-                                pendingImportName = pendingImport?.fileName,
-                                onConfirmImport = { name, family, runtime, format, supportsAudio ->
-                                    val pending = pendingImport ?: return@ModelLibraryScreen
-                                    pendingImport = null
-                                    coroutineScope.launch {
-                                        modelOperationProgress = -1f
-                                        finishImport(pending, name, family, runtime, format, supportsAudio)
+                                )
+                            }
+                            AppScreen.CHAT, null -> {
+                                ChatScreen(
+                                    viewModel = chatViewModel,
+                                    onNavigateToPermissions = {
+                                        currentScreen = AppScreen.PERMISSIONS
+                                    },
+                                    onNavigateToModelLibrary = {
+                                        currentScreen = AppScreen.MODEL_LIBRARY
+                                    },
+                                    onNavigateToAgentPlayground = {
+                                        currentScreen = AppScreen.AGENT_PLAYGROUND
+                                    },
+                                    onNavigateToSettings = {
+                                        currentScreen = AppScreen.SETTINGS
                                     }
-                                },
-                                onCancelImport = {
-                                    pendingImport?.file?.parentFile?.deleteRecursively()
-                                    pendingImport = null
-                                },
-                                catalog = bundledCatalog.models,
-                                onDownload = { entry ->
-                                    coroutineScope.launch {
-                                        downloadCatalogEntry(entry)
+                                )
+                            }
+                            AppScreen.SETTINGS -> {
+                                dev.loki.android.core.ui.SettingsScreen(
+                                    viewModel = settingsViewModel,
+                                    onNavigateBack = {
+                                        currentScreen = AppScreen.CHAT
+                                    },
+                                    onNavigateToModelLibrary = {
+                                        currentScreen = AppScreen.MODEL_LIBRARY
+                                    },
+                                    onNavigateToAgentPlayground = {
+                                        currentScreen = AppScreen.AGENT_PLAYGROUND
+                                    },
+                                    onNavigateToPermissions = {
+                                        currentScreen = AppScreen.PERMISSIONS
                                     }
-                                },
-                                operationProgress = modelOperationProgress,
-                                errorMessage = modelOperationError
-                            )
-                        }
-                        AppScreen.CHAT, null -> {
-                            ChatScreen(
-                                viewModel = chatViewModel,
-                                onNavigateToPermissions = {
-                                    currentScreen = AppScreen.PERMISSIONS
-                                },
-                                onNavigateToModelLibrary = {
-                                    currentScreen = AppScreen.MODEL_LIBRARY
-                                }
-                            )
+                                )
+                            }
                         }
                     }
                 }

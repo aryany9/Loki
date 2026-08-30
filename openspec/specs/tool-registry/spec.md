@@ -1,3 +1,8 @@
+## Purpose
+Registry of available tools and their argument schemas for tool-call execution.
+
+## Requirements
+
 ### Requirement: `Tool` interface defines the contract for all assistant capabilities
 The system SHALL define a `Tool` interface that every assistant capability (local or online) implements. The interface SHALL expose: a unique name, a human-readable description, a parameter schema, and an `execute` function that returns a structured `ToolResult`.
 

@@ -1,7 +1,5 @@
-# voice-input-strategies Specification
-
 ## Purpose
-Enables dynamic per-turn selection between direct-audio processing (for multimodal audio-capable LLMs) and offline STT transcription (for text-only LLMs), including recording duration limits, failure demotion, and seamless model switching.
+Strategies for capturing voice input with VAD and transcription.
 
 ## Requirements
 

@@ -1,3 +1,8 @@
+## Purpose
+Provisioning of models and agent configuration during first-run setup.
+
+## Requirements
+
 ### Requirement: Setup provisioning shows mandatory runtime state and acquisition path
 `SetupScreen` SHALL display one card per mandatory runtime (`LITERT_LM`, `LITERT_ASR`). Each card SHALL show the runtime's name, a human-readable description, and its current lifecycle state: `NOT_DOWNLOADED`, `DOWNLOADED`, or `LOADED`. When a runtime is not `LOADED`, the card SHALL provide a CTA that navigates the user into `ModelLibraryScreen` pre-filtered to that runtime.
 

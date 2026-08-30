@@ -1,8 +1,8 @@
-# model-library Specification
-
 ## Purpose
-TBD - created by archiving change litertlm-runtime-migration. Update Purpose after archive.
+Management of downloadable/imported on-device model artifacts.
+
 ## Requirements
+
 ### Requirement: The system maintains a persistent model registry
 The system SHALL represent every installed model as a first-class `ModelRecord` in a persistent JSON manifest. A record MUST include a stable ID, display metadata, managed artifact location, source/origin, size, lifecycle state, and optional integrity metadata. All registered LLM models SHALL use the `.litertlm` model format.
 
@@ -130,5 +130,3 @@ The system SHALL provide a dedicated Model Library Compose screen reachable prim
 - **WHEN** Loki has no valid active model after initialization
 - **THEN** Setup or the initial app state offers a path to Model Library
 - **AND** Chat is not presented as if a usable model were active
-
-

@@ -1,7 +1,5 @@
 package dev.loki.android.core.ui
 
-import android.Manifest
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +14,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -33,8 +34,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import dev.loki.android.core.tools.PermissionState
+import dev.loki.android.core.ui.theme.LokiCornerTokens
 
 data class PermissionItem(
     val permission: String,
@@ -58,7 +59,11 @@ fun PermissionsScreen(
                 title = { Text("Assistant Permissions", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Text("←", fontSize = 20.sp, color = MaterialTheme.colorScheme.onSurface)
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -106,7 +111,7 @@ fun PermissionCard(
     onOpenSettings: () -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(LokiCornerTokens.medium),
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp,
         modifier = Modifier.fillMaxWidth()
@@ -129,7 +134,7 @@ fun PermissionCard(
                         Spacer(modifier = Modifier.width(6.dp))
                         Surface(
                             color = MaterialTheme.colorScheme.primaryContainer,
-                            shape = RoundedCornerShape(6.dp)
+                            shape = RoundedCornerShape(LokiCornerTokens.badge)
                         ) {
                             Text(
                                 text = "Required",
@@ -161,28 +166,33 @@ fun PermissionCard(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.Center
                         ) {
-                            Text("✓", color = MaterialTheme.colorScheme.onTertiary, fontWeight = FontWeight.Bold)
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Granted",
+                                tint = MaterialTheme.colorScheme.onTertiary,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                     }
                 }
                 PermissionState.REQUESTABLE -> {
                     Button(
                         onClick = onRequestPermission,
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(LokiCornerTokens.small),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = MaterialTheme.colorScheme.onPrimary
                         )
                     ) {
-                        Text("Grant")
+                        Text("Grant", style = MaterialTheme.typography.labelLarge)
                     }
                 }
                 PermissionState.PERMANENTLY_DENIED -> {
                     OutlinedButton(
                         onClick = onOpenSettings,
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(LokiCornerTokens.small)
                     ) {
-                        Text("Settings", fontSize = 12.sp)
+                        Text("Settings", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }

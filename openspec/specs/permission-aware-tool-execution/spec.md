@@ -1,3 +1,8 @@
+## Purpose
+Permission gating for tool execution on Android.
+
+## Requirements
+
 ### Requirement: PermissionManager provides three-state permission checking
 `PermissionManager` SHALL provide a method `checkPermission(context, permission): PermissionState` returning one of `GRANTED`, `REQUESTABLE`, or `PERMANENTLY_DENIED` for any given Android permission string.
 
