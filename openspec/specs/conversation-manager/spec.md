@@ -1,3 +1,8 @@
+## Purpose
+Management of LLM and tool coordination with scoped conversation sessions.
+
+## Requirements
+
 ### Requirement: Multi-turn bounded agent loop
 The `ConversationSession` SHALL implement a bounded ReAct-style agent loop that supports multiple LLM–tool–result cycles within a single user turn. The loop SHALL have a configurable maximum iteration limit (default: 5) to prevent runaway tool execution.
 

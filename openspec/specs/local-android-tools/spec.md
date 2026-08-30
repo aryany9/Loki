@@ -1,4 +1,7 @@
-## ADDED Requirements
+## Purpose
+Local on-device tool implementations for Android system actions.
+
+## Requirements
 
 ### Requirement: Nine MVP local tools implemented
 The system SHALL implement the following nine local Android tools as `LocalTool` implementations registered in `ToolRegistry`:

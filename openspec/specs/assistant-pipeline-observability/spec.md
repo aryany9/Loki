@@ -1,3 +1,8 @@
+## Purpose
+Structured observability across the assistant turn pipeline via TurnLogger.
+
+## Requirements
+
 ### Requirement: TurnLogger assigns a unique ID to each assistant turn
 `TurnLogger` SHALL generate a random UUID for each assistant turn and attach it to every log entry for that turn.
 

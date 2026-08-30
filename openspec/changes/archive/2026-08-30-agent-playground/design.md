@@ -77,7 +77,10 @@ Current gap (audited):
 
 ### Changes to `ConversationSession`
 - Accept an `agentConfig: AgentConfig` (default = `AgentConfig()`).
-- In `buildSystemPrompt(...)`, **merge** `agentConfig.systemInstruction` with the dynamically-built tool instructions (available/disabled tools + JSON shaping). The user/system prompt is the base; tool definitions are appended. When unset, fall back to the default Loki prompt.
+- In `buildSystemPrompt(...)`, **merge** using a 3-tier layered structure:
+  1. Base Persona & Immutable Guardrails: `"You are Loki, a private offline Android assistant running on the user's device..."` and core privacy/safety rules that cannot be removed.
+  2. Custom User Instructions: append `agentConfig.systemInstruction` (when set).
+  3. Dynamic Tool Signatures & Output Contract: list available/disabled tools and required JSON format (`{"tool": "..."}` or `{"response": "..."}`).
 - Call `llmEngine.startConversation(agentConfig)` (full `AgentConfig` overload) instead of the string overload, so `systemInstruction`, `SamplerConfig`, and `maxOutputToken` are applied together.
 - Pass `agentConfig.generationConfig.maxOutputTokens` (or a per-call override) through `generate(..., maxTokens = ...)` instead of relying on the 256 default.
 
@@ -134,7 +137,7 @@ The Test Prompt runs a **single-turn** `ConversationSession.processUtterance()` 
 - **Save Action**: Validates input bounds (temperature `0.0..2.0`, topK `1..100`, topP `0.0..1.0`, KV `1024..16384`), persists the updated `AgentConfig` via `AgentConfigRepository`, then calls `ConversationManager.applyAgentConfig(agentConfig)`.
 - **applyAgentConfig semantics**: On a loaded engine, if `runtimeConfig` (backend or KV capacity) changed, force release + re-initialize + `startConversation(agentConfig)`; if only generation/system prompt changed, `startConversation(agentConfig)` (no engine re-init). See "Backend / KV changes require forced re-initialization".
 - **Mid-conversation save resets context (G2)**: `startConversation` recreates the native conversation and `ConversationSession` re-seeds it only when `turns <= 1`, so saving mid-chat drops the in-progress KV context. UX decision: **show a confirmation on Save when a conversation is active** ("Changing these settings restarts the current conversation"), and reset `ConversationSession` on save. (Resolved: warn + reset.)
-- **Response Behavior preset**: pure UX mapping; resolves to a `GenerationConfig` (e.g. Precise → lower temperature/topK, Balanced → defaults, Fast → higher temperature, lower max tokens). Editing any Advanced control switches the preset label to "Custom" and takes precedence. No new capability added.
+- **Response Behavior preset**: pure UX mapping; resolves to a `GenerationConfig` (Fast: temp=0.8, topK=40, topP=0.9, maxTokens=128; Balanced: temp=0.7, topK=40, topP=0.95, maxTokens=256; Precise: temp=0.2, topK=10, topP=0.8, maxTokens=256). Editing any Advanced control switches the preset label to "Custom" and takes precedence. No new capability added.
 - **Reset Defaults**: restores the global default `AgentConfig` (`GenerationConfig()` / `RuntimeConfig()`, default system prompt).
 - **Test Prompt**: single-turn `ConversationSession.processUtterance()` against the active `LlmEngine` using the Playground `AgentConfig`, displaying raw model output and tool execution diagnostics.
 - **Test Prompt tool safety (G5)**: the test prompt runs the real agent path and can invoke real tools. For the power-user playground this is intended (it tests the assistant), but a confirming label/visual is shown so a risky action (call, alarm) is visible. No separate tool-disabled session in v1.

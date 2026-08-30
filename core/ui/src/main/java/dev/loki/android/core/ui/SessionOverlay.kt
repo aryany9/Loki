@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -16,10 +17,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import dev.loki.android.core.ui.theme.LokiCornerTokens
 
 @Composable
 fun SessionOverlay(
@@ -30,9 +30,9 @@ fun SessionOverlay(
         modifier = Modifier
             .fillMaxWidth()
             .padding(16.dp),
-        shape = RoundedCornerShape(24.dp),
-        color = Color(0xFF16161E),
-        shadowElevation = 10.dp
+        shape = RoundedCornerShape(LokiCornerTokens.inputBar),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 8.dp
     ) {
         Column(
             modifier = Modifier
@@ -43,9 +43,9 @@ fun SessionOverlay(
         ) {
             Text(
                 text = "⚡ Loki Assistant",
-                fontSize = 18.sp,
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = Color.White
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -53,16 +53,16 @@ fun SessionOverlay(
                 is SessionUiState.Idle -> {
                     Text(
                         text = "Ready",
-                        fontSize = 15.sp,
-                        color = Color(0xFF8E8EA0)
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 is SessionUiState.Listening -> {
                     Text(
                         text = if (state.partialTranscript.isNotEmpty()) state.partialTranscript else "🎙️ Listening...",
-                        fontSize = 16.sp,
+                        style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Medium,
-                        color = Color(0xFF818CF8)
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
                 is SessionUiState.Processing -> {
@@ -73,28 +73,28 @@ fun SessionOverlay(
                         CircularProgressIndicator(
                             modifier = Modifier.height(16.dp),
                             strokeWidth = 2.dp,
-                            color = Color(0xFF38BDF8)
+                            color = MaterialTheme.colorScheme.secondary
                         )
                         Text(
                             text = if (state.query.isNotEmpty()) state.query else "Thinking...",
-                            fontSize = 15.sp,
-                            color = Color(0xFF38BDF8)
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.secondary
                         )
                     }
                 }
                 is SessionUiState.Speaking -> {
                     Text(
                         text = "🔊 ${state.responseText}",
-                        fontSize = 15.sp,
+                        style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
-                        color = Color(0xFF34D399)
+                        color = MaterialTheme.colorScheme.tertiary
                     )
                 }
                 is SessionUiState.Error -> {
                     Text(
                         text = "⚠️ ${state.message}",
-                        fontSize = 15.sp,
-                        color = Color(0xFFF87171)
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
                     )
                 }
             }
@@ -102,7 +102,11 @@ fun SessionOverlay(
             Spacer(modifier = Modifier.height(16.dp))
             Button(
                 onClick = onDismiss,
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(LokiCornerTokens.medium),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
+                )
             ) {
                 Text("Dismiss")
             }

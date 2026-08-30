@@ -8,9 +8,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -22,12 +31,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import dev.loki.android.core.models.ModelAvailability
 import dev.loki.android.core.models.ModelCatalogEntry
 import dev.loki.android.core.models.ModelRecord
 import dev.loki.android.core.models.ModelRuntime
 import dev.loki.android.core.tools.PermissionState
+import dev.loki.android.core.ui.theme.LokiCornerTokens
 
 /**
  * A card that shows the current state of a single mandatory runtime and provides
@@ -43,7 +52,7 @@ private fun RuntimeProvisionCard(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(LokiCornerTokens.medium),
         color = if (isReady) MaterialTheme.colorScheme.primaryContainer
                 else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
         modifier = modifier.fillMaxWidth()
@@ -67,10 +76,13 @@ private fun RuntimeProvisionCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Text(
-                    text = if (isReady) "✅" else "❌",
-                    fontSize = 20.sp,
-                    modifier = Modifier.padding(start = 8.dp)
+                Icon(
+                    imageVector = if (isReady) Icons.Default.CheckCircle else Icons.Default.Cancel,
+                    contentDescription = if (isReady) "Ready" else "Not Ready",
+                    tint = if (isReady) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+                    modifier = Modifier
+                        .padding(start = 8.dp)
+                        .size(24.dp)
                 )
             }
 
@@ -92,10 +104,10 @@ private fun RuntimeProvisionCard(
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedButton(
                     onClick = onProvision,
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(LokiCornerTokens.small),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Choose / Download", fontSize = 13.sp)
+                    Text("Choose / Download", style = MaterialTheme.typography.labelMedium)
                 }
             }
         }
@@ -109,43 +121,27 @@ private fun RuntimeProvisionCard(
  * [ModelRuntime.LITERT_ASR]). Each card reflects live state from [models] and provides a
  * CTA to navigate into the Model Library when the runtime is not yet loaded.
  *
- * "Get Started" is only enabled when both [llmReady] and [asrReady] are true.
- *
- * @param permissions      Current permission items for the permissions section.
- * @param models           Live model records from [ModelLibraryManager.manifest].
- * @param catalog          Bundled catalog entries (passed for display context; acquisition
- *                         happens in ModelLibraryScreen).
- * @param llmReady         Whether [ModelRuntime.LITERT_LM] is LOADED and ready.
- * @param asrReady         Whether [ModelRuntime.LITERT_ASR] is LOADED and ready.
- * @param onRequestAllPermissions  Request all runtime permissions.
- * @param onCompleteSetup  Called when the user taps "Get Started" and both runtimes are ready.
- * @param onProvisionRuntime  Called when the user taps "Choose / Download" on a runtime card.
+ * [onCompleteSetup] is enabled only when both mandatory runtimes have a loaded model.
  */
 @Composable
 fun SetupScreen(
     permissions: List<PermissionItem>,
     models: List<ModelRecord>,
-    catalog: List<ModelCatalogEntry>,
-    llmReady: Boolean,
-    asrReady: Boolean,
+    catalog: List<ModelCatalogEntry> = emptyList(),
+    llmReady: Boolean = false,
+    asrReady: Boolean = false,
     onRequestAllPermissions: () -> Unit,
     onCompleteSetup: () -> Unit,
-    onProvisionRuntime: (ModelRuntime) -> Unit
+    onProvisionRuntime: (ModelRuntime) -> Unit,
+    onNavigateToAgentPlayground: (() -> Unit)? = null
 ) {
-    val audioGranted = permissions.firstOrNull {
-        it.permission == android.Manifest.permission.RECORD_AUDIO
-    }?.state == PermissionState.GRANTED
+    val audioGranted = permissions.firstOrNull { it.permission == android.Manifest.permission.RECORD_AUDIO }?.state == PermissionState.GRANTED
 
-    // Derive the display name of the currently loaded model for each runtime
-    val loadedLlm = models.firstOrNull {
-        it.runtime == ModelRuntime.LITERT_LM && it.availability == ModelAvailability.LOADED
-    }
+    val loadedLlm = models.firstOrNull { it.runtime == ModelRuntime.LITERT_LM && it.availability == ModelAvailability.LOADED }
     val loadedLlmName = loadedLlm?.displayName
     val isAudioCapable = loadedLlm?.capabilities?.isAudioInputSupported == true
 
-    val loadedAsrName = models.firstOrNull {
-        it.runtime == ModelRuntime.LITERT_ASR && it.availability == ModelAvailability.LOADED
-    }?.displayName
+    val loadedAsrName = models.firstOrNull { it.runtime == ModelRuntime.LITERT_ASR && it.availability == ModelAvailability.LOADED }?.displayName
 
     val bothModelsReady = llmReady && (isAudioCapable || asrReady)
 
@@ -157,23 +153,35 @@ fun SetupScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
             ) {
                 Spacer(modifier = Modifier.height(24.dp))
+
                 Text(
-                    text = "⚡ Welcome to Loki",
+                    text = "⚡",
+                    style = MaterialTheme.typography.displayMedium
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Welcome to Loki",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground
                 )
+
                 Spacer(modifier = Modifier.height(8.dp))
+
                 Text(
-                    text = "Private, local-first offline voice assistant powered by on-device AI.",
+                    text = "Your private, on-device AI voice assistant. All processing stays 100% on your phone — no cloud, no tracking.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
@@ -183,7 +191,7 @@ fun SetupScreen(
 
                 // Permissions section
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(LokiCornerTokens.medium),
                     color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -244,6 +252,32 @@ fun SetupScreen(
                     loadedModelName = if (isAudioCapable && loadedAsrName == null) "Direct Audio Active" else loadedAsrName,
                     onProvision = { onProvisionRuntime(ModelRuntime.LITERT_ASR) }
                 )
+
+                if (onNavigateToAgentPlayground != null && bothModelsReady) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = onNavigateToAgentPlayground,
+                        shape = RoundedCornerShape(LokiCornerTokens.medium),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Build,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Tune Assistant & Playground", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
             }
 
             // Action buttons
@@ -254,7 +288,7 @@ fun SetupScreen(
                 if (!audioGranted) {
                     Button(
                         onClick = onRequestAllPermissions,
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(LokiCornerTokens.medium),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(52.dp),
@@ -265,7 +299,7 @@ fun SetupScreen(
                     ) {
                         Text(
                             text = "Grant Permissions",
-                            fontSize = 16.sp,
+                            style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                     }
@@ -274,7 +308,7 @@ fun SetupScreen(
                 Button(
                     onClick = onCompleteSetup,
                     enabled = bothModelsReady,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(LokiCornerTokens.medium),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp),
@@ -285,7 +319,7 @@ fun SetupScreen(
                 ) {
                     Text(
                         text = if (bothModelsReady) "Get Started" else "Set Up Models to Continue",
-                        fontSize = 16.sp,
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold
                     )
                 }

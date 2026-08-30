@@ -1,3 +1,8 @@
+## Purpose
+First-run setup and permission grant screens.
+
+## Requirements
+
 ### Requirement: First-run setup screen is shown on fresh install
 On a fresh install, the app SHALL display a `SetupScreen` before `ChatScreen`. The setup screen SHALL explain why `RECORD_AUDIO` is required and SHALL request it via the Android runtime permission API.
 

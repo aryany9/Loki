@@ -125,4 +125,46 @@ class LlmEngineTest {
         assertTrue(result.isSuccess)
         assertEquals(3, capturedAudioBytes?.size)
     }
+
+    @Test
+    fun `LlmEngine default initializeAsync forwards to modelPath overload`() = runBlocking {
+        var capturedPath: String? = null
+        var capturedForce: Boolean? = null
+        var capturedRuntime: RuntimeConfig? = null
+
+        val testEngine = object : LlmEngine {
+            override val modelState: StateFlow<LlmModelState> = MutableStateFlow(LlmModelState.Ready())
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(
+                modelPath: String?,
+                runtimeConfig: RuntimeConfig,
+                force: Boolean
+            ): Boolean {
+                capturedPath = modelPath
+                capturedRuntime = runtimeConfig
+                capturedForce = force
+                return true
+            }
+            override suspend fun generate(
+                prompt: String,
+                audioBytes: ByteArray?,
+                grammar: String?,
+                maxTokens: Int,
+                onToken: ((String) -> Unit)?
+            ): Result<String> = Result.success("ok")
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        val success = testEngine.initializeAsync("/path/to/model.litertlm", RuntimeConfig(backend = ExecutionBackend.GPU), force = true)
+        assertTrue(success)
+        assertEquals("/path/to/model.litertlm", capturedPath)
+        assertEquals(ExecutionBackend.GPU, capturedRuntime?.backend)
+        assertEquals(true, capturedForce)
+
+        val successDefault = testEngine.initializeAsync("/path/to/default.litertlm")
+        assertTrue(successDefault)
+        assertEquals("/path/to/default.litertlm", capturedPath)
+        assertEquals(false, capturedForce)
+    }
 }

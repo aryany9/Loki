@@ -1,4 +1,7 @@
-## ADDED Requirements
+## Purpose
+Voice interaction overlay UI for assistant sessions.
+
+## Requirements
 
 ### Requirement: Minimal Compose overlay rendered within VoiceInteractionSession
 The system SHALL render a minimal Jetpack Compose UI overlay within the `VoiceInteractionSession` window. The overlay SHALL NOT be a full-screen activity. It SHALL display the current session state without obstructing the device display unnecessarily.

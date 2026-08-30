@@ -1,4 +1,7 @@
-## ADDED Requirements
+## Purpose
+Voice pipeline: STT capture, TTS output, and session audio flow.
+
+## Requirements
 
 ### Requirement: Local microphone capture during session
 The voice pipeline SHALL capture audio from the device microphone exclusively during an active `VoiceInteractionSession`. No background audio recording SHALL occur outside of an active session.
@@ -109,5 +112,3 @@ The voice turn precheck SHALL require STT engine readiness only when the selecte
 #### Scenario: Direct-audio turn without STT model loaded
 - **WHEN** the active LLM is audio-capable and no STT model is loaded, and the user invokes the voice assistant
 - **THEN** the turn proceeds with direct audio input instead of failing with an STT readiness error
-
-

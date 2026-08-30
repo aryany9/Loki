@@ -33,7 +33,7 @@
           "url": "https://huggingface.co/google/gemma-4-E4B-it-litertlm/resolve/main/gemma-4-E4B-it.litertlm"
         }
       ],
-      "capabilities": ["audio-input", "text-generation"]
+      "capabilities": ["audio-input", "text-generation", "vision"]
     }
   ]
 }

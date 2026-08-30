@@ -9,11 +9,14 @@ import dev.loki.android.core.tools.ToolExecutionResult
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.ToolResult
 import dev.loki.android.core.voice.tts.TtsEngine
+import dev.loki.android.core.models.AgentConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 
 /**
  * ConversationSession executes a ReAct-style agent loop for a specific conversation context.
@@ -26,31 +29,46 @@ class ConversationSession(
     val ttsEngine: TtsEngine? = null,
     val conversationContext: ConversationContext = ConversationContext(),
     val permissionManager: PermissionManager = PermissionManager(),
-    private val maxIterations: Int = 5
+    val agentConfig: AgentConfig = AgentConfig(),
+    private val maxIterations: Int = 5,
+    val conversationStore: ConversationStore? = null,
+    val conversationId: String? = null,
+    val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
 ) {
+
+    private suspend fun recordTurn(turn: ConversationTurn) {
+        conversationContext.append(turn)
+        if (conversationStore != null && conversationId != null) {
+            try {
+                conversationStore.appendTurn(conversationId, turn)
+            } catch (e: Throwable) {
+                android.util.Log.w("ConversationSession", "Non-fatal: Failed to persist turn", e)
+            }
+        }
+    }
 
     fun processUtterance(
         userInput: String,
         audioBytes: ByteArray? = null,
         enableTts: Boolean = true,
         source: String = "TEXT"
-    ): Flow<ConversationEvent> = flow {
+    ): Flow<ConversationEvent> = channelFlow {
         val turnId = TurnLogger.newTurnId()
         TurnLogger.logTurnStart(turnId, source)
 
         val hasAudio = audioBytes != null && audioBytes.isNotEmpty()
         if (userInput.isBlank() && !hasAudio) {
             TurnLogger.logError(turnId, "Empty user input received")
-            emit(ConversationEvent.Error("Empty user input"))
-            return@flow
+            send(ConversationEvent.Error("Empty user input"))
+            return@channelFlow
         }
 
         if (isSimpleGreeting(userInput) && !hasAudio) {
             val response = "Hello! How can I help you?"
-            conversationContext.append(ConversationTurn.User(userInput))
-            conversationContext.append(ConversationTurn.Assistant(response))
-            emit(ConversationEvent.Completed(response))
-            return@flow
+            recordTurn(ConversationTurn.User(userInput))
+            recordTurn(ConversationTurn.Assistant(response))
+            send(ConversationEvent.Completed(response))
+            return@channelFlow
         }
 
         if (source == "VOICE" && userInput.isNotBlank()) {
@@ -58,8 +76,8 @@ class ConversationSession(
         }
 
         val displayInput = if (userInput.isNotBlank()) userInput else if (hasAudio) "[Voice Audio]" else ""
-        conversationContext.append(ConversationTurn.User(displayInput))
-        emit(ConversationEvent.Thinking(displayInput))
+        recordTurn(ConversationTurn.User(displayInput))
+        send(ConversationEvent.Thinking(displayInput))
 
         var iterations = 0
         var lastToolResult: ToolResult? = null
@@ -74,7 +92,8 @@ class ConversationSession(
 
         // Initialize persistent native conversation with system prompt ONCE per logical conversation session
         if (conversationContext.getTurns().size <= 1) {
-            val started = llmEngine.startConversation(systemPrompt)
+            val effectiveConfig = agentConfig.copy(systemInstruction = systemPrompt)
+            val started = llmEngine.startConversation(effectiveConfig)
             TurnLogger.logTurnStart(turnId, "STATEFUL_INIT (success=$started)")
         }
 
@@ -100,17 +119,23 @@ class ConversationSession(
 
                 TurnLogger.logPrompt(turnId, promptToSend)
 
+                val maxTokens = agentConfig.generationConfig.maxOutputTokens ?: 256
+                val cumulativePartial = StringBuilder()
                 val llmResult = llmEngine.generate(
                     prompt = promptToSend,
                     audioBytes = if (iterations == 1) audioBytes else null,
-                    onToken = null
+                    maxTokens = maxTokens,
+                    onToken = { token ->
+                        cumulativePartial.append(token)
+                        trySend(ConversationEvent.GeneratingToken(cumulativePartial.toString()))
+                    }
                 )
 
                 if (llmResult.isFailure) {
                     val errorMsg = llmResult.exceptionOrNull()?.message ?: "LLM inference failed"
                     TurnLogger.logError(turnId, errorMsg, llmResult.exceptionOrNull())
-                    emit(ConversationEvent.Error(errorMsg))
-                    return@flow
+                    send(ConversationEvent.Error(errorMsg))
+                    return@channelFlow
                 }
 
                 val rawOutput = llmResult.getOrNull() ?: ""
@@ -121,8 +146,8 @@ class ConversationSession(
 
                 when (parsed) {
                     is ParsedLlmResponse.ToolCall -> {
-                        emit(ConversationEvent.ToolExecuting(parsed.tool, parsed.arguments))
-                        conversationContext.append(
+                        send(ConversationEvent.ToolExecuting(parsed.tool, parsed.arguments))
+                        recordTurn(
                             ConversationTurn.ToolCall(
                                 tool = parsed.tool,
                                 arguments = parsed.arguments.mapValues { it.value?.toString() ?: "" }
@@ -141,9 +166,9 @@ class ConversationSession(
                                 val result = execResult.toolResult
                                 lastToolResult = result
                                 TurnLogger.logToolExecution(turnId, parsed.tool, true, result.data.toString())
-                                emit(ConversationEvent.ToolExecuted(parsed.tool, result))
+                                send(ConversationEvent.ToolExecuted(parsed.tool, result))
 
-                                conversationContext.append(
+                                recordTurn(
                                     ConversationTurn.ToolExecutionResult(
                                         tool = parsed.tool,
                                         result = result
@@ -153,7 +178,7 @@ class ConversationSession(
                                 val fastResponse = formatFastPathResponse(parsed.tool, result)
                                 if (fastResponse != null) {
                                     finalResponseText = fastResponse
-                                    conversationContext.append(ConversationTurn.Assistant(finalResponseText))
+                                    recordTurn(ConversationTurn.Assistant(finalResponseText))
                                     break
                                 }
 
@@ -167,9 +192,9 @@ class ConversationSession(
                                     ToolErrorCode.PERMISSION_DENIED
                                 )
                                 lastToolResult = toolError
-                                emit(ConversationEvent.ToolExecuted(parsed.tool, toolError))
+                                send(ConversationEvent.ToolExecuted(parsed.tool, toolError))
 
-                                conversationContext.append(
+                                recordTurn(
                                     ConversationTurn.ToolExecutionResult(
                                         tool = parsed.tool,
                                         result = toolError
@@ -177,16 +202,16 @@ class ConversationSession(
                                 )
 
                                 finalResponseText = "I need the ${execResult.permission.substringAfterLast('.')} permission to do that. Please enable it in the permissions screen."
-                                conversationContext.append(ConversationTurn.Assistant(finalResponseText))
+                                recordTurn(ConversationTurn.Assistant(finalResponseText))
                                 break
                             }
                             is ToolExecutionResult.Error -> {
                                 val result = execResult.toolResult
                                 lastToolResult = result
                                 TurnLogger.logToolExecution(turnId, parsed.tool, false, result.error ?: "Unknown error")
-                                emit(ConversationEvent.ToolExecuted(parsed.tool, result))
+                                send(ConversationEvent.ToolExecuted(parsed.tool, result))
 
-                                conversationContext.append(
+                                recordTurn(
                                     ConversationTurn.ToolExecutionResult(
                                         tool = parsed.tool,
                                         result = result
@@ -194,7 +219,7 @@ class ConversationSession(
                                 )
 
                                 finalResponseText = formatErrorResponse(parsed.tool, result)
-                                conversationContext.append(ConversationTurn.Assistant(finalResponseText))
+                                recordTurn(ConversationTurn.Assistant(finalResponseText))
                                 break
                             }
                         }
@@ -202,7 +227,7 @@ class ConversationSession(
 
                     is ParsedLlmResponse.DirectResponse -> {
                         finalResponseText = parsed.text
-                        conversationContext.append(ConversationTurn.Assistant(finalResponseText))
+                        recordTurn(ConversationTurn.Assistant(finalResponseText))
                         break
                     }
 
@@ -213,7 +238,7 @@ class ConversationSession(
                             continue
                         }
                         finalResponseText = "I couldn't determine that request. Please try again."
-                        conversationContext.append(ConversationTurn.Assistant(finalResponseText))
+                        recordTurn(ConversationTurn.Assistant(finalResponseText))
                         break
                     }
                 }
@@ -223,8 +248,8 @@ class ConversationSession(
             throw e
         } catch (e: Throwable) {
             TurnLogger.logError(turnId, "Session execution failed", e)
-            emit(ConversationEvent.Error(e.message ?: "Execution error"))
-            return@flow
+            send(ConversationEvent.Error(e.message ?: "Execution error"))
+            return@channelFlow
         }
 
         if (finalResponseText.isEmpty()) {
@@ -234,19 +259,26 @@ class ConversationSession(
         TurnLogger.logFinalResponse(turnId, finalResponseText)
 
         if (enableTts && ttsEngine != null) {
-            emit(ConversationEvent.Speaking(finalResponseText))
+            send(ConversationEvent.Speaking(finalResponseText))
             ttsEngine.speak(finalResponseText)
         }
 
-        emit(ConversationEvent.Completed(finalResponseText, lastToolResult))
-    }.flowOn(Dispatchers.IO)
+        send(ConversationEvent.Completed(finalResponseText, lastToolResult))
+    }.flowOn(ioDispatcher)
 
     private fun buildSystemPrompt(
         availableTools: List<Tool>,
         disabledTools: List<Pair<Tool, String>>
     ): String {
         val sb = StringBuilder()
-        sb.append("You are Loki, a private offline Android assistant running on the user's device.\n\n")
+        sb.append("You are Loki, a private offline Android assistant running on the user's device. You operate entirely on-device with privacy and safety as highest priority.\n\n")
+
+        val customInstruction = agentConfig.systemInstruction.trim()
+        if (customInstruction.isNotBlank() && customInstruction != AgentConfig.DEFAULT_SYSTEM_PROMPT.trim()) {
+            sb.append("Additional Instructions:\n")
+            sb.append(customInstruction)
+            sb.append("\n\n")
+        }
 
         if (availableTools.isNotEmpty()) {
             sb.append("Available tools (respond with JSON {\"tool\": \"name\", \"arguments\": {...}}):\n")

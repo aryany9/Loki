@@ -161,11 +161,14 @@ class ConversationManagerTest {
         override fun isReady(): Boolean = true
         override suspend fun initializeAsync(modelPath: String?): Boolean = true
 
-        override suspend fun startConversation(systemPrompt: String): Boolean {
+        override suspend fun startConversation(agentConfig: dev.loki.android.core.models.AgentConfig): Boolean {
             startConversationCallCount++
-            lastSystemPrompt = systemPrompt
+            lastSystemPrompt = agentConfig.systemInstruction
             return true
         }
+
+        override suspend fun startConversation(systemPrompt: String): Boolean =
+            startConversation(dev.loki.android.core.models.AgentConfig(systemInstruction = systemPrompt))
 
         override suspend fun generate(
             prompt: String,
@@ -224,6 +227,147 @@ class ConversationManagerTest {
         // Verify application-level history in ConversationContext is maintained and bounded by maxTurns (10 entries)
         val appTurns = chatSession.conversationContext.getTurns()
         assertEquals(10, appTurns.size)
+    }
+
+    class ConfigTrackingLlmEngine : LlmEngine {
+        var lastAgentConfig: dev.loki.android.core.models.AgentConfig? = null
+        var lastMaxTokens: Int? = null
+        var reinitCount = 0
+        var startConvCount = 0
+        var lastReinitRuntimeConfig: dev.loki.android.core.models.RuntimeConfig? = null
+        var lastReinitForce: Boolean? = null
+
+        private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready())
+        override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+
+        override fun isReady(): Boolean = true
+        override suspend fun initializeAsync(
+            modelPath: String?,
+            runtimeConfig: dev.loki.android.core.models.RuntimeConfig,
+            force: Boolean
+        ): Boolean {
+            reinitCount++
+            lastReinitRuntimeConfig = runtimeConfig
+            lastReinitForce = force
+            return true
+        }
+
+        override suspend fun startConversation(agentConfig: dev.loki.android.core.models.AgentConfig): Boolean {
+            startConvCount++
+            lastAgentConfig = agentConfig
+            return true
+        }
+
+        override suspend fun generate(
+            prompt: String,
+            audioBytes: ByteArray?,
+            grammar: String?,
+            maxTokens: Int,
+            onToken: ((String) -> Unit)?
+        ): Result<String> {
+            lastMaxTokens = maxTokens
+            return Result.success("""{"response": "Config test response"}""")
+        }
+
+        override fun cancel() {}
+        override fun release() {}
+    }
+
+    @Test
+    fun `ConversationSession applies custom instructions and passes maxTokens`() = runTest {
+        val toolRegistry = ToolRegistry()
+        val trackingLlm = ConfigTrackingLlmEngine()
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val customConfig = dev.loki.android.core.models.AgentConfig(
+            systemInstruction = "Speak like a pirate",
+            generationConfig = dev.loki.android.core.models.GenerationConfig(
+                temperature = 0.3f,
+                maxOutputTokens = 512
+            )
+        )
+
+        val manager = ConversationManager(dummyContext, trackingLlm, toolRegistry, ttsEngine = null)
+        manager.setAgentConfig(customConfig)
+
+        val chatSession = manager.newChatSession()
+        val events = chatSession.processUtterance("Ahoy", enableTts = false).toList()
+        assertTrue(events.any { it is ConversationEvent.Completed })
+
+        // Check system prompt was merged with custom instruction
+        val appliedConfig = trackingLlm.lastAgentConfig
+        assertTrue(appliedConfig != null)
+        assertTrue(appliedConfig!!.systemInstruction.contains("Speak like a pirate"))
+        assertTrue(appliedConfig.systemInstruction.contains("You are Loki"))
+        assertEquals(0.3f, appliedConfig.generationConfig.temperature, 0.001f)
+
+        // Check maxTokens passed to generate
+        assertEquals(Integer.valueOf(512), trackingLlm.lastMaxTokens)
+    }
+
+    @Test
+    fun `applyAgentConfig with runtime change forces engine reinit`() = runTest {
+        val toolRegistry = ToolRegistry()
+        val trackingLlm = ConfigTrackingLlmEngine()
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val manager = ConversationManager(dummyContext, trackingLlm, toolRegistry, ttsEngine = null)
+
+        val newConfig = dev.loki.android.core.models.AgentConfig(
+            runtimeConfig = dev.loki.android.core.models.RuntimeConfig(
+                backend = dev.loki.android.core.models.ExecutionBackend.GPU,
+                contextKvCapacity = 4096
+            )
+        )
+
+        val applied = manager.applyAgentConfig(newConfig)
+        assertTrue(applied)
+        assertEquals(1, trackingLlm.reinitCount)
+        assertEquals(true, trackingLlm.lastReinitForce)
+        assertEquals(dev.loki.android.core.models.ExecutionBackend.GPU, trackingLlm.lastReinitRuntimeConfig?.backend)
+        assertEquals(Integer.valueOf(4096), trackingLlm.lastReinitRuntimeConfig?.contextKvCapacity)
+    }
+
+    @Test
+    fun `switch between conversations seeds context and resets engine`() = runTest {
+        val tempDir = java.nio.file.Files.createTempDirectory("conv_mgr_test").toFile()
+        val store = ConversationStore(tempDir)
+        val trackingLlm = ConfigTrackingLlmEngine()
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = trackingLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store
+        )
+
+        // Create conversation 1 with turns
+        val c1 = manager.createConversation("Chat 1")
+        store.appendTurn(c1.id, ConversationTurn.User("Hello from 1"))
+        store.appendTurn(c1.id, ConversationTurn.Assistant("Response 1"))
+
+        // Create conversation 2 with turns
+        val c2 = manager.createConversation("Chat 2")
+        store.appendTurn(c2.id, ConversationTurn.User("Hello from 2"))
+        store.appendTurn(c2.id, ConversationTurn.Assistant("Response 2"))
+
+        // Load conversation 1
+        val startConvCountBefore = trackingLlm.startConvCount
+        val loaded1 = manager.loadConversation(c1.id)
+        org.junit.Assert.assertNotNull(loaded1)
+        assertEquals("Chat 1", loaded1?.title)
+        assertEquals(c1.id, manager.currentConversationId)
+        assertTrue(trackingLlm.startConvCount > startConvCountBefore)
+
+        // Verify session from manager reflects Chat 1 turns
+        val chatSession1 = manager.newChatSession()
+        val turns1 = chatSession1.conversationContext.getTurns()
+        assertEquals(2, turns1.size)
+        assertEquals("Hello from 1", (turns1[0] as ConversationTurn.User).text)
+
+        tempDir.deleteRecursively()
     }
 }
 

@@ -22,10 +22,16 @@ interface LlmEngine {
         get() = ModelPromptFormat.CHATML
     val capabilities: ModelCapabilities
         get() = ModelCapabilities()
-
     fun isReady(): Boolean
 
-    suspend fun initializeAsync(modelPath: String? = null): Boolean
+    suspend fun initializeAsync(modelPath: String? = null): Boolean =
+        initializeAsync(modelPath, dev.loki.android.core.models.RuntimeConfig(), false)
+
+    suspend fun initializeAsync(
+        modelPath: String? = null,
+        runtimeConfig: dev.loki.android.core.models.RuntimeConfig = dev.loki.android.core.models.RuntimeConfig(),
+        force: Boolean = false
+    ): Boolean = true
 
     /**
      * Initializes (or re-initializes) the persistent native Conversation with an AgentConfig.

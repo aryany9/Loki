@@ -1,4 +1,7 @@
-## ADDED Requirements
+## Purpose
+Construction of constrained-decoding grammars for structured tool-call generation.
+
+## Requirements
 
 ### Requirement: `GrammarBuilder` generates GBNF from `ToolRegistry` at runtime
 The system SHALL provide a `GrammarBuilder` component that dynamically generates a GBNF grammar string from the set of tools currently registered in `ToolRegistry`. The grammar SHALL constrain `LlmEngine` output to syntactically valid tool calls or a final natural-language response token.

@@ -130,4 +130,10 @@ object AppModule {
     fun provideBundledCatalog(@ApplicationContext context: Context): ModelCatalog {
         return ModelCatalogRepository().loadBundled(context.assets)
     }
+
+    @Provides
+    @Singleton
+    fun provideAgentConfigRepository(@ApplicationContext context: Context): dev.loki.android.core.ui.AgentConfigRepository {
+        return dev.loki.android.core.ui.AgentConfigRepository(context)
+    }
 }

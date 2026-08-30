@@ -1,3 +1,8 @@
+## Purpose
+Scoping of conversation sessions into persistent chat and ephemeral voice contexts.
+
+## Requirements
+
 ### Requirement: Chat session provides persistent multi-turn memory
 `ConversationManager.newChatSession()` SHALL return a `ConversationSession` backed by a `ConversationContext` that persists across multiple `processUtterance()` calls within the same chat UI session.
 
