@@ -8,6 +8,14 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,16 +26,27 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import dev.loki.android.core.sound.AudioCue
+import dev.loki.android.core.sound.audioStartCueEnabled
+import dev.loki.android.core.theme.LokiTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -92,10 +111,12 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
             setViewTreeLifecycleOwner(this@LokiVoiceInteractionSession)
             setViewTreeSavedStateRegistryOwner(this@LokiVoiceInteractionSession)
             setContent {
-                dev.loki.android.core.ui.theme.LokiTheme {
+                LokiTheme {
                     val state by assistantSession.state.collectAsState()
+                    val amplitude by assistantSession.amplitude.collectAsState()
                     VoiceSessionOverlay(
                         state = state,
+                        amplitude = amplitude,
                         onDismiss = { assistantSession.dismiss() }
                     )
                 }
@@ -103,11 +124,17 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
         }
     }
 
+    private var voiceStartCuePlayed: Boolean = false
+
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         Log.i(TAG, "onShow() showFlags=$showFlags, args=$args")
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+        if (audioStartCueEnabled && !voiceStartCuePlayed) {
+            AudioCue.playStartTone()
+            voiceStartCuePlayed = true
+        }
         assistantSession.startTurn()
     }
 
@@ -115,6 +142,7 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
         super.onHide()
         Log.i(TAG, "onHide()")
         assistantSession.cancelTurn()
+        voiceStartCuePlayed = false
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
     }
@@ -122,6 +150,7 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "onDestroy()")
+        voiceStartCuePlayed = false
         assistantSession.destroy()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     }
@@ -131,11 +160,109 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
     }
 }
 
+enum class VoiceEqualizerMode {
+    IDLE,
+    LISTENING,
+    PROCESSING,
+    SPEAKING
+}
+
+@Composable
+fun VoiceEqualizer(
+    amplitude: Float,
+    mode: VoiceEqualizerMode,
+    modifier: Modifier = Modifier
+) {
+    val barCount = 7
+    val barColor = MaterialTheme.colorScheme.primary
+
+    val infiniteTransition = rememberInfiniteTransition(label = "equalizer_loop")
+    val pulsePhase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2 * Math.PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "pulse_phase"
+    )
+    val wavePhase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2 * Math.PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "wave_phase"
+    )
+
+    val animatedAmplitude by animateFloatAsState(
+        targetValue = amplitude.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 80, easing = LinearEasing),
+        label = "animated_amplitude"
+    )
+
+    val barWeights = floatArrayOf(0.45f, 0.7f, 0.95f, 1.0f, 0.95f, 0.7f, 0.45f)
+
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(44.dp)
+    ) {
+        val totalBarWidth = 4.dp.toPx()
+        val barSpacing = 6.dp.toPx()
+        val totalWidth = barCount * totalBarWidth + (barCount - 1) * barSpacing
+        val startX = (size.width - totalWidth) / 2f
+        val canvasHeight = size.height
+        val minHeightRatio = 0.12f
+
+        for (i in 0 until barCount) {
+            val heightFraction = when (mode) {
+                VoiceEqualizerMode.IDLE -> {
+                    minHeightRatio + 0.04f * kotlin.math.sin((i / 6f) * Math.PI).toFloat()
+                }
+                VoiceEqualizerMode.LISTENING -> {
+                    val weight = barWeights[i]
+                    val reactiveHeight = minHeightRatio + (animatedAmplitude * weight * (1f - minHeightRatio))
+                    reactiveHeight.coerceIn(minHeightRatio, 1f)
+                }
+                VoiceEqualizerMode.PROCESSING -> {
+                    val wave = (kotlin.math.sin(pulsePhase + i * 0.4) + 1.0) / 2.0
+                    (minHeightRatio + 0.25f * wave.toFloat()).coerceIn(minHeightRatio, 1f)
+                }
+                VoiceEqualizerMode.SPEAKING -> {
+                    val wave = (kotlin.math.sin(wavePhase + i * (2 * Math.PI / barCount)) + 1.0) / 2.0
+                    (minHeightRatio + 0.65f * wave.toFloat()).coerceIn(minHeightRatio, 1f)
+                }
+            }
+
+            val barHeight = canvasHeight * heightFraction
+            val x = startX + i * (totalBarWidth + barSpacing)
+            val y = (canvasHeight - barHeight) / 2f
+
+            drawRoundRect(
+                color = barColor,
+                topLeft = Offset(x, y),
+                size = Size(totalBarWidth, barHeight),
+                cornerRadius = CornerRadius(totalBarWidth / 2f, totalBarWidth / 2f)
+            )
+        }
+    }
+}
+
 @Composable
 fun VoiceSessionOverlay(
     state: AssistantState,
+    amplitude: Float = 0f,
     onDismiss: () -> Unit
 ) {
+    val equalizerMode = when (state) {
+        is AssistantState.Listening -> VoiceEqualizerMode.LISTENING
+        is AssistantState.Processing -> VoiceEqualizerMode.PROCESSING
+        is AssistantState.Speaking -> VoiceEqualizerMode.SPEAKING
+        is AssistantState.Idle, is AssistantState.Error -> VoiceEqualizerMode.IDLE
+    }
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -152,11 +279,19 @@ fun VoiceSessionOverlay(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "⚡ Loki Assistant",
+                text = "Loki Assistant",
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
             )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            VoiceEqualizer(
+                amplitude = amplitude,
+                mode = equalizerMode,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+
             Spacer(modifier = Modifier.height(12.dp))
 
             when (state) {
@@ -168,17 +303,27 @@ fun VoiceSessionOverlay(
                     )
                 }
                 is AssistantState.Listening -> {
-                    val promptText = when {
-                        state.partialTranscript.isNotEmpty() -> state.partialTranscript
-                        state.strategy == VoiceInputStrategy.DIRECT_AUDIO -> "🎙️ Listening (Direct Audio)..."
-                        else -> "🎙️ Listening..."
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = "Listening",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        val promptText = when {
+                            state.partialTranscript.isNotEmpty() -> state.partialTranscript
+                            state.strategy == VoiceInputStrategy.DIRECT_AUDIO -> "Listening (Direct Audio)..."
+                            else -> "Listening..."
+                        }
+                        Text(
+                            text = promptText,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
                     }
-                    Text(
-                        text = promptText,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
                 }
                 is AssistantState.Processing -> {
                     Row(
@@ -204,19 +349,39 @@ fun VoiceSessionOverlay(
                     }
                 }
                 is AssistantState.Speaking -> {
-                    Text(
-                        text = "🔊 ${state.responseText}",
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.tertiary
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = "Speaking",
+                            tint = MaterialTheme.colorScheme.tertiary
+                        )
+                        Text(
+                            text = state.responseText,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
                 }
                 is AssistantState.Error -> {
-                    Text(
-                        text = "⚠️ ${state.message}",
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.error
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = "Error",
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            text = state.message,
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
 

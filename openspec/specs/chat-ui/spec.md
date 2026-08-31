@@ -29,13 +29,16 @@ The chat interface SHALL allow the user to send messages via text input and rece
 ---
 
 ### Requirement: Inline voice input fallback in chat interface
-The chat interface SHALL provide an inline microphone button allowing the user to record voice input directly within the chat screen.
+The chat interface SHALL provide an inline microphone button allowing the user to record voice input directly within the chat screen. The mic path SHALL use the capability-driven voice strategy resolver (per the `voice-strategy-resolution` capability): audio-capable models SHALL send recorded audio directly to the LLM; text-only models SHALL transcribe offline via the STT engine before sending; unavailability SHALL be surfaced visibly in the chat UI.
 
 #### Scenario: User taps mic button in chat
 - **WHEN** the user taps the mic button in the chat input bar
-- **THEN** audio capture is started with VAD
-- **AND** spoken audio is transcribed via `WhisperSttEngine`
-- **AND** the recognized transcript is inserted and sent as a user message in the chat
+- **THEN** voice input follows the resolved strategy — direct audio to an audio-capable LLM, or VAD capture transcribed via the STT engine for text-only models
+- **AND** the result (audio turn or recognized transcript) is sent as a user message in the chat
+
+#### Scenario: STT failure is surfaced
+- **WHEN** voice input fails (model unavailable, STT not ready, recording error)
+- **THEN** the chat UI displays a visible error message; the failure is never silently ignored
 
 ---
 
@@ -59,3 +62,12 @@ The chat interface SHALL operate on a durable, stored conversation: history SHAL
 #### Scenario: History survives restart
 - **WHEN** the user completes exchanges, force-closes the app, and reopens it
 - **THEN** the previous conversation's messages are restored in the chat screen and new messages append to the same conversation
+
+---
+
+### Requirement: Voice start cue on mic press
+Pressing the chat mic to start voice input SHALL play a short attention tone as part of the voice start sequence (before STT begins); the composer mic/stop morphing behavior is otherwise unchanged.
+
+#### Scenario: Mic press starts voice with audio cue
+- **WHEN** the user presses the chat mic
+- **THEN** the start tone plays and the voice recording path begins

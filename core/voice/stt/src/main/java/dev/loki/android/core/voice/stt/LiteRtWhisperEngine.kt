@@ -8,7 +8,7 @@ import dev.loki.android.core.models.ModelStorage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.Interpreter
@@ -111,39 +111,43 @@ class LiteRtWhisperEngine(
         }
     }
 
-    override fun startListening(): Flow<SttEvent> = flow {
+    override fun startListening(): Flow<SttEvent> = channelFlow {
         if (!isInitialized) {
-            emit(SttEvent.Error(IllegalStateException("Whisper model not initialized")))
-            return@flow
+            send(SttEvent.Error(IllegalStateException("Whisper model not initialized")))
+            return@channelFlow
         }
 
         isListening = true
-        emit(SttEvent.ListeningStarted)
+        send(SttEvent.ListeningStarted)
         val recorder = AudioRecorder()
         audioRecorder = recorder
 
         try {
-            val audioFloats = recorder.recordUtterance()
-            emit(SttEvent.ListeningStopped)
+            val audioFloats = recorder.recordUtterance(
+                onRmsUpdate = { rms ->
+                    trySend(SttEvent.Amplitude(rms))
+                }
+            )
+            send(SttEvent.ListeningStopped)
             isListening = false
 
             if (audioFloats.isEmpty()) {
-                emit(SttEvent.FinalResult(""))
-                return@flow
+                send(SttEvent.FinalResult(""))
+                return@channelFlow
             }
 
             val transcript = withContext(Dispatchers.Default) {
                 transcribePcmAudio(audioFloats)
             }.trim()
 
-            emit(SttEvent.FinalResult(transcript))
+            send(SttEvent.FinalResult(transcript))
         } catch (e: CancellationException) {
             isListening = false
-            emit(SttEvent.ListeningStopped)
+            send(SttEvent.ListeningStopped)
             throw e
         } catch (e: Throwable) {
             isListening = false
-            emit(SttEvent.Error(e))
+            send(SttEvent.Error(e))
         } finally {
             audioRecorder = null
             isListening = false

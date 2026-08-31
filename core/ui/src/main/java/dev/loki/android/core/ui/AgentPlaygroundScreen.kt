@@ -60,7 +60,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.loki.android.core.llm.LlmModelState
 import dev.loki.android.core.models.ExecutionBackend
-import dev.loki.android.core.ui.theme.LokiCornerTokens
+import dev.loki.android.core.theme.LokiCornerTokens
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -192,7 +192,7 @@ fun AgentPlaygroundScreen(
             // 1. MODEL SECTION
             item {
                 Card(
-                    shape = RoundedCornerShape(dev.loki.android.core.ui.theme.LokiCornerTokens.medium),
+                    shape = RoundedCornerShape(LokiCornerTokens.medium),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -344,7 +344,7 @@ fun AgentPlaygroundScreen(
             // 4. TEST PROMPT SECTION
             item {
                 Card(
-                    shape = RoundedCornerShape(dev.loki.android.core.ui.theme.LokiCornerTokens.medium),
+                    shape = RoundedCornerShape(LokiCornerTokens.medium),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -446,7 +446,7 @@ fun AgentPlaygroundScreen(
             // 5. ADVANCED SECTION (COLLAPSIBLE)
             item {
                 Card(
-                    shape = RoundedCornerShape(dev.loki.android.core.ui.theme.LokiCornerTokens.medium),
+                    shape = RoundedCornerShape(LokiCornerTokens.medium),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -659,7 +659,7 @@ private fun CapabilityBadge(
     val textColor = if (supported) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
 
     Surface(
-        shape = RoundedCornerShape(dev.loki.android.core.ui.theme.LokiCornerTokens.badge),
+        shape = RoundedCornerShape(LokiCornerTokens.badge),
         color = bg,
         modifier = modifier
     ) {

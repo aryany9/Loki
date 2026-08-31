@@ -45,8 +45,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.loki.android.core.llm.LlmModelState
-import dev.loki.android.core.ui.theme.LokiCornerTokens
-import dev.loki.android.core.ui.theme.ThemeMode
+import dev.loki.android.core.theme.LokiCornerTokens
+import dev.loki.android.core.theme.ThemeMode
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

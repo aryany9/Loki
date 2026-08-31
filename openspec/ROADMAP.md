@@ -1,51 +1,63 @@
-# UI Modernization Roadmap
+# Loki UI & Voice Roadmap
 
 Target: a Gemini-style, Material 3 Expressive experience for Loki. Dynamic Color
-(Gemini-like, always-on) was confirmed as the design direction; brand palette
-remains only as API 29/30 fallback.
+(Gemini-like, always-on) confirmed as the design direction; brand palette remains
+only as API 29/30 fallback. Product: local-first, private, offline-first assistant.
 
-## Status
+## Implemented & archived
 
-| Phase | Change | Status |
-|---|---|---|
-| 1 | Foundation (tokens, Dynamic Color, edge-to-edge) | ✅ Captured: `modernize-ui-foundation` — ready to apply |
-| 2 | Conversation surface (bubble-less, markdown, streaming, tool cards) | ✅ Captured: `modernize-chat-surface` — ready to apply |
-| 3 | Composer (floating pill, morphing send/mic/stop button) | ✅ Captured: `modernize-composer` — ready to apply (scope: composer only; top-bar simplification folded into later shell work) |
-| 4 | App shell (nav drawer, settings screen, top bar simplification) | ✅ Captured: `modernize-app-shell` — ready to apply (model-switcher dropdown deferred; badge → info popover) |
-| 5 | Home state + motion (greeting, suggestion chips, transitions) | ✅ Captured: `modernize-home-motion` — ready to apply (final phase; includes vector-icon sweep + token sweep) |
+| Change | Delivers |
+|---|---|
+| `modernize-ui-foundation` | Compose BOM current; Dynamic Color (API 31+); type/shape/spacing tokens; edge-to-edge |
+| `modernize-chat-surface` | Bubble-less markdown messages; token streaming; thinking dots; expandable tool cards |
+| `modernize-composer` | Floating pill composer; morphing send/mic/stop; generation cancellation |
+| `persist-conversation-history` | Durable multi-conversation JSON store; startup restore; write-through turns |
+| `modernize-app-shell` | Nav drawer + recents; Settings screen; decluttered top bar; model-status popover |
+| `modernize-home-motion` | Greeting home state + chips; vector icons; screen transitions; token sweep |
+| `fix-chat-input-and-voice` | IME adjustResize; capability-driven chat voice (DirectAudio + whisper-STT + one-tap ASR provisioning); `core/theme` extraction |
+| `voice-visualizer` | Gemini-style live amplitude equalizer; vector icons in voice overlay |
 
-Notes: Phases 2–3 and 4 may swap order (mostly independent), but all require
-Phase 1. Phase 4's prerequisite — persistent conversation history — is now
-captured as `persist-conversation-history` (file-backed JSON store via
-kotlinx-serialization; no Room) and must land before the app-shell drawer.
+All archived and validated. Spec library is in canonical format (openspec/specs/).
 
-## Phase details
+## Backlog (open)
 
-### Phase 2 — Conversation surface
-- Full-width assistant messages (no bubbles) — requires a MODIFIED delta on `chat-ui`
-- Markdown + code block rendering (new dependency: Compose markdown renderer)
-- Streaming token-by-token rendering with animated "thinking" state
-- Tool execution rendered as expandable cards (replaces "✓ Action executed" pill)
+### Code / UI
+- **System back navigation** (Bug): back from Settings/Model-Library/Playground/
+  Permissions exits the app instead of returning to chat — MainActivity enum
+  navigation has no BackHandler/back-stack.
+- **Fresh-install / landing page** (Bug): app opens the previous chat instead of a
+  new-chat home; a conversation is created eagerly at startup (before user
+  interaction), and allowBackup=true restores conversation files on reinstall.
+  Requirement: land on empty home by default; create a conversation only on first
+  message; previous chats reachable via drawer recents.
+- **Voice overlay token sweep**: LokiVoiceInteractionSession.kt still has
+  hardcoded fontSize = 15/16/18.sp; migrate to MaterialTheme.typography tokens.
+- **Model-switcher dropdown** in chat (badge currently opens an info popover only).
+- **Conversation rename UI** (store API exists; drawer UI missing).
+- **Conversation retention cap** (full history kept per file indefinitely).
+- **Hilt-ify ViewModels** (ChatViewModel/SettingsViewModel/AgentPlaygroundViewModel
+  still constructed manually in MainActivity @HiltViewModel + hiltViewModel()).
 
-### Phase 3 — Composer
-- Borderless floating pill input bar
-- Morphing send/mic/stop button based on state (ChatGPT behavior)
-- Scroll-to-bottom FAB visible only when scrolled up
+### Voice
+- **Start-speaking audio cue** (Bug, FIXED in `fix-startup-navigation-voice`): a short runtime-synthesized Gemini-like attention tone now plays on voice start (chat mic or assistant long-press). A hidden `audioStartCueEnabled` flag gates it.
+- **(Backlog follow-up) Voice start-cue customization**: let the user pick/select a start tone (or disable). Currently a fixed runtime-synthesized tone is shipped for v1.
+- **STT streaming partials / optional Android STT engine**: quality/UX upgrade,
+  privacy trade-off documented (prefer Whisper offline by default).
 
-### Phase 4 — App shell
-- `ModalNavigationDrawer`: New chat, recents, theme selector, links to
-  Model Library / Agent Playground / Settings
-- New Settings screen (first spec'd settings destination; hosts ThemeMode)
-- Top bar simplified to Gemini-style: title + model selector dropdown left,
-  avatar/menu right; ModelStatusBadge moves into dropdown/drawer
+### Release / repo hygiene
+- **Tag v0.1.0** and publish first GitHub release (workflow ready; debug-signed APK
+  without keystore secrets).
+- **Add a LICENSE** (README omits the badge until then).
+- **Branch protection rules** for `main` (CI gates PRs).
 
-### Phase 5 — Home state + motion
-- Empty-state greeting ("Hi {name} ✨") with suggestion chips
-- Spring-based screen transitions, predictive back, haptics
-- Remaining screens (Setup, Permissions, Model Library, Playground) retokenized
+## Capturing plan (grouping)
+
+- **Single combined** → `fix-startup-navigation-voice`: all three bugs together. (Bug 1 system back, Bug 3 landing/lazy conversation — already coupled in the shell skeleton; Bug 2 voice-start cue is independent but trivial and lives in the same startup voice path, so it ships alongside to avoid a second review cycle.) Rationale: keeps a coherent "app boots and talks to the user correctly" change; each bug still has isolated tasks for rollback.
+
 
 ## Decisions so far
 
-- Dynamic Color always-on, no opt-out toggle (brand identity not a priority)
-- Foundation first so new shell components are correct from day one
-- Conversation persistence is its own change, not folded into Phase 4
+- Dynamic Color always-on, no opt-out toggle.
+- Foundation first; default landing = new-chat home state, no eager conversation.
+- Voice is private-offline: whisper by default; Android STT only as opt-in engine.
+- nav + startup are combined because they share the shell/back-stack skeleton.

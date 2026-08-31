@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.Flow
 
 sealed interface SttEvent {
     data object ListeningStarted : SttEvent
+    data class Amplitude(val rms: Float) : SttEvent
     data class PartialResult(val text: String) : SttEvent
     data class FinalResult(val text: String) : SttEvent
     data class Error(val error: Throwable) : SttEvent

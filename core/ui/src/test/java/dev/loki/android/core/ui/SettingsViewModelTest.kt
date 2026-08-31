@@ -10,8 +10,8 @@ import dev.loki.android.core.models.AgentConfig
 import dev.loki.android.core.models.ModelCapabilities
 import dev.loki.android.core.models.RuntimeConfig
 import dev.loki.android.core.tools.ToolRegistry
-import dev.loki.android.core.ui.theme.ThemeMode
-import dev.loki.android.core.ui.theme.ThemeRepository
+import dev.loki.android.core.theme.ThemeMode
+import dev.loki.android.core.theme.ThemeRepository
 import java.io.File
 import java.nio.file.Files
 import kotlinx.coroutines.Dispatchers

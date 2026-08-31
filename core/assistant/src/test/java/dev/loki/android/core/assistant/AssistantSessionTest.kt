@@ -16,15 +16,53 @@ import org.junit.Test
 class AssistantSessionTest {
 
     private val testDispatcher = StandardTestDispatcher()
+    private lateinit var tempDir: java.io.File
 
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
+        tempDir = java.nio.file.Files.createTempDirectory("loki-test-assistant-default").toFile()
+        val storage = dev.loki.android.core.models.ModelStorage(tempDir)
+        val registry = dev.loki.android.core.models.ModelRegistry(storage)
+
+        storage.artifactFile("default-audio-model", "m.bin").apply {
+            parentFile?.mkdirs()
+            writeBytes(byteArrayOf(1, 2, 3))
+        }
+
+        val audioModel = dev.loki.android.core.models.ModelRecord(
+            id = "default-audio-model",
+            displayName = "Default Audio Model",
+            runtime = dev.loki.android.core.models.ModelRuntime.LITERT_LM,
+            format = dev.loki.android.core.models.ModelFormat.LITERT_MODEL,
+            availability = dev.loki.android.core.models.ModelAvailability.LOADED,
+            artifacts = listOf(
+                dev.loki.android.core.models.ModelArtifact("m.bin", "m.bin", 100L, url = "")
+            ),
+            source = dev.loki.android.core.models.ModelSource.BUNDLED_CATALOG,
+            importedAtEpochMs = 1L,
+            capabilities = dev.loki.android.core.models.ModelRecordCapabilities(
+                audioInput = dev.loki.android.core.models.ModelMetadataField(value = true, confidence = dev.loki.android.core.models.MetadataConfidence.VERIFIED)
+            )
+        )
+        registry.save(dev.loki.android.core.models.ModelManifest(
+            activeModels = mapOf(dev.loki.android.core.models.ModelRuntime.LITERT_LM to audioModel.id),
+            models = listOf(audioModel)
+        ))
+        val manager = dev.loki.android.core.models.ModelLibraryManager(storage, registry)
+        manager.registerReadinessProvider(dev.loki.android.core.models.ModelRuntime.LITERT_LM) { true }
+
+        AssistantSessionProvider.instance = object : AssistantSessionProvider {
+            override fun getConversationManager(): dev.loki.android.core.conversation.ConversationManager? = null
+            override fun getSttEngine(): dev.loki.android.core.voice.stt.SttEngine? = null
+            override fun getModelLibraryManager(): dev.loki.android.core.models.ModelLibraryManager = manager
+        }
     }
 
     @After
     fun tearDown() {
         AssistantSessionProvider.instance = null
+        tempDir.deleteRecursively()
         Dispatchers.resetMain()
     }
 
@@ -198,5 +236,83 @@ class AssistantSessionTest {
         AssistantSessionProvider.instance = null
         session.destroy()
         tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `initial amplitude is 0f`() {
+        val session = AssistantSession()
+        assertEquals(0f, session.amplitude.value)
+        session.destroy()
+    }
+
+    @Test
+    fun `normalizeRms produces values in 0 to 1 and clamps extremes`() {
+        assertEquals(0f, AssistantSession.normalizeRms(0f), 0.0001f)
+        assertEquals(0f, AssistantSession.normalizeRms(-500f), 0.0001f)
+        assertEquals(0.5f, AssistantSession.normalizeRms(4000f, ceiling = 8000f), 0.0001f)
+        assertEquals(1.0f, AssistantSession.normalizeRms(8000f, ceiling = 8000f), 0.0001f)
+        assertEquals(1.0f, AssistantSession.normalizeRms(20000f, ceiling = 8000f), 0.0001f)
+    }
+
+    @Test
+    fun `smoothRms performs one-pole low pass filter correctly`() {
+        val current = 0.2f
+        val target = 0.8f
+        val smoothed = AssistantSession.smoothRms(current, target, alpha = 0.4f)
+        // 0.2 * 0.6 + 0.8 * 0.4 = 0.12 + 0.32 = 0.44
+        assertEquals(0.44f, smoothed, 0.001f)
+    }
+
+    @Test
+    fun `amplitude smoothing is monotonic under rising and falling RMS streams`() {
+        var current = 0f
+        val risingStream = listOf(1000f, 2000f, 4000f, 6000f, 8000f)
+        val risingValues = mutableListOf<Float>()
+
+        for (rms in risingStream) {
+            val normalized = AssistantSession.normalizeRms(rms)
+            current = AssistantSession.smoothRms(current, normalized)
+            risingValues.add(current)
+        }
+
+        // Verify strictly increasing
+        for (i in 0 until risingValues.size - 1) {
+            assertTrue(
+                "Expected rising stream to be monotonically increasing: ${risingValues[i]} < ${risingValues[i+1]}",
+                risingValues[i] < risingValues[i+1]
+            )
+        }
+
+        // Verify values are in 0..1
+        assertTrue(risingValues.all { it in 0f..1f })
+
+        // Falling stream
+        val fallingStream = listOf(6000f, 4000f, 2000f, 500f, 0f)
+        val fallingValues = mutableListOf<Float>()
+        for (rms in fallingStream) {
+            val normalized = AssistantSession.normalizeRms(rms)
+            current = AssistantSession.smoothRms(current, normalized)
+            fallingValues.add(current)
+        }
+
+        // Verify strictly decreasing
+        for (i in 0 until fallingValues.size - 1) {
+            assertTrue(
+                "Expected falling stream to be monotonically decreasing: ${fallingValues[i]} > ${fallingValues[i+1]}",
+                fallingValues[i] > fallingValues[i+1]
+            )
+        }
+    }
+
+    @Test
+    fun `processRawRms updates amplitude state flow and resetAmplitude resets to 0`() {
+        val session = AssistantSession()
+        session.processRawRms(6000f)
+        assertTrue(session.amplitude.value > 0f)
+        assertTrue(session.amplitude.value <= 1f)
+
+        session.resetAmplitude()
+        assertEquals(0f, session.amplitude.value)
+        session.destroy()
     }
 }

@@ -33,9 +33,12 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:theme"))
+    implementation(project(":core:sound"))
     implementation(project(":core:models"))
     implementation(project(":core:llm"))
     implementation(project(":core:conversation"))
+    implementation(project(":core:assistant"))
     implementation(project(":core:voice:stt"))
     implementation(project(":core:voice:tts"))
     implementation(project(":core:tools"))

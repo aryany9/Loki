@@ -44,12 +44,15 @@ class WhisperSttTest {
     @Test
     fun `SttEvent sealed interface contracts are defined`() {
         val start: SttEvent = SttEvent.ListeningStarted
+        val amp: SttEvent = SttEvent.Amplitude(1234.5f)
         val partial: SttEvent = SttEvent.PartialResult("hello")
         val finalRes: SttEvent = SttEvent.FinalResult("hello world")
         val stopped: SttEvent = SttEvent.ListeningStopped
         val error: SttEvent = SttEvent.Error(RuntimeException("test error"))
 
         assertNotNull(start)
+        assertNotNull(amp)
+        org.junit.Assert.assertEquals(1234.5f, (amp as SttEvent.Amplitude).rms, 0.001f)
         assertNotNull(partial)
         assertNotNull(finalRes)
         assertNotNull(stopped)

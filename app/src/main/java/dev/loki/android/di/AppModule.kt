@@ -18,7 +18,7 @@ import dev.loki.android.core.models.ModelRuntimeController
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.local.DefaultLocalTools
-import dev.loki.android.core.ui.theme.ThemeRepository
+import dev.loki.android.core.theme.ThemeRepository
 import dev.loki.android.core.voice.stt.LiteRtWhisperEngine
 import dev.loki.android.core.voice.stt.SttEngine
 import dev.loki.android.core.voice.tts.AndroidTtsEngine
