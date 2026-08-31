@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## MODIFIED REQUIREMENTS
 
 ### Requirement: Chat restores the most recent conversation at startup
 When the chat screen initializes, the system SHALL present the new-chat home state (empty conversation) rather than auto-opening an existing or newly created conversation. No conversation SHALL be created on startup; the active conversation identity SHALL be assigned lazily on the user's first message. Switching conversations (from the drawer recents) SHALL reset the LLM engine's native conversation state and re-seed the text context from stored turns. Existing stored conversations SHALL remain listed in the drawer recents.

@@ -255,7 +255,7 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun `ChatViewModel restores stored conversation turns at startup and starts new conversation`() = runTest(testDispatcher) {
+    fun `ChatViewModel opens home at startup and loads conversation turns upon selection`() = runTest(testDispatcher) {
         val tempDir = Files.createTempDirectory("chat_vm_test").toFile()
         val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
         val dummyContext = ContextWrapper(null)
@@ -278,6 +278,15 @@ class ChatViewModelTest {
         val viewModel = ChatViewModel(conversationManager = manager)
         advanceUntilIdle()
 
+        // At startup: opens on empty home, does not auto-open stored conversation
+        assertEquals(0, viewModel.messages.value.size)
+        assertEquals(null, viewModel.currentConversationId)
+        assertEquals(1, viewModel.conversations.value.size)
+
+        // Select the stored conversation
+        viewModel.selectConversation(conv.id)
+        advanceUntilIdle()
+
         val restoredMessages = viewModel.messages.value
         assertEquals(2, restoredMessages.size)
         assertEquals("Previous question", restoredMessages[0].text)
@@ -290,12 +299,13 @@ class ChatViewModelTest {
         advanceUntilIdle()
         val newMessages = viewModel.messages.value
         assertEquals(0, newMessages.size)
+        assertEquals(null, viewModel.currentConversationId)
 
         tempDir.deleteRecursively()
     }
 
     @Test
-    fun `conversations flow refreshes on init, new, select, and delete`() = runTest(testDispatcher) {
+    fun `conversations flow refreshes on init, new, send, select, and delete`() = runTest(testDispatcher) {
         val tempDir = Files.createTempDirectory("chat_vm_conv_test").toFile()
         val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
         val dummyContext = ContextWrapper(null)
@@ -320,11 +330,17 @@ class ChatViewModelTest {
         assertEquals(1, viewModel.conversations.value.size)
         assertEquals(conv1.id, viewModel.conversations.value[0].id)
 
-        // Create new conversation
+        // Start new conversation (draft - no store creation yet)
         viewModel.newConversation()
         advanceUntilIdle()
-        assertEquals(2, viewModel.conversations.value.size)
+        assertEquals(1, viewModel.conversations.value.size)
         assertEquals(0, viewModel.messages.value.size)
+        assertEquals(null, viewModel.currentConversationId)
+
+        // Send first message in new conversation -> creates 2nd conversation
+        viewModel.sendMessage("Hello 2")
+        advanceUntilIdle()
+        assertEquals(2, viewModel.conversations.value.size)
 
         // Select conv1
         viewModel.selectConversation(conv1.id)
@@ -664,6 +680,112 @@ class ChatViewModelTest {
 
         assertEquals("Voice engine unavailable. Please restart the app.", viewModel.voiceError.value)
         assertFalse(viewModel.isDownloadingVoiceModel.value)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `fresh install shows home and creates no conversation in store`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+        val tempDir = Files.createTempDirectory("cvm_fresh_home").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.messages.value.isEmpty())
+        assertEquals(null, viewModel.currentConversationId)
+        assertTrue(store.listConversations().isEmpty())
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `restart with stored conversation opens home and populates recents without auto-opening`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+        val tempDir = Files.createTempDirectory("cvm_restart_home").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val existing = store.createConversation("Prior Conversation")
+        store.appendTurn(existing.id, ConversationTurn.User("Hello from past"))
+        store.appendTurn(existing.id, ConversationTurn.Assistant("Past response"))
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        // Home state is empty
+        assertTrue(viewModel.messages.value.isEmpty())
+        assertEquals(null, viewModel.currentConversationId)
+        // Recents still populated
+        assertEquals(1, viewModel.conversations.value.size)
+        assertEquals(existing.id, viewModel.conversations.value.first().id)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `first message creates exactly one conversation and subsequent turns append to it`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+        val tempDir = Files.createTempDirectory("cvm_lazy_create").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        assertEquals(null, viewModel.currentConversationId)
+        assertEquals(0, store.listConversations().size)
+
+        // Send first message
+        viewModel.sendMessage("First message")
+        advanceUntilIdle()
+
+        val createdId = viewModel.currentConversationId
+        assertTrue(createdId != null)
+        assertEquals(1, store.listConversations().size)
+        val storedConvo = store.loadConversation(createdId!!)
+        assertTrue(storedConvo != null)
+        assertEquals(2, storedConvo?.turns?.size) // User + Assistant
+
+        // Send second message in same conversation
+        viewModel.sendMessage("Second message")
+        advanceUntilIdle()
+
+        assertEquals(createdId, viewModel.currentConversationId)
+        assertEquals(1, store.listConversations().size)
+        val updatedConvo = store.loadConversation(createdId)
+        assertEquals(4, updatedConvo?.turns?.size)
+
+        // New conversation resets to draft
+        viewModel.newConversation()
+        advanceUntilIdle()
+
+        assertEquals(null, viewModel.currentConversationId)
+        assertTrue(viewModel.messages.value.isEmpty())
+        assertEquals(1, store.listConversations().size) // No extra conversation created
 
         tempDir.deleteRecursively()
     }

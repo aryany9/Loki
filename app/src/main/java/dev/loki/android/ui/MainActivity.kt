@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,6 +16,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -152,7 +154,21 @@ class MainActivity : ComponentActivity() {
             val coroutineScope = rememberCoroutineScope()
             val modelManifest by modelLibraryManager.manifest.collectAsState()
 
-            var currentScreen by remember { mutableStateOf<AppScreen?>(null) }
+            val backStack = remember { mutableStateListOf<AppScreen>() }
+
+            fun navigateTo(screen: AppScreen) {
+                if (backStack.lastOrNull() != screen) {
+                    backStack.add(screen)
+                }
+            }
+
+            fun goBack(): Boolean {
+                if (backStack.size > 1) {
+                    backStack.removeAt(backStack.size - 1)
+                    return true
+                }
+                return false
+            }
 
             // Navigation gate: runtime readiness drives routing, not isFirstRunComplete.
             // Auto-transition SETUP → CHAT once mandatory runtimes are LOADED.
@@ -165,18 +181,28 @@ class MainActivity : ComponentActivity() {
 
             LaunchedEffect(modelManifest) {
                 when {
-                    currentScreen == null -> {
+                    backStack.isEmpty() -> {
                         // Cold start: route based on readiness
-                        currentScreen = if (bothReady) AppScreen.CHAT else AppScreen.SETUP
+                        backStack.add(if (bothReady) AppScreen.CHAT else AppScreen.SETUP)
                     }
-                    currentScreen == AppScreen.SETUP && bothReady -> {
+                    backStack.contains(AppScreen.SETUP) && bothReady -> {
                         // Both runtimes became ready while on Setup — auto-advance
-                        currentScreen = AppScreen.CHAT
+                        backStack.clear()
+                        backStack.add(AppScreen.CHAT)
                     }
-                    currentScreen == AppScreen.CHAT && !bothReady -> {
+                    backStack.lastOrNull() == AppScreen.CHAT && !bothReady -> {
                         // A required runtime was lost while in Chat (e.g., model deleted) — return to Setup
-                        currentScreen = AppScreen.SETUP
+                        backStack.clear()
+                        backStack.add(AppScreen.SETUP)
                     }
+                }
+            }
+
+            val currentScreen = backStack.lastOrNull() ?: if (bothReady) AppScreen.CHAT else AppScreen.SETUP
+
+            BackHandler(enabled = backStack.size > 1 && currentScreen != AppScreen.CHAT && currentScreen != AppScreen.SETUP) {
+                if (!goBack()) {
+                    finish()
                 }
             }
 
@@ -210,14 +236,15 @@ class MainActivity : ComponentActivity() {
                                     onCompleteSetup = {
                                         coroutineScope.launch {
                                             themeRepository.setFirstRunComplete(true)
-                                            currentScreen = AppScreen.CHAT
+                                            backStack.clear()
+                                            backStack.add(AppScreen.CHAT)
                                         }
                                     },
                                     onProvisionRuntime = {
-                                        currentScreen = AppScreen.MODEL_LIBRARY
+                                        navigateTo(AppScreen.MODEL_LIBRARY)
                                     },
                                     onNavigateToAgentPlayground = {
-                                        currentScreen = AppScreen.AGENT_PLAYGROUND
+                                        navigateTo(AppScreen.AGENT_PLAYGROUND)
                                     }
                                 )
                             }
@@ -231,7 +258,7 @@ class MainActivity : ComponentActivity() {
                                         permissionManager.openAppSettings(this@MainActivity)
                                     },
                                     onNavigateBack = {
-                                        currentScreen = AppScreen.CHAT
+                                        goBack()
                                     }
                                 )
                             }
@@ -239,9 +266,10 @@ class MainActivity : ComponentActivity() {
                                 ModelLibraryScreen(
                                     models = modelManifest.models,
                                     onNavigateBack = {
-                                        // Return to Setup if not all runtimes are ready yet,
-                                        // otherwise return to Chat.
-                                        currentScreen = if (bothReady) AppScreen.CHAT else AppScreen.SETUP
+                                        if (!goBack()) {
+                                            backStack.clear()
+                                            backStack.add(if (bothReady) AppScreen.CHAT else AppScreen.SETUP)
+                                        }
                                     },
                                     onImport = {
                                         modelOperationError = null
@@ -300,27 +328,27 @@ class MainActivity : ComponentActivity() {
                                 dev.loki.android.core.ui.AgentPlaygroundScreen(
                                     viewModel = agentPlaygroundViewModel,
                                     onNavigateBack = {
-                                        currentScreen = AppScreen.CHAT
+                                        goBack()
                                     },
                                     onNavigateToModelLibrary = {
-                                        currentScreen = AppScreen.MODEL_LIBRARY
+                                        navigateTo(AppScreen.MODEL_LIBRARY)
                                     }
                                 )
                             }
-                            AppScreen.CHAT, null -> {
+                            AppScreen.CHAT -> {
                                 ChatScreen(
                                     viewModel = chatViewModel,
                                     onNavigateToPermissions = {
-                                        currentScreen = AppScreen.PERMISSIONS
+                                        navigateTo(AppScreen.PERMISSIONS)
                                     },
                                     onNavigateToModelLibrary = {
-                                        currentScreen = AppScreen.MODEL_LIBRARY
+                                        navigateTo(AppScreen.MODEL_LIBRARY)
                                     },
                                     onNavigateToAgentPlayground = {
-                                        currentScreen = AppScreen.AGENT_PLAYGROUND
+                                        navigateTo(AppScreen.AGENT_PLAYGROUND)
                                     },
                                     onNavigateToSettings = {
-                                        currentScreen = AppScreen.SETTINGS
+                                        navigateTo(AppScreen.SETTINGS)
                                     }
                                 )
                             }
@@ -328,16 +356,16 @@ class MainActivity : ComponentActivity() {
                                 dev.loki.android.core.ui.SettingsScreen(
                                     viewModel = settingsViewModel,
                                     onNavigateBack = {
-                                        currentScreen = AppScreen.CHAT
+                                        goBack()
                                     },
                                     onNavigateToModelLibrary = {
-                                        currentScreen = AppScreen.MODEL_LIBRARY
+                                        navigateTo(AppScreen.MODEL_LIBRARY)
                                     },
                                     onNavigateToAgentPlayground = {
-                                        currentScreen = AppScreen.AGENT_PLAYGROUND
+                                        navigateTo(AppScreen.AGENT_PLAYGROUND)
                                     },
                                     onNavigateToPermissions = {
-                                        currentScreen = AppScreen.PERMISSIONS
+                                        navigateTo(AppScreen.PERMISSIONS)
                                     }
                                 )
                             }

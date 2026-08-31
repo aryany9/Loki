@@ -36,6 +36,7 @@ dependencies {
     implementation(project(":core:conversation"))
     implementation(project(":core:voice:stt"))
     implementation(project(":core:theme"))
+    implementation(project(":core:sound"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.savedstate)
     implementation(platform(libs.androidx.compose.bom))
