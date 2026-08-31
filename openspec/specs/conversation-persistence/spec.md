@@ -26,15 +26,19 @@ The system SHALL support creating, listing (sorted by most recently updated), lo
 - **THEN** its stored file is removed and it no longer appears in listings
 
 ### Requirement: Chat restores the most recent conversation at startup
-When the chat screen initializes, the system SHALL load the most recently updated conversation (seeded into the conversation context and rendered in the UI), or create a new conversation if none exists. Switching conversations SHALL reset the LLM engine's native conversation state and re-seed the text context from stored turns.
+When the chat screen initializes, the system SHALL present the new-chat home state (empty conversation) rather than auto-opening an existing or newly created conversation. No conversation SHALL be created on startup; the active conversation identity SHALL be assigned lazily on the user's first message. Switching conversations (from the drawer recents) SHALL reset the LLM engine's native conversation state and re-seed the text context from stored turns. Existing stored conversations SHALL remain listed in the drawer recents.
 
-#### Scenario: Fresh install
+#### Scenario: Fresh install shows home, no eager creation
 - **WHEN** the app starts for the first time with no stored conversations
-- **THEN** a new empty conversation is created and the chat screen opens on it
+- **THEN** the chat surface shows the empty home state with greeting and suggestion chips, and NO conversation record is created in storage until the user sends a first message
 
-#### Scenario: Restore on restart
+#### Scenario: Restart shows a fresh chat, recents preserved
 - **WHEN** the app restarts with stored conversations
-- **THEN** the most recent conversation's history is rendered in the chat screen and subsequent turns append to it
+- **THEN** the chat surface opens on the empty home state (not the most recent conversation), and all stored conversations remain available in the drawer recents
+
+#### Scenario: First message creates the conversation
+- **WHEN** the user sends their first message after launch (from the home state)
+- **THEN** a new conversation is created and persisted, and subsequent turns append to it
 
 ### Requirement: Conversation titles
 A conversation SHALL be auto-titled from its first user message (truncated); the system SHALL expose a rename operation for later UI. Users SHALL be able to start a new conversation from the chat surface.
