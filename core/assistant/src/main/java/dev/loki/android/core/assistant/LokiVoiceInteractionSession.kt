@@ -36,6 +36,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import dev.loki.android.core.sound.AudioCue
+import dev.loki.android.core.sound.audioStartCueEnabled
 import dev.loki.android.core.theme.LokiTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -122,11 +124,17 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
         }
     }
 
+    private var voiceStartCuePlayed: Boolean = false
+
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         Log.i(TAG, "onShow() showFlags=$showFlags, args=$args")
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+        if (audioStartCueEnabled && !voiceStartCuePlayed) {
+            AudioCue.playStartTone()
+            voiceStartCuePlayed = true
+        }
         assistantSession.startTurn()
     }
 
@@ -134,6 +142,7 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
         super.onHide()
         Log.i(TAG, "onHide()")
         assistantSession.cancelTurn()
+        voiceStartCuePlayed = false
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
     }
@@ -141,6 +150,7 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "onDestroy()")
+        voiceStartCuePlayed = false
         assistantSession.destroy()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
     }

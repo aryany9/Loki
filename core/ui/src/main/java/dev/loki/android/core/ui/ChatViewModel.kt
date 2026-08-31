@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import dev.loki.android.core.assistant.AssistantSessionProvider
 import dev.loki.android.core.assistant.VoiceInputStrategyResolver
 import dev.loki.android.core.assistant.VoiceInputStrategyResult
+import dev.loki.android.core.sound.AudioCue
+import dev.loki.android.core.sound.audioStartCueEnabled
 import dev.loki.android.core.conversation.ConversationEvent
 import dev.loki.android.core.conversation.ConversationManager
 import dev.loki.android.core.conversation.ConversationRecord
@@ -58,6 +60,7 @@ class ChatViewModel(
 ) : ViewModel() {
 
     val modelState: StateFlow<LlmModelState> = conversationManager.llmEngine.modelState
+    val currentConversationId: String? get() = conversationManager.currentConversationId
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
@@ -85,6 +88,7 @@ class ChatViewModel(
 
     private var activeAudioRecorder: AudioRecorder? = null
     private var recordingJob: Job? = null
+    private var voiceStartCuePlayed: Boolean = false
 
     init {
         viewModelScope.launch {
@@ -98,21 +102,9 @@ class ChatViewModel(
     }
 
     suspend fun loadInitialConversation() {
-        val convList = conversationManager.listConversations()
-        _conversations.value = convList
-        val mostRecent = convList.firstOrNull()
-        if (mostRecent != null) {
-            val loaded = conversationManager.loadConversation(mostRecent.id)
-            if (loaded != null && loaded.turns.isNotEmpty()) {
-                _messages.value = mapTurnsToMessages(loaded.turns)
-            } else if (loaded != null) {
-                _messages.value = mapTurnsToMessages(emptyList())
-            }
-        } else {
-            val newConv = conversationManager.createConversation()
-            _messages.value = mapTurnsToMessages(newConv.turns)
-            refreshConversations()
-        }
+        conversationManager.reset()
+        _messages.value = emptyList()
+        refreshConversations()
     }
 
     fun selectConversation(id: String) {
@@ -128,9 +120,9 @@ class ChatViewModel(
 
     fun newConversation() {
         cancelGeneration()
+        conversationManager.reset()
+        _messages.value = emptyList()
         viewModelScope.launch {
-            val newConv = conversationManager.createConversation()
-            _messages.value = mapTurnsToMessages(newConv.turns)
             refreshConversations()
         }
     }
@@ -139,8 +131,13 @@ class ChatViewModel(
 
     fun deleteConversation(id: String) {
         viewModelScope.launch {
+            val wasActive = conversationManager.currentConversationId == id
             conversationManager.deleteConversation(id)
-            loadInitialConversation()
+            if (wasActive) {
+                conversationManager.reset()
+                _messages.value = emptyList()
+            }
+            refreshConversations()
         }
     }
 
@@ -211,6 +208,11 @@ class ChatViewModel(
             var latestToolName: String? = null
 
             try {
+                if (conversationManager.currentConversationId == null) {
+                    conversationManager.createConversation()
+                    refreshConversations()
+                }
+
                 val chatSession = conversationManager.newChatSession()
                 chatSession.processUtterance(
                     userInput = userInput,
@@ -317,6 +319,11 @@ class ChatViewModel(
     }
 
     fun startVoiceInput() {
+        if (audioStartCueEnabled && !voiceStartCuePlayed) {
+            AudioCue.playStartTone()
+            voiceStartCuePlayed = true
+        }
+
         _voiceError.value = null
         _isVoiceModelDownloadable.value = false
         val modelManager = modelLibraryManager ?: AssistantSessionProvider.instance?.getModelLibraryManager()
@@ -331,6 +338,7 @@ class ChatViewModel(
             }
             is VoiceInputStrategyResult.Unavailable -> {
                 _isRecording.value = false
+                voiceStartCuePlayed = false
                 if (resolution.reason == VoiceUnavailableReason.STT_NOT_READY) {
                     _isVoiceModelDownloadable.value = true
                     _voiceError.value = "Voice recognition model required for text-only model. Tap download to install."
@@ -463,6 +471,7 @@ class ChatViewModel(
             try {
                 val audioFloats = recorder.recordUtterance()
                 _isRecording.value = false
+                voiceStartCuePlayed = false
                 activeAudioRecorder = null
 
                 if (audioFloats.isNotEmpty()) {
@@ -476,10 +485,12 @@ class ChatViewModel(
                 }
             } catch (e: CancellationException) {
                 _isRecording.value = false
+                voiceStartCuePlayed = false
                 activeAudioRecorder = null
                 throw e
             } catch (e: Throwable) {
                 _isRecording.value = false
+                voiceStartCuePlayed = false
                 activeAudioRecorder = null
                 _voiceError.value = e.message ?: "Audio recording failed"
             }
@@ -489,6 +500,7 @@ class ChatViewModel(
     private fun startSttVoiceInput(modelManager: ModelLibraryManager?) {
         if (sttEngine == null) {
             _isRecording.value = false
+            voiceStartCuePlayed = false
             _voiceError.value = "Voice recognition engine is unavailable."
             return
         }
@@ -509,15 +521,18 @@ class ChatViewModel(
                     when (event) {
                         is SttEvent.FinalResult -> {
                             _isRecording.value = false
+                            voiceStartCuePlayed = false
                             if (event.text.isNotBlank()) {
                                 sendMessage(event.text)
                             }
                         }
                         is SttEvent.ListeningStopped -> {
                             _isRecording.value = false
+                            voiceStartCuePlayed = false
                         }
                         is SttEvent.Error -> {
                             _isRecording.value = false
+                            voiceStartCuePlayed = false
                             _voiceError.value = event.error.message ?: "Voice recognition failed"
                         }
                         else -> {}
@@ -525,9 +540,11 @@ class ChatViewModel(
                 }
             } catch (e: CancellationException) {
                 _isRecording.value = false
+                voiceStartCuePlayed = false
                 throw e
             } catch (e: Throwable) {
                 _isRecording.value = false
+                voiceStartCuePlayed = false
                 _voiceError.value = e.message ?: "Voice recognition failed"
             }
         }
@@ -540,6 +557,7 @@ class ChatViewModel(
         recordingJob = null
         sttEngine?.stopListening()
         _isRecording.value = false
+        voiceStartCuePlayed = false
     }
 
     companion object {

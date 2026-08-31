@@ -155,6 +155,7 @@ class ConversationManager(
 
     fun reset() {
         cancel()
+        activeConversationId = null
         persistentChatContext.clear()
     }
 
