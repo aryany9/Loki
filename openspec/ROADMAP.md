@@ -39,9 +39,8 @@ All archived and validated. Spec library is in canonical format (openspec/specs/
   still constructed manually in MainActivity @HiltViewModel + hiltViewModel()).
 
 ### Voice
-- **Start-speaking audio cue** (Bug): starting voice (chat mic or long-press
-  assistant) should play a short Gemini-like attention tone — NOT TTS, no words —
-  so the user knows to begin speaking.
+- **Start-speaking audio cue** (Bug, FIXED in `fix-startup-navigation-voice`): a short runtime-synthesized Gemini-like attention tone now plays on voice start (chat mic or assistant long-press). A hidden `audioStartCueEnabled` flag gates it.
+- **(Backlog follow-up) Voice start-cue customization**: let the user pick/select a start tone (or disable). Currently a fixed runtime-synthesized tone is shipped for v1.
 - **STT streaming partials / optional Android STT engine**: quality/UX upgrade,
   privacy trade-off documented (prefer Whisper offline by default).
 
@@ -53,11 +52,8 @@ All archived and validated. Spec library is in canonical format (openspec/specs/
 
 ## Capturing plan (grouping)
 
-- **Combined** → `fix-navigation-and-startup`: Bug 1 (back nav) + Bug 3 (landing/
-  lazy conversation). Shared surface (MainActivity routing/back-stack + ChatViewModel
-  startup + "what is the home screen"). One coherent shell/startup change.
-- **Separate** → `voice-start-cue`: Bug 2. Independent audio feature in the voice
-  path/overlay; no navigation or conversation dependency.
+- **Single combined** → `fix-startup-navigation-voice`: all three bugs together. (Bug 1 system back, Bug 3 landing/lazy conversation — already coupled in the shell skeleton; Bug 2 voice-start cue is independent but trivial and lives in the same startup voice path, so it ships alongside to avoid a second review cycle.) Rationale: keeps a coherent "app boots and talks to the user correctly" change; each bug still has isolated tasks for rollback.
+
 
 ## Decisions so far
 
