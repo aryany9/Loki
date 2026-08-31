@@ -1,4 +1,4 @@
-package dev.loki.android.core.ui.theme
+package dev.loki.android.core.theme
 
 import android.content.Context
 import androidx.datastore.core.DataStore

@@ -50,9 +50,9 @@ import dev.loki.android.core.ui.ModelLibraryScreen
 import dev.loki.android.core.ui.PermissionItem
 import dev.loki.android.core.ui.PermissionsScreen
 import dev.loki.android.core.ui.SetupScreen
-import dev.loki.android.core.ui.theme.LokiTheme
-import dev.loki.android.core.ui.theme.ThemeMode
-import dev.loki.android.core.ui.theme.ThemeRepository
+import dev.loki.android.core.theme.LokiTheme
+import dev.loki.android.core.theme.ThemeMode
+import dev.loki.android.core.theme.ThemeRepository
 import dev.loki.android.core.voice.stt.SttEngine
 import java.io.File
 import java.net.HttpURLConnection
@@ -130,7 +130,9 @@ class MainActivity : ComponentActivity() {
 
         chatViewModel = ChatViewModel(
             conversationManager = conversationManager,
-            sttEngine = sttEngine
+            sttEngine = sttEngine,
+            modelLibraryManager = modelLibraryManager,
+            bundledCatalog = bundledCatalog
         )
 
         agentPlaygroundViewModel = dev.loki.android.core.ui.AgentPlaygroundViewModel(

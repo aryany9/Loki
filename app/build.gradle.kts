@@ -58,6 +58,7 @@ dependencies {
     implementation(project(":core:voice:tts"))
     implementation(project(":core:tools"))
     implementation(project(":core:tools:local"))
+    implementation(project(":core:theme"))
     implementation(project(":core:ui"))
 
     implementation(libs.androidx.core.ktx)

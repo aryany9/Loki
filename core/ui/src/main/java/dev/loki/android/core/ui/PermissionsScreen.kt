@@ -35,7 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.loki.android.core.tools.PermissionState
-import dev.loki.android.core.ui.theme.LokiCornerTokens
+import dev.loki.android.core.theme.LokiCornerTokens
 
 data class PermissionItem(
     val permission: String,

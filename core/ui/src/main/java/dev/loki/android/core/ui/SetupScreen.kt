@@ -36,7 +36,7 @@ import dev.loki.android.core.models.ModelCatalogEntry
 import dev.loki.android.core.models.ModelRecord
 import dev.loki.android.core.models.ModelRuntime
 import dev.loki.android.core.tools.PermissionState
-import dev.loki.android.core.ui.theme.LokiCornerTokens
+import dev.loki.android.core.theme.LokiCornerTokens
 
 /**
  * A card that shows the current state of a single mandatory runtime and provides

@@ -1,4 +1,4 @@
-package dev.loki.android.core.ui.theme
+package dev.loki.android.core.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle

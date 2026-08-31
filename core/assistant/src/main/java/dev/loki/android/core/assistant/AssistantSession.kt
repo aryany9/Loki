@@ -28,66 +28,91 @@ class AssistantSession(
     private val _state = MutableStateFlow<AssistantState>(AssistantState.Idle)
     val state: StateFlow<AssistantState> = _state.asStateFlow()
 
+    private val _amplitude = MutableStateFlow(0f)
+    val amplitude: StateFlow<Float> = _amplitude.asStateFlow()
+
+    @Volatile
+    private var smoothedAmplitude = 0f
+    @Volatile
+    private var lastAmplitudeUpdateTimeMs = 0L
+
+    @Synchronized
+    internal fun processRawRms(rawRms: Float) {
+        val normalized = normalizeRms(rawRms)
+        smoothedAmplitude = smoothRms(smoothedAmplitude, normalized)
+        val now = System.currentTimeMillis()
+        if (now - lastAmplitudeUpdateTimeMs >= THROTTLE_INTERVAL_MS) {
+            lastAmplitudeUpdateTimeMs = now
+            _amplitude.value = smoothedAmplitude
+        }
+    }
+
+    @Synchronized
+    internal fun resetAmplitude() {
+        smoothedAmplitude = 0f
+        lastAmplitudeUpdateTimeMs = 0L
+        _amplitude.value = 0f
+    }
+
     fun startTurn() {
         cancelTurn()
+        resetAmplitude()
 
         val provider = AssistantSessionProvider.instance
         val modelManager = provider?.getModelLibraryManager()
         val sttEngine = provider?.getSttEngine()
         val conversationManager = provider?.getConversationManager()
 
-        val activeLlmId = modelManager?.manifest?.value?.activeModels?.get(ModelRuntime.LITERT_LM)
-        val activeLlmRecord = modelManager?.manifest?.value?.models?.firstOrNull { it.id == activeLlmId }
-        val strategy = if (activeLlmRecord?.capabilities?.isAudioInputSupported == true) {
-            VoiceInputStrategy.DIRECT_AUDIO
-        } else {
-            VoiceInputStrategy.STT_TRANSCRIBE
-        }
+        val resolver = VoiceInputStrategyResolver()
+        val resolution = resolver.resolve(modelManager, sttEngine)
 
-        if (modelManager != null) {
-            if (!modelManager.isRuntimeReady(ModelRuntime.LITERT_LM)) {
-                val err = "LLM model not loaded. Please complete setup."
-                Log.w(TAG, err)
-                _state.value = AssistantState.Error(err)
-                return
-            }
-            if (strategy == VoiceInputStrategy.STT_TRANSCRIBE && !modelManager.isRuntimeReady(ModelRuntime.LITERT_ASR)) {
-                val err = "Voice recognition model not loaded. Please complete setup."
-                Log.w(TAG, err)
-                _state.value = AssistantState.Error(err)
-                return
-            }
-        }
+        when (resolution) {
+            is VoiceInputStrategyResult.DirectAudio -> {
+                _state.value = AssistantState.Listening(strategy = VoiceInputStrategy.DIRECT_AUDIO)
+                Log.i(TAG, "Turn started -> Strategy: DIRECT_AUDIO, State: Listening")
 
-        _state.value = AssistantState.Listening(strategy = strategy)
-        Log.i(TAG, "Turn started -> Strategy: $strategy, State: Listening")
+                if (conversationManager == null) return
 
-        if (strategy == VoiceInputStrategy.STT_TRANSCRIBE && sttEngine == null && provider != null) {
-            val err = "Voice recognition model not loaded. Please complete setup."
-            Log.w(TAG, err)
-            _state.value = AssistantState.Error(err)
-            return
-        }
-
-        if (conversationManager == null) return
-
-        activeTurnJob = scope.launch {
-            try {
-                when (strategy) {
-                    VoiceInputStrategy.DIRECT_AUDIO -> {
+                activeTurnJob = scope.launch {
+                    try {
                         executeDirectAudioTurn(conversationManager, sttEngine, modelManager)
-                    }
-                    VoiceInputStrategy.STT_TRANSCRIBE -> {
-                        executeSttTurn(conversationManager, sttEngine!!)
+                    } catch (e: CancellationException) {
+                        Log.i(TAG, "Turn cancelled across active stages")
+                        resetAmplitude()
+                        _state.value = AssistantState.Idle
+                        throw e
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Turn failed with unhandled exception", e)
+                        resetAmplitude()
+                        _state.value = AssistantState.Error(e.message ?: "Error processing request")
                     }
                 }
-            } catch (e: CancellationException) {
-                Log.i(TAG, "Turn cancelled across active stages")
-                _state.value = AssistantState.Idle
-                throw e
-            } catch (e: Throwable) {
-                Log.e(TAG, "Turn failed with unhandled exception", e)
-                _state.value = AssistantState.Error(e.message ?: "Error processing request")
+            }
+            is VoiceInputStrategyResult.SttTranscribe -> {
+                _state.value = AssistantState.Listening(strategy = VoiceInputStrategy.STT_TRANSCRIBE)
+                Log.i(TAG, "Turn started -> Strategy: STT_TRANSCRIBE, State: Listening")
+
+                if (sttEngine == null || conversationManager == null) return
+
+                activeTurnJob = scope.launch {
+                    try {
+                        executeSttTurn(conversationManager, sttEngine)
+                    } catch (e: CancellationException) {
+                        Log.i(TAG, "Turn cancelled across active stages")
+                        resetAmplitude()
+                        _state.value = AssistantState.Idle
+                        throw e
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Turn failed with unhandled exception", e)
+                        resetAmplitude()
+                        _state.value = AssistantState.Error(e.message ?: "Error processing request")
+                    }
+                }
+            }
+            is VoiceInputStrategyResult.Unavailable -> {
+                Log.w(TAG, resolution.message)
+                _state.value = AssistantState.Error(resolution.message)
+                return
             }
         }
     }
@@ -99,8 +124,13 @@ class AssistantSession(
     ) {
         val recorder = dev.loki.android.core.voice.stt.AudioRecorder()
         val recordStart = System.currentTimeMillis()
-        val audioFloats = recorder.recordUtterance()
+        val audioFloats = recorder.recordUtterance(
+            onRmsUpdate = { rms ->
+                processRawRms(rms)
+            }
+        )
         val recordDuration = System.currentTimeMillis() - recordStart
+        resetAmplitude()
 
         if (audioFloats.isEmpty()) {
             Log.i(TAG, "No audio recorded in direct-audio turn, returning to Idle")
@@ -184,6 +214,12 @@ class AssistantSession(
 
         sttEngine.startListening().collect { event ->
             when (event) {
+                is SttEvent.Amplitude -> {
+                    processRawRms(event.rms)
+                }
+                is SttEvent.ListeningStopped -> {
+                    resetAmplitude()
+                }
                 is SttEvent.PartialResult -> {
                     _state.value = AssistantState.Listening(
                         partialTranscript = event.text,
@@ -191,9 +227,11 @@ class AssistantSession(
                     )
                 }
                 is SttEvent.FinalResult -> {
+                    resetAmplitude()
                     finalTranscript = event.text
                 }
                 is SttEvent.Error -> {
+                    resetAmplitude()
                     sttFailed = true
                     sttErrorMessage = event.error.message ?: "STT processing error"
                     Log.e(TAG, "STT Error during voice turn", event.error)
@@ -202,6 +240,7 @@ class AssistantSession(
                 else -> {}
             }
         }
+        resetAmplitude()
 
         if (sttFailed) {
             Log.w(TAG, "Voice turn aborted due to STT failure: $sttErrorMessage")
@@ -253,6 +292,7 @@ class AssistantSession(
     }
 
     fun cancelTurn() {
+        resetAmplitude()
         if (activeTurnJob != null || _state.value !is AssistantState.Idle) {
             Log.i(TAG, "cancelTurn() invoked — stopping STT, LLM generation, tools, and TTS playback")
             activeTurnJob?.cancel()
@@ -288,5 +328,16 @@ class AssistantSession(
 
     companion object {
         private const val TAG = "AssistantSession"
+        const val RMS_CEILING = 8000f
+        const val THROTTLE_INTERVAL_MS = 33L
+        const val SMOOTHING_ALPHA = 0.4f
+
+        fun normalizeRms(rawRms: Float, ceiling: Float = RMS_CEILING): Float {
+            return (rawRms / ceiling).coerceIn(0f, 1f)
+        }
+
+        fun smoothRms(currentSmoothed: Float, target: Float, alpha: Float = SMOOTHING_ALPHA): Float {
+            return (currentSmoothed * (1f - alpha) + target * alpha).coerceIn(0f, 1f)
+        }
     }
 }

@@ -1,4 +1,4 @@
-package dev.loki.android.core.ui.theme
+package dev.loki.android.core.theme
 
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp

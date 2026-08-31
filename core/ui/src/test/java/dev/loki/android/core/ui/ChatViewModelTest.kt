@@ -6,8 +6,20 @@ import dev.loki.android.core.conversation.ConversationStore
 import dev.loki.android.core.conversation.ConversationTurn
 import dev.loki.android.core.llm.LlmEngine
 import dev.loki.android.core.llm.LlmModelState
+import dev.loki.android.core.assistant.VoiceUnavailableReason
 import dev.loki.android.core.models.AgentConfig
+import dev.loki.android.core.models.ModelArtifact
+import dev.loki.android.core.models.ModelAvailability
 import dev.loki.android.core.models.ModelCapabilities
+import dev.loki.android.core.models.ModelCatalog
+import dev.loki.android.core.models.ModelCatalogEntry
+import dev.loki.android.core.models.ModelFormat
+import dev.loki.android.core.models.ModelLibraryManager
+import dev.loki.android.core.models.ModelRecord
+import dev.loki.android.core.models.ModelRegistry
+import dev.loki.android.core.models.ModelRuntime
+import dev.loki.android.core.models.ModelRuntimeController
+import dev.loki.android.core.models.ModelStorage
 import dev.loki.android.core.models.RuntimeConfig
 import dev.loki.android.core.tools.ToolRegistry
 import java.nio.file.Files
@@ -325,6 +337,333 @@ class ChatViewModelTest {
         advanceUntilIdle()
         assertEquals(1, viewModel.conversations.value.size)
         assertFalse(viewModel.conversations.value.any { it.id == conv1.id })
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `startVoiceInput when strategy is Unavailable sets voiceError and does not start recording`() = runTest(testDispatcher) {
+        val tempDir = Files.createTempDirectory("chat_vm_unavailable_test").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+
+        val fakeResolver = object : dev.loki.android.core.assistant.VoiceInputStrategyResolver() {
+            // Returns Unavailable
+        }
+
+        val viewModel = ChatViewModel(
+            conversationManager = manager,
+            sttEngine = null,
+            modelLibraryManager = null,
+            voiceStrategyResolver = fakeResolver
+        )
+        advanceUntilIdle()
+
+        viewModel.startVoiceInput()
+        advanceUntilIdle()
+
+        assertFalse("Recording should not be active", viewModel.isRecording.value)
+        assertEquals("No active language model selected. Please complete setup.", viewModel.voiceError.value)
+
+        viewModel.dismissVoiceError()
+        assertEquals(null, viewModel.voiceError.value)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `startVoiceInput when STT errors sets voiceError and resets isRecording`() = runTest(testDispatcher) {
+        val tempDir = Files.createTempDirectory("chat_vm_stt_err_test").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+
+        val errorSttEngine = object : dev.loki.android.core.voice.stt.SttEngine {
+            override val isListening: Boolean = false
+            override fun startListening(): kotlinx.coroutines.flow.Flow<dev.loki.android.core.voice.stt.SttEvent> = kotlinx.coroutines.flow.flow {
+                emit(dev.loki.android.core.voice.stt.SttEvent.Error(RuntimeException("Whisper model failed")))
+            }
+            override fun stopListening() {}
+            override fun cancel() {}
+            override fun release() {}
+            override suspend fun transcribeAudio(pcmAudio: FloatArray): String = ""
+        }
+
+        val fakeSttResolver = object : dev.loki.android.core.assistant.VoiceInputStrategyResolver() {
+            override fun resolve(
+                modelManager: dev.loki.android.core.models.ModelLibraryManager?,
+                sttEngine: dev.loki.android.core.voice.stt.SttEngine?
+            ): dev.loki.android.core.assistant.VoiceInputStrategyResult {
+                return dev.loki.android.core.assistant.VoiceInputStrategyResult.SttTranscribe
+            }
+        }
+
+        val viewModel = ChatViewModel(
+            conversationManager = manager,
+            sttEngine = errorSttEngine,
+            modelLibraryManager = null,
+            voiceStrategyResolver = fakeSttResolver
+        )
+        advanceUntilIdle()
+
+        viewModel.startVoiceInput()
+        advanceUntilIdle()
+
+        assertFalse("Recording should reset after STT error", viewModel.isRecording.value)
+        assertEquals("Whisper model failed", viewModel.voiceError.value)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `startVoiceInput when STT not ready sets isVoiceModelDownloadable and actionable error`() = runTest(testDispatcher) {
+        val tempDir = Files.createTempDirectory("chat_vm_stt_not_ready_test").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+
+        val sttNotReadyResolver = object : dev.loki.android.core.assistant.VoiceInputStrategyResolver() {
+            override fun resolve(
+                modelManager: ModelLibraryManager?,
+                sttEngine: dev.loki.android.core.voice.stt.SttEngine?
+            ): dev.loki.android.core.assistant.VoiceInputStrategyResult {
+                return dev.loki.android.core.assistant.VoiceInputStrategyResult.Unavailable(
+                    reason = VoiceUnavailableReason.STT_NOT_READY,
+                    message = "Voice recognition model not loaded."
+                )
+            }
+        }
+
+        val viewModel = ChatViewModel(
+            conversationManager = manager,
+            sttEngine = null,
+            modelLibraryManager = null,
+            voiceStrategyResolver = sttNotReadyResolver
+        )
+        advanceUntilIdle()
+
+        viewModel.startVoiceInput()
+        advanceUntilIdle()
+
+        assertFalse("Recording should not be active", viewModel.isRecording.value)
+        assertTrue("Voice model should be downloadable", viewModel.isVoiceModelDownloadable.value)
+        assertTrue(viewModel.voiceError.value?.contains("Tap download") == true)
+
+        viewModel.dismissVoiceError()
+        assertEquals(null, viewModel.voiceError.value)
+        assertFalse(viewModel.isVoiceModelDownloadable.value)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `downloadVoiceModel downloads artifact, registers ASR model and clears error`() = runTest(testDispatcher) {
+        val tempDir = Files.createTempDirectory("chat_vm_download_test").toFile()
+        val storage = ModelStorage(tempDir)
+        val registry = ModelRegistry(storage)
+        val manager = ModelLibraryManager(storage, registry)
+
+        var asrLoaded = false
+        val fakeAsrEngine = object : dev.loki.android.core.voice.stt.SttEngine, ModelRuntimeController {
+            override val isListening: Boolean = false
+            override fun startListening() = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
+            override fun stopListening() {}
+            override fun cancel() {}
+            override fun release() {}
+            override suspend fun load(model: ModelRecord): Boolean {
+                asrLoaded = true
+                return true
+            }
+            override suspend fun unload(model: ModelRecord) {}
+        }
+        manager.registerRuntime(ModelRuntime.LITERT_ASR, fakeAsrEngine)
+
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+
+        val conversationManager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+
+        val catalogEntry = ModelCatalogEntry(
+            id = "whisper-tiny-litert",
+            displayName = "Whisper Tiny (ASR)",
+            family = "Whisper",
+            runtime = ModelRuntime.LITERT_ASR,
+            format = ModelFormat.TFLITE,
+            artifacts = listOf(
+                ModelArtifact(
+                    fileName = "whisper_tiny_30s_f32.tflite",
+                    relativePath = "whisper_tiny_30s_f32.tflite",
+                    sizeBytes = 10L,
+                    sha256 = null,
+                    url = "https://example.com/whisper_tiny.tflite"
+                )
+            ),
+            capabilities = listOf("voice-recognition", "offline-stt")
+        )
+        val catalog = ModelCatalog(models = listOf(catalogEntry))
+
+        val viewModel = ChatViewModel(
+            conversationManager = conversationManager,
+            sttEngine = fakeAsrEngine,
+            modelLibraryManager = manager,
+            bundledCatalog = catalog,
+            ioDispatcher = testDispatcher
+        )
+        advanceUntilIdle()
+
+        viewModel.downloadVoiceModel(
+            streamOpener = { "fake bytes".byteInputStream() }
+        )
+        advanceUntilIdle()
+
+        assertFalse("Downloading state should be false after completion", viewModel.isDownloadingVoiceModel.value)
+        assertFalse("Downloadable state should be cleared", viewModel.isVoiceModelDownloadable.value)
+        assertEquals(null, viewModel.voiceError.value)
+
+        // Verify model is registered in manifest with LOADED availability
+        val asrModel = manager.manifest.value.models.firstOrNull { it.id == "whisper-tiny-litert" }
+        assertTrue("ASR model must be registered in manifest", asrModel != null)
+        assertEquals(ModelAvailability.LOADED, asrModel?.availability)
+        assertTrue("ASR controller load must have been called", asrLoaded)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `downloadVoiceModel when catalog has no LITERT_ASR sets voiceError and aborts`() = runTest(testDispatcher) {
+        val tempDir = Files.createTempDirectory("chat_vm_download_no_catalog").toFile()
+        val storage = ModelStorage(tempDir)
+        val registry = ModelRegistry(storage)
+        val manager = ModelLibraryManager(storage, registry)
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+
+        val conversationManager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+
+        val viewModel = ChatViewModel(
+            conversationManager = conversationManager,
+            sttEngine = null,
+            modelLibraryManager = manager,
+            bundledCatalog = ModelCatalog(models = emptyList()),
+            ioDispatcher = testDispatcher
+        )
+        advanceUntilIdle()
+
+        viewModel.downloadVoiceModel()
+        advanceUntilIdle()
+
+        assertEquals("Voice recognition model unavailable in the model catalog.", viewModel.voiceError.value)
+        assertFalse(viewModel.isDownloadingVoiceModel.value)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `downloadVoiceModel when sttEngine is not ModelRuntimeController sets voice error`() = runTest(testDispatcher) {
+        val tempDir = Files.createTempDirectory("chat_vm_download_bad_engine").toFile()
+        val storage = ModelStorage(tempDir)
+        val registry = ModelRegistry(storage)
+        val manager = ModelLibraryManager(storage, registry)
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = StreamingFakeLlmEngine()
+
+        val conversationManager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+
+        val nonControllerSttEngine = object : dev.loki.android.core.voice.stt.SttEngine {
+            override val isListening: Boolean = false
+            override fun startListening() = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
+            override fun stopListening() {}
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        val catalogEntry = ModelCatalogEntry(
+            id = "whisper-tiny-litert",
+            displayName = "Whisper Tiny (ASR)",
+            family = "Whisper",
+            runtime = ModelRuntime.LITERT_ASR,
+            format = ModelFormat.TFLITE,
+            artifacts = listOf(
+                ModelArtifact(
+                    fileName = "whisper_tiny_30s_f32.tflite",
+                    relativePath = "whisper_tiny_30s_f32.tflite",
+                    sizeBytes = 10L,
+                    sha256 = null,
+                    url = "https://example.com/whisper_tiny.tflite"
+                )
+            ),
+            capabilities = listOf("voice-recognition", "offline-stt")
+        )
+        val catalog = ModelCatalog(models = listOf(catalogEntry))
+
+        val viewModel = ChatViewModel(
+            conversationManager = conversationManager,
+            sttEngine = nonControllerSttEngine,
+            modelLibraryManager = manager,
+            bundledCatalog = catalog,
+            ioDispatcher = testDispatcher
+        )
+        advanceUntilIdle()
+
+        viewModel.downloadVoiceModel(
+            streamOpener = { "fake bytes".byteInputStream() }
+        )
+        advanceUntilIdle()
+
+        assertEquals("Voice engine unavailable. Please restart the app.", viewModel.voiceError.value)
+        assertFalse(viewModel.isDownloadingVoiceModel.value)
 
         tempDir.deleteRecursively()
     }

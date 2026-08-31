@@ -1,4 +1,4 @@
-package dev.loki.android.core.ui.theme
+package dev.loki.android.core.theme
 
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Shapes

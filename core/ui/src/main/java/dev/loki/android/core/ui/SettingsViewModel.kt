@@ -4,8 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.loki.android.core.conversation.ConversationManager
 import dev.loki.android.core.llm.LlmModelState
-import dev.loki.android.core.ui.theme.ThemeMode
-import dev.loki.android.core.ui.theme.ThemeRepository
+import dev.loki.android.core.theme.ThemeMode
+import dev.loki.android.core.theme.ThemeRepository
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn

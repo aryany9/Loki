@@ -9,10 +9,12 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -44,6 +46,7 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -52,6 +55,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
@@ -95,7 +99,7 @@ import androidx.compose.ui.unit.dp
 import com.mikepenz.markdown.m3.Markdown
 import dev.loki.android.core.llm.LlmModelState
 import dev.loki.android.core.tools.ToolResult
-import dev.loki.android.core.ui.theme.LokiCornerTokens
+import dev.loki.android.core.theme.LokiCornerTokens
 import kotlinx.coroutines.launch
 
 enum class ComposerActionState {
@@ -125,6 +129,7 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     val conversations by viewModel.conversations.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
+    val voiceError by viewModel.voiceError.collectAsState()
     val modelState by viewModel.modelState.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -416,6 +421,89 @@ fun ChatScreen(
                             when (msg.sender) {
                                 MessageSender.USER -> UserMessageBubble(message = msg)
                                 MessageSender.ASSISTANT -> AssistantMessage(message = msg)
+                            }
+                        }
+                    }
+                }
+
+                // Voice Error Banner
+                AnimatedVisibility(
+                    visible = voiceError != null,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    voiceError?.let { errorMsg ->
+                        val isDownloadingVoiceModel by viewModel.isDownloadingVoiceModel.collectAsState()
+                        val isVoiceModelDownloadable by viewModel.isVoiceModelDownloadable.collectAsState()
+                        val voiceDownloadProgress by viewModel.voiceDownloadProgress.collectAsState()
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(LokiCornerTokens.medium),
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shadowElevation = 2.dp
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isDownloadingVoiceModel) Icons.Default.CloudDownload else Icons.Default.WarningAmber,
+                                        contentDescription = if (isDownloadingVoiceModel) "Downloading voice model" else "Voice input warning",
+                                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = if (isDownloadingVoiceModel && voiceDownloadProgress != null && voiceDownloadProgress!! >= 0f) {
+                                            "$errorMsg (${(voiceDownloadProgress!! * 100).toInt()}%)"
+                                        } else {
+                                            errorMsg
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                }
+                                if (isDownloadingVoiceModel) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier
+                                            .padding(horizontal = 8.dp)
+                                            .size(18.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                } else if (isVoiceModelDownloadable) {
+                                    TextButton(
+                                        onClick = { viewModel.downloadVoiceModel() },
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) {
+                                        Text(
+                                            text = "Download",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                    }
+                                }
+                                IconButton(
+                                    onClick = { viewModel.dismissVoiceError() },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Dismiss error",
+                                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
                             }
                         }
                     }
