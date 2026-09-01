@@ -137,7 +137,8 @@ data class RuntimeConfig(
 data class AgentConfig(
     val systemInstruction: String = DEFAULT_SYSTEM_PROMPT,
     val generationConfig: GenerationConfig = GenerationConfig(),
-    val runtimeConfig: RuntimeConfig = RuntimeConfig()
+    val runtimeConfig: RuntimeConfig = RuntimeConfig(),
+    val conversationLanguage: String = "auto"
 ) {
     companion object {
         const val DEFAULT_SYSTEM_PROMPT = "You are Loki, a private offline Android assistant running on the user's device."

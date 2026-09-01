@@ -416,13 +416,13 @@ class ChatViewModelTest {
 
         val errorSttEngine = object : dev.loki.android.core.voice.stt.SttEngine {
             override val isListening: Boolean = false
-            override fun startListening(): kotlinx.coroutines.flow.Flow<dev.loki.android.core.voice.stt.SttEvent> = kotlinx.coroutines.flow.flow {
+            override fun startListening(language: String): kotlinx.coroutines.flow.Flow<dev.loki.android.core.voice.stt.SttEvent> = kotlinx.coroutines.flow.flow {
                 emit(dev.loki.android.core.voice.stt.SttEvent.Error(RuntimeException("Whisper model failed")))
             }
             override fun stopListening() {}
             override fun cancel() {}
             override fun release() {}
-            override suspend fun transcribeAudio(pcmAudio: FloatArray): String = ""
+            override suspend fun transcribeAudio(pcmAudio: FloatArray, language: String): String = ""
         }
 
         val fakeSttResolver = object : dev.loki.android.core.assistant.VoiceInputStrategyResolver() {
@@ -511,7 +511,7 @@ class ChatViewModelTest {
         var asrLoaded = false
         val fakeAsrEngine = object : dev.loki.android.core.voice.stt.SttEngine, ModelRuntimeController {
             override val isListening: Boolean = false
-            override fun startListening() = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
+            override fun startListening(language: String) = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
             override fun stopListening() {}
             override fun cancel() {}
             override fun release() {}
@@ -640,7 +640,7 @@ class ChatViewModelTest {
 
         val nonControllerSttEngine = object : dev.loki.android.core.voice.stt.SttEngine {
             override val isListening: Boolean = false
-            override fun startListening() = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
+            override fun startListening(language: String) = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
             override fun stopListening() {}
             override fun cancel() {}
             override fun release() {}

@@ -232,7 +232,8 @@ class AssistantSession(
         var sttFailed = false
         var sttErrorMessage = ""
 
-        sttEngine.startListening().collect { event ->
+        val language = conversationManager.getAgentConfig().conversationLanguage
+        sttEngine.startListening(language).collect { event ->
             when (event) {
                 is SttEvent.Amplitude -> {
                     processRawRms(event.rms)

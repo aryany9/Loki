@@ -146,7 +146,8 @@ class MainActivity : ComponentActivity() {
 
         settingsViewModel = dev.loki.android.core.ui.SettingsViewModel(
             themeRepository = themeRepository,
-            conversationManager = conversationManager
+            conversationManager = conversationManager,
+            agentConfigRepository = agentConfigRepository
         )
 
         setContent {

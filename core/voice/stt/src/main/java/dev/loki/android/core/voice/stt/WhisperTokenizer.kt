@@ -75,15 +75,34 @@ class WhisperTokenizer(context: Context) {
     }
 
     /**
-     * Returns the prefix token IDs for English transcription without timestamps:
-     * `[<|startoftranscript|>, <|en|>, <|transcribe|>, <|notimestamps|>]`
+     * Resolves the language token for a given BCP-47 tag in Whisper's multilingual vocabulary.
      */
-    fun getPrefixTokens(): IntArray = intArrayOf(
-        startOfTranscriptToken,
-        languageTokenEn,
-        transcribeToken,
-        noTimestampsToken
-    )
+    fun getLanguageToken(language: String): Int {
+        val index = LANGUAGES.indexOf(language.lowercase().substringBefore('-'))
+        return if (index >= 0) {
+            startOfTranscriptToken + 1 + index
+        } else {
+            languageTokenEn
+        }
+    }
+
+    /**
+     * Returns the prefix token IDs for transcription without timestamps:
+     * `[<|startoftranscript|>, <|lang|>, <|transcribe|>, <|notimestamps|>]`
+     */
+    fun getPrefixTokens(language: String = "auto"): IntArray {
+        val langToken = if (language.isBlank() || language.equals("auto", ignoreCase = true)) {
+            languageTokenEn
+        } else {
+            getLanguageToken(language)
+        }
+        return intArrayOf(
+            startOfTranscriptToken,
+            langToken,
+            transcribeToken,
+            noTimestampsToken
+        )
+    }
 
     /**
      * Decodes a list of token IDs to a UTF-8 string. Byte-level tokens (0–255) are assembled
@@ -103,5 +122,8 @@ class WhisperTokenizer(context: Context) {
     companion object {
         private const val TAG = "WhisperTokenizer"
         private const val TOTAL_VOCAB_SIZE = 51865
+        val LANGUAGES = listOf(
+            "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"
+        )
     }
 }

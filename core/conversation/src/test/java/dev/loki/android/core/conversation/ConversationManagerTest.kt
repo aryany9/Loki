@@ -619,6 +619,45 @@ class ConversationManagerTest {
         assertFalse(prompt.contains(longFact1))
         tempMemDir.deleteRecursively()
     }
+
+    @Test
+    fun `default and auto language config injects mirror language directive`() = runTest {
+        val mockLlm = MockLlmEngine(listOf("""{"response": "Hello!"}"""))
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = mockLlm,
+            toolRegistry = ToolRegistry()
+        )
+
+        manager.setAgentConfig(dev.loki.android.core.models.AgentConfig(conversationLanguage = "auto"))
+        manager.processUtterance("What is my schedule?", enableTts = false).toList()
+        val prompt = mockLlm.lastStartedConfig?.systemInstruction
+        org.junit.Assert.assertNotNull(prompt)
+        assertTrue(prompt!!.contains("Always respond in the same language the user writes or speaks in."))
+    }
+
+    @Test
+    fun `explicit language tag injects always respond in language directive placed after custom instruction`() = runTest {
+        val mockLlm = MockLlmEngine(listOf("""{"response": "Namaste!"}"""))
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = mockLlm,
+            toolRegistry = ToolRegistry()
+        )
+
+        manager.setAgentConfig(
+            dev.loki.android.core.models.AgentConfig(
+                systemInstruction = "You are a friendly companion.",
+                conversationLanguage = "hi"
+            )
+        )
+        manager.processUtterance("What is my schedule?", enableTts = false).toList()
+        val prompt = mockLlm.lastStartedConfig?.systemInstruction
+        org.junit.Assert.assertNotNull(prompt)
+        assertTrue(prompt!!.contains("Additional Instructions:\nYou are a friendly companion.\n\nAlways respond in Hindi."))
+    }
 }
 
 

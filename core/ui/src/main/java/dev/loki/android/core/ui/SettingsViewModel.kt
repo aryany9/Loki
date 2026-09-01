@@ -15,9 +15,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+import kotlinx.coroutines.flow.map
+
 class SettingsViewModel(
     private val themeRepository: ThemeRepository,
-    val conversationManager: ConversationManager
+    val conversationManager: ConversationManager,
+    private val agentConfigRepository: AgentConfigRepository? = null
 ) : ViewModel() {
 
     val themeMode: StateFlow<ThemeMode> = themeRepository.themeMode
@@ -28,8 +31,22 @@ class SettingsViewModel(
     private val _memories = MutableStateFlow<List<MemoryEntry>>(emptyList())
     val memories: StateFlow<List<MemoryEntry>> = _memories.asStateFlow()
 
+    val conversationLanguage: StateFlow<String> = (agentConfigRepository?.getAgentConfigFlow()
+        ?.map { it.conversationLanguage }
+        ?: MutableStateFlow(conversationManager.getAgentConfig().conversationLanguage))
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), conversationManager.getAgentConfig().conversationLanguage)
+
     init {
         loadMemories()
+    }
+
+    fun setConversationLanguage(language: String) {
+        viewModelScope.launch {
+            val current = agentConfigRepository?.getAgentConfig() ?: conversationManager.getAgentConfig()
+            val updated = current.copy(conversationLanguage = language)
+            agentConfigRepository?.saveAgentConfig(updated)
+            conversationManager.setAgentConfig(updated)
+        }
     }
 
     fun loadMemories() {

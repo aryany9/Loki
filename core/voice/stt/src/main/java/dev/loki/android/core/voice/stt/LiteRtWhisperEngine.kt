@@ -111,7 +111,9 @@ class LiteRtWhisperEngine(
         }
     }
 
-    override fun startListening(): Flow<SttEvent> = channelFlow {
+    override fun startListening(): Flow<SttEvent> = startListening("auto")
+
+    override fun startListening(language: String): Flow<SttEvent> = channelFlow {
         if (!isInitialized) {
             send(SttEvent.Error(IllegalStateException("Whisper model not initialized")))
             return@channelFlow
@@ -137,7 +139,7 @@ class LiteRtWhisperEngine(
             }
 
             val transcript = withContext(Dispatchers.Default) {
-                transcribePcmAudio(audioFloats)
+                transcribePcmAudio(audioFloats, language)
             }.trim()
 
             send(SttEvent.FinalResult(transcript))
@@ -154,10 +156,10 @@ class LiteRtWhisperEngine(
         }
     }.flowOn(Dispatchers.IO)
 
-    override suspend fun transcribeAudio(pcmAudio: FloatArray): String {
+    override suspend fun transcribeAudio(pcmAudio: FloatArray, language: String): String {
         if (!isInitialized || pcmAudio.isEmpty()) return ""
         return withContext(Dispatchers.Default) {
-            transcribePcmAudio(pcmAudio)
+            transcribePcmAudio(pcmAudio, language)
         }.trim()
     }
 
@@ -169,13 +171,13 @@ class LiteRtWhisperEngine(
      * 4. Autoregressive decoder loop (signature "decode"):
      *    - Inputs: `args_0` (encoder output), `args_1` (token IDs `[1,128]`), `args_2` (mask `[1,1,128,128]`).
      *    - Output: `output_0` (logits `[1,128,51865]`).
-     *    - Prefill with `<|startoftranscript|><|en|><|transcribe|>`.
+     *    - Prefill with `<|startoftranscript|><|lang|><|transcribe|>`.
      *    - Greedy decode: argmax over the last generated position logits.
      *    - Stop on `<|endoftext|>`.
      * 5. Detokenize and return the transcript string.
      * 6. Log duration; return "" for empty/near-silence.
      */
-    private fun transcribePcmAudio(pcmFloats: FloatArray): String {
+    private fun transcribePcmAudio(pcmFloats: FloatArray, language: String = "auto"): String {
         val interp = interpreter ?: return ""
         val filters = melFilters ?: return ""
         val tokenizer = tokenEncoder ?: return ""
@@ -214,7 +216,7 @@ class LiteRtWhisperEngine(
 
         // --- Step 4: autoregressive decoder signature "decode" ---
         val decStart = System.currentTimeMillis()
-        val prefixTokens = tokenizer.getPrefixTokens()   // [<|startoftranscript|>, <|en|>, <|transcribe|>, <|notimestamps|>]
+        val prefixTokens = tokenizer.getPrefixTokens(language)   // [<|startoftranscript|>, <|lang|>, <|transcribe|>, <|notimestamps|>]
         val tokenIds = Array(1) { IntArray(MAX_TOKENS) }
         var seqLen = prefixTokens.size
         for (i in prefixTokens.indices) tokenIds[0][i] = prefixTokens[i]

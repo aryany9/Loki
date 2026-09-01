@@ -28,11 +28,11 @@ class VoiceInputStrategyResolverTest {
 
     private class FakeSttEngine : SttEngine {
         override val isListening: Boolean = false
-        override fun startListening(): Flow<SttEvent> = emptyFlow()
+        override fun startListening(language: String): Flow<SttEvent> = emptyFlow()
         override fun stopListening() {}
         override fun cancel() {}
         override fun release() {}
-        override suspend fun transcribeAudio(pcmAudio: FloatArray): String = ""
+        override suspend fun transcribeAudio(pcmAudio: FloatArray, language: String): String = ""
     }
 
     @Test

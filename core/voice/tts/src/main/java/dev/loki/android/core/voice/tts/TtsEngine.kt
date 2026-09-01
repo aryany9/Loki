@@ -12,6 +12,7 @@ interface TtsEngine {
         onError: ((String) -> Unit)? = null
     )
 
+    fun configureLanguage(bcp47Tag: String? = null) {}
     fun stop()
     fun release()
 }

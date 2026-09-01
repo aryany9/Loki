@@ -548,7 +548,8 @@ class ChatViewModel(
                     }
                 }
 
-                sttEngine.startListening().collect { event ->
+                val language = conversationManager.getAgentConfig().conversationLanguage
+                sttEngine.startListening(language).collect { event ->
                     when (event) {
                         is SttEvent.FinalResult -> {
                             _isRecording.value = false

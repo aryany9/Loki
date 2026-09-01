@@ -10,6 +10,7 @@ import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.ToolResult
 import dev.loki.android.core.voice.tts.TtsEngine
 import dev.loki.android.core.models.AgentConfig
+import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -343,6 +344,15 @@ class ConversationSession(
             sb.append("Additional Instructions:\n")
             sb.append(customInstruction)
             sb.append("\n\n")
+        }
+
+        val lang = agentConfig.conversationLanguage.trim()
+        if (lang.isBlank() || lang.equals("auto", ignoreCase = true)) {
+            sb.append("Always respond in the same language the user writes or speaks in.\n\n")
+        } else {
+            val locale = Locale.forLanguageTag(lang)
+            val displayName = locale.getDisplayLanguage(Locale.US).ifBlank { lang }
+            sb.append("Always respond in $displayName.\n\n")
         }
 
         val memories = memoryStore.getAll()

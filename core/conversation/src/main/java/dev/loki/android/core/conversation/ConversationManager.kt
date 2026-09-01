@@ -59,6 +59,7 @@ class ConversationManager(
 
     fun setAgentConfig(config: AgentConfig) {
         activeAgentConfig = config
+        ttsEngine?.configureLanguage(config.conversationLanguage)
     }
 
     /**
@@ -73,6 +74,7 @@ class ConversationManager(
             llmEngine.initializeAsync(modelPath = null, runtimeConfig = config.runtimeConfig, force = true)
         }
         activeAgentConfig = config
+        ttsEngine?.configureLanguage(config.conversationLanguage)
         reset()
         return llmEngine.startConversation(config)
     }
