@@ -21,6 +21,17 @@ interface Tool {
     val requiredPermissions: List<String>
         get() = emptyList()
 
+    /** Whether this tool requires explicit user confirmation before execution. */
+    val requiresConfirmation: Boolean
+        get() = false
+
+    /**
+     * Returns a human-readable description of the action about to be taken, used as the
+     * repeat-back text shown/spoken to the user during the confirmation gate.
+     * Default is the tool name; gated tools MUST override this with a concrete description.
+     */
+    fun describeAction(arguments: Map<String, Any?>): String = name
+
     suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult
 }
 

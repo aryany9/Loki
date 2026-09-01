@@ -11,12 +11,25 @@ import dev.loki.android.core.tools.ToolResult
 import dev.loki.android.core.voice.tts.TtsEngine
 import dev.loki.android.core.models.AgentConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+
+/**
+ * Holds the in-progress confirmation gate for a destructive tool call.
+ */
+data class PendingConfirmation(
+    val toolName: String,
+    val arguments: Map<String, Any?>,
+    val repeatBack: String = "",
+    val deferred: CompletableDeferred<Boolean> = CompletableDeferred()
+)
 
 /**
  * ConversationSession executes a ReAct-style agent loop for a specific conversation context.
@@ -32,9 +45,21 @@ class ConversationSession(
     val agentConfig: AgentConfig = AgentConfig(),
     private val maxIterations: Int = 5,
     val conversationStore: ConversationStore? = null,
-    val conversationId: String? = null,
-    val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
+    val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
+    val memoryStore: MemoryStore = MemoryStore(context, ioDispatcher),
+    val conversationId: String? = null
 ) {
+
+    @Volatile
+    private var pendingConfirmation: PendingConfirmation? = null
+
+    /**
+     * Resolves the currently pending confirmation gate with the given [accepted] verdict.
+     * Safe to call from any thread. No-ops if there is no pending gate.
+     */
+    fun respondToConfirmation(accepted: Boolean) {
+        pendingConfirmation?.deferred?.complete(accepted)
+    }
 
     private suspend fun recordTurn(turn: ConversationTurn) {
         conversationContext.append(turn)
@@ -154,6 +179,46 @@ class ConversationSession(
                             )
                         )
 
+                        // ── Confirmation gate (D1/D2) ─────────────────────────────────────
+                        if (toolRegistry.requiresConfirmation(parsed.tool)) {
+                            val repeatBack = toolRegistry.describeAction(parsed.tool, parsed.arguments)
+                            val gate = PendingConfirmation(parsed.tool, parsed.arguments, repeatBack)
+                            pendingConfirmation = gate
+                            send(ConversationEvent.ConfirmationRequired(parsed.tool, repeatBack))
+
+                            val accepted: Boolean = try {
+                                withTimeout(CONFIRMATION_TIMEOUT_MS) {
+                                    gate.deferred.await()
+                                }
+                            } catch (e: TimeoutCancellationException) {
+                                false // treat timeout as denial
+                            } finally {
+                                pendingConfirmation = null
+                            }
+
+                            if (!accepted) {
+                                val isDenied = gate.deferred.isCompleted && !gate.deferred.isCancelled
+                                val denialMessage = if (isDenied) {
+                                    "User declined the action."
+                                } else {
+                                    "No response received; action cancelled."
+                                }
+                                val denialResult = ToolResult.error(denialMessage, ToolErrorCode.EXECUTION_ERROR)
+                                lastToolResult = denialResult
+                                send(ConversationEvent.ToolExecuted(parsed.tool, denialResult))
+                                recordTurn(
+                                    ConversationTurn.ToolExecutionResult(
+                                        tool = parsed.tool,
+                                        result = denialResult
+                                    )
+                                )
+                                // Feed denial to model so it can respond conversationally
+                                currentTurnPrompt = "Tool result for ${parsed.tool}: $denialMessage"
+                                continue
+                            }
+                        }
+                        // ─────────────────────────────────────────────────────────────────
+
                         val execResult = toolRegistry.executeDetailed(
                             context = context,
                             name = parsed.tool,
@@ -266,7 +331,7 @@ class ConversationSession(
         send(ConversationEvent.Completed(finalResponseText, lastToolResult))
     }.flowOn(ioDispatcher)
 
-    private fun buildSystemPrompt(
+    private suspend fun buildSystemPrompt(
         availableTools: List<Tool>,
         disabledTools: List<Pair<Tool, String>>
     ): String {
@@ -280,6 +345,24 @@ class ConversationSession(
             sb.append("\n\n")
         }
 
+        val memories = memoryStore.getAll()
+        if (memories.isNotEmpty()) {
+            val memoryLines = mutableListOf<String>()
+            var charCount = 0
+            for (entry in memories) {
+                if (memoryLines.size >= 10) break
+                val line = "- ${entry.text.trim()}"
+                if (charCount + line.length + 1 > 800) break
+                memoryLines.add(line)
+                charCount += line.length + 1
+            }
+            if (memoryLines.isNotEmpty()) {
+                sb.append("What you remember about the user:\n")
+                sb.append(memoryLines.joinToString("\n"))
+                sb.append("\n\n")
+            }
+        }
+
         if (availableTools.isNotEmpty()) {
             sb.append("Available tools (respond with JSON {\"tool\": \"name\", \"arguments\": {...}}):\n")
             for (tool in availableTools) {
@@ -289,6 +372,7 @@ class ConversationSession(
                 sb.append("- ${tool.name}$params: ${tool.description}\n")
             }
             sb.append("\n")
+            sb.append("Tool usage guidance: Use remember_fact to save durable user facts, identity, or preferences when the user shares them or asks you to remember. Use search_chat_history to search past conversation history.\n\n")
         }
 
         if (disabledTools.isNotEmpty()) {
@@ -336,12 +420,24 @@ class ConversationSession(
         conversationContext.clear()
     }
 
+    /**
+     * Cancels any active LLM generation, TTS playback, and — critically — resolves any
+     * pending confirmation gate as denied, preventing zombie-gate leaks.
+     */
     fun cancel() {
+        // Task 2.3: deny any pending gate before tearing down
+        pendingConfirmation?.deferred?.complete(false)
+        pendingConfirmation = null
         llmEngine.cancel()
         ttsEngine?.stop()
     }
 
     private fun isSimpleGreeting(input: String): Boolean {
         return input.trim().lowercase() in setOf("hi", "hello", "hey", "good morning", "good afternoon", "good evening")
+    }
+
+    companion object {
+        /** How long to wait (ms) for a user verdict before auto-cancelling the gate. */
+        const val CONFIRMATION_TIMEOUT_MS = 20_000L
     }
 }

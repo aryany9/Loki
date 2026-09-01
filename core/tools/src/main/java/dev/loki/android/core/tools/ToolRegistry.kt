@@ -23,6 +23,19 @@ class ToolRegistry {
 
     fun get(name: String): Tool? = tools[name]
 
+    /**
+     * Returns whether the named tool requires user confirmation before execution.
+     * Returns false for unknown tool names (fail-open on unknown tools).
+     */
+    fun requiresConfirmation(name: String): Boolean = tools[name]?.requiresConfirmation ?: false
+
+    /**
+     * Returns the human-readable repeat-back string for the named tool given the parsed arguments.
+     * Returns the tool name if the tool is not found.
+     */
+    fun describeAction(name: String, arguments: Map<String, Any?>): String =
+        tools[name]?.describeAction(arguments) ?: name
+
     fun getAllTools(): List<Tool> = tools.values.toList()
 
     fun getLocalTools(): List<LocalTool> = tools.values.filterIsInstance<LocalTool>()

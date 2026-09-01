@@ -11,7 +11,9 @@ import dev.loki.android.core.sound.audioStartCueEnabled
 import dev.loki.android.core.conversation.ConversationEvent
 import dev.loki.android.core.conversation.ConversationManager
 import dev.loki.android.core.conversation.ConversationRecord
+import dev.loki.android.core.conversation.ConversationSession
 import dev.loki.android.core.conversation.ConversationTurn
+import dev.loki.android.core.conversation.PendingConfirmation
 import dev.loki.android.core.llm.LlmModelState
 import dev.loki.android.core.assistant.VoiceUnavailableReason
 import dev.loki.android.core.models.DownloadResult
@@ -83,6 +85,10 @@ class ChatViewModel(
     private val _voiceDownloadProgress = MutableStateFlow<Float?>(null)
     val voiceDownloadProgress: StateFlow<Float?> = _voiceDownloadProgress.asStateFlow()
 
+    private val _pendingConfirmation = MutableStateFlow<PendingConfirmation?>(null)
+    val pendingConfirmation: StateFlow<PendingConfirmation?> = _pendingConfirmation.asStateFlow()
+
+    private var activeChatSession: ConversationSession? = null
     private var generationJob: Job? = null
     private var inFlightAssistantMessageId: String? = null
 
@@ -104,6 +110,7 @@ class ChatViewModel(
     suspend fun loadInitialConversation() {
         conversationManager.reset()
         _messages.value = emptyList()
+        _pendingConfirmation.value = null
         refreshConversations()
     }
 
@@ -122,6 +129,7 @@ class ChatViewModel(
         cancelGeneration()
         conversationManager.reset()
         _messages.value = emptyList()
+        _pendingConfirmation.value = null
         viewModelScope.launch {
             refreshConversations()
         }
@@ -136,6 +144,7 @@ class ChatViewModel(
             if (wasActive) {
                 conversationManager.reset()
                 _messages.value = emptyList()
+                _pendingConfirmation.value = null
             }
             refreshConversations()
         }
@@ -154,9 +163,17 @@ class ChatViewModel(
         }
     }
 
+    fun respondToConfirmation(accepted: Boolean) {
+        activeChatSession?.respondToConfirmation(accepted)
+        _pendingConfirmation.value = null
+    }
+
     fun cancelGeneration() {
         generationJob?.cancel()
         generationJob = null
+        activeChatSession?.respondToConfirmation(false)
+        activeChatSession = null
+        _pendingConfirmation.value = null
         conversationManager.llmEngine.cancel()
 
         val targetId = inFlightAssistantMessageId
@@ -214,6 +231,7 @@ class ChatViewModel(
                 }
 
                 val chatSession = conversationManager.newChatSession()
+                activeChatSession = chatSession
                 chatSession.processUtterance(
                     userInput = userInput,
                     audioBytes = audioBytes,
@@ -239,7 +257,15 @@ class ChatViewModel(
                                 } else msg
                             }
                         }
+                        is ConversationEvent.ConfirmationRequired -> {
+                            _pendingConfirmation.value = PendingConfirmation(
+                                toolName = event.toolName,
+                                arguments = emptyMap(),
+                                repeatBack = event.repeatBack
+                            )
+                        }
                         is ConversationEvent.ToolExecuted -> {
+                            _pendingConfirmation.value = null
                             latestToolResult = event.result
                             _messages.value = _messages.value.map { msg ->
                                 if (msg.id == inFlightMessageId) {
@@ -268,6 +294,7 @@ class ChatViewModel(
                             }
                         }
                         is ConversationEvent.Completed -> {
+                            _pendingConfirmation.value = null
                             val finalToolResult = event.toolResult ?: latestToolResult
                             val finalToolName = latestToolName
                             _messages.value = _messages.value.map { msg ->
@@ -284,6 +311,7 @@ class ChatViewModel(
                             refreshConversations()
                         }
                         is ConversationEvent.Error -> {
+                            _pendingConfirmation.value = null
                             _messages.value = _messages.value.map { msg ->
                                 if (msg.id == inFlightMessageId) {
                                     msg.copy(
@@ -299,8 +327,10 @@ class ChatViewModel(
                     }
                 }
             } catch (e: CancellationException) {
+                _pendingConfirmation.value = null
                 throw e
             } catch (e: Throwable) {
+                _pendingConfirmation.value = null
                 _messages.value = _messages.value.map { msg ->
                     if (msg.id == inFlightMessageId) {
                         msg.copy(
@@ -311,6 +341,7 @@ class ChatViewModel(
                     } else msg
                 }
             } finally {
+                _pendingConfirmation.value = null
                 if (inFlightAssistantMessageId == inFlightMessageId) {
                     inFlightAssistantMessageId = null
                 }

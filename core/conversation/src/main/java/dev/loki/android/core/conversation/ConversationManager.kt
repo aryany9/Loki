@@ -16,6 +16,18 @@ sealed interface ConversationEvent {
     data class GeneratingToken(val partial: String) : ConversationEvent
     data class ToolExecuting(val toolName: String, val args: Map<String, Any?>) : ConversationEvent
     data class ToolExecuted(val toolName: String, val result: ToolResult) : ConversationEvent
+    /**
+     * Emitted when a tool with [requiresConfirmation] = true is about to execute.
+     * The session will suspend until [ConversationSession.respondToConfirmation] is called,
+     * or the timeout elapses.
+     *
+     * @param toolName   The name of the tool awaiting confirmation.
+     * @param repeatBack Human-readable description of the action (e.g. "Call Rahul at +91 …").
+     */
+    data class ConfirmationRequired(
+        val toolName: String,
+        val repeatBack: String
+    ) : ConversationEvent
     data class Speaking(val text: String) : ConversationEvent
     data class Completed(val finalResponse: String, val toolResult: ToolResult? = null) : ConversationEvent
     data class Error(val message: String) : ConversationEvent
@@ -31,9 +43,10 @@ class ConversationManager(
     val toolRegistry: ToolRegistry,
     val ttsEngine: TtsEngine? = null,
     val permissionManager: dev.loki.android.core.tools.PermissionManager = dev.loki.android.core.tools.PermissionManager(),
-    val conversationStore: ConversationStore = ConversationStore(context),
-    private val maxIterations: Int = 5,
-    val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    val conversationStore: ConversationStore = ConversationStore(context, ioDispatcher),
+    val memoryStore: MemoryStore = MemoryStore(context, ioDispatcher),
+    private val maxIterations: Int = 5
 ) {
     private var persistentChatContext = ConversationContext(maxTurns = 10)
     private var activeAgentConfig: AgentConfig = AgentConfig()
@@ -120,6 +133,7 @@ class ConversationManager(
             agentConfig = activeAgentConfig,
             maxIterations = maxIterations,
             conversationStore = conversationStore,
+            memoryStore = memoryStore,
             conversationId = convId,
             ioDispatcher = ioDispatcher
         )
@@ -136,6 +150,7 @@ class ConversationManager(
             agentConfig = activeAgentConfig,
             maxIterations = maxIterations,
             conversationStore = null,
+            memoryStore = memoryStore,
             conversationId = null,
             ioDispatcher = ioDispatcher
         )

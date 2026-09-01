@@ -315,4 +315,160 @@ class AssistantSessionTest {
         assertEquals(0f, session.amplitude.value)
         session.destroy()
     }
+
+    @Test
+    fun `ConfirmationKeywords correctly parses yes, no, and unrecognized inputs`() {
+        assertEquals(ConfirmationKeywords.Verdict.ACCEPTED, ConfirmationKeywords.parseVerdict("yes"))
+        assertEquals(ConfirmationKeywords.Verdict.ACCEPTED, ConfirmationKeywords.parseVerdict("Yes, please"))
+        assertEquals(ConfirmationKeywords.Verdict.ACCEPTED, ConfirmationKeywords.parseVerdict("yeah"))
+        assertEquals(ConfirmationKeywords.Verdict.ACCEPTED, ConfirmationKeywords.parseVerdict("sure"))
+        assertEquals(ConfirmationKeywords.Verdict.ACCEPTED, ConfirmationKeywords.parseVerdict("confirm"))
+        assertEquals(ConfirmationKeywords.Verdict.ACCEPTED, ConfirmationKeywords.parseVerdict("ok"))
+        assertEquals(ConfirmationKeywords.Verdict.ACCEPTED, ConfirmationKeywords.parseVerdict("okay"))
+        assertEquals(ConfirmationKeywords.Verdict.ACCEPTED, ConfirmationKeywords.parseVerdict("do it"))
+
+        assertEquals(ConfirmationKeywords.Verdict.DENIED, ConfirmationKeywords.parseVerdict("no"))
+        assertEquals(ConfirmationKeywords.Verdict.DENIED, ConfirmationKeywords.parseVerdict("cancel"))
+        assertEquals(ConfirmationKeywords.Verdict.DENIED, ConfirmationKeywords.parseVerdict("stop"))
+        assertEquals(ConfirmationKeywords.Verdict.DENIED, ConfirmationKeywords.parseVerdict("don't"))
+        assertEquals(ConfirmationKeywords.Verdict.DENIED, ConfirmationKeywords.parseVerdict("dont do it"))
+
+        assertEquals(ConfirmationKeywords.Verdict.UNRECOGNIZED, ConfirmationKeywords.parseVerdict("what is the weather"))
+        assertEquals(ConfirmationKeywords.Verdict.UNRECOGNIZED, ConfirmationKeywords.parseVerdict("hello world"))
+    }
+
+    @Test
+    fun `handleVerbalConfirmation resolves accepted when user says yes`() = runTest {
+        val session = AssistantSession()
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val dummyEngine = object : dev.loki.android.core.llm.LlmEngine {
+            private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+            override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> = Result.success("")
+            override fun cancel() {}
+            override fun release() {}
+        }
+        val voiceSession = dev.loki.android.core.conversation.ConversationSession(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry()
+        )
+
+        val fakeStt = object : dev.loki.android.core.voice.stt.SttEngine {
+            override val isListening: Boolean = false
+            override fun startListening(): kotlinx.coroutines.flow.Flow<dev.loki.android.core.voice.stt.SttEvent> = kotlinx.coroutines.flow.flow {
+                emit(dev.loki.android.core.voice.stt.SttEvent.FinalResult("yes"))
+            }
+            override fun stopListening() {}
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        session.handleVerbalConfirmation(
+            voiceSession = voiceSession,
+            sttEngine = fakeStt,
+            ttsEngine = null,
+            repeatBack = "Call Mom?"
+        )
+
+        val state = session.state.value
+        assertTrue(state is AssistantState.Processing)
+        assertEquals("yes", (state as AssistantState.Processing).query)
+        session.destroy()
+    }
+
+    @Test
+    fun `handleVerbalConfirmation resolves denied when user says no`() = runTest {
+        val session = AssistantSession()
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val dummyEngine = object : dev.loki.android.core.llm.LlmEngine {
+            private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+            override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> = Result.success("")
+            override fun cancel() {}
+            override fun release() {}
+        }
+        val voiceSession = dev.loki.android.core.conversation.ConversationSession(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry()
+        )
+
+        val fakeStt = object : dev.loki.android.core.voice.stt.SttEngine {
+            override val isListening: Boolean = false
+            override fun startListening(): kotlinx.coroutines.flow.Flow<dev.loki.android.core.voice.stt.SttEvent> = kotlinx.coroutines.flow.flow {
+                emit(dev.loki.android.core.voice.stt.SttEvent.FinalResult("cancel that"))
+            }
+            override fun stopListening() {}
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        session.handleVerbalConfirmation(
+            voiceSession = voiceSession,
+            sttEngine = fakeStt,
+            ttsEngine = null,
+            repeatBack = "Call Mom?"
+        )
+
+        val state = session.state.value
+        assertTrue(state is AssistantState.Processing)
+        assertEquals("cancel that", (state as AssistantState.Processing).query)
+        session.destroy()
+    }
+
+    @Test
+    fun `handleVerbalConfirmation re-prompts once on unrecognized input then resolves on second turn`() = runTest {
+        val session = AssistantSession()
+        var callCount = 0
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val dummyEngine = object : dev.loki.android.core.llm.LlmEngine {
+            private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+            override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> = Result.success("")
+            override fun cancel() {}
+            override fun release() {}
+        }
+        val voiceSession = dev.loki.android.core.conversation.ConversationSession(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry()
+        )
+
+        val fakeStt = object : dev.loki.android.core.voice.stt.SttEngine {
+            override val isListening: Boolean = false
+            override fun startListening(): kotlinx.coroutines.flow.Flow<dev.loki.android.core.voice.stt.SttEvent> = kotlinx.coroutines.flow.flow {
+                if (callCount++ == 0) {
+                    emit(dev.loki.android.core.voice.stt.SttEvent.FinalResult("what did you say"))
+                } else {
+                    emit(dev.loki.android.core.voice.stt.SttEvent.FinalResult("yeah"))
+                }
+            }
+            override fun stopListening() {}
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        session.handleVerbalConfirmation(
+            voiceSession = voiceSession,
+            sttEngine = fakeStt,
+            ttsEngine = null,
+            repeatBack = "Call Mom?"
+        )
+
+        assertEquals(2, callCount)
+        val state = session.state.value
+        assertTrue(state is AssistantState.Processing)
+        assertEquals("yeah", (state as AssistantState.Processing).query)
+        session.destroy()
+    }
 }

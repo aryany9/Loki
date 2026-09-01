@@ -14,8 +14,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -25,6 +27,13 @@ class ConversationManagerTest {
         private var callIndex = 0
         private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready())
         override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+
+        var lastStartedConfig: dev.loki.android.core.models.AgentConfig? = null
+
+        override suspend fun startConversation(agentConfig: dev.loki.android.core.models.AgentConfig): Boolean {
+            lastStartedConfig = agentConfig
+            return true
+        }
 
         override fun isReady(): Boolean = true
         override suspend fun initializeAsync(modelPath: String?): Boolean = true
@@ -369,6 +378,248 @@ class ConversationManagerTest {
 
         tempDir.deleteRecursively()
     }
+
+    class GatedTestTool : LocalTool {
+        var executed = false
+        override val name: String = "gated_action"
+        override val description: String = "Destructive action"
+        override val parameters: Map<String, ToolParam> = mapOf("target" to ToolParam(ToolParamType.STRING, "target"))
+        override val requiresConfirmation: Boolean = true
+        override fun describeAction(arguments: Map<String, Any?>): String =
+            "Perform destructive action on ${arguments["target"]}?"
+
+        override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult {
+            executed = true
+            return ToolResult.success(mapOf("result" to "done"))
+        }
+    }
+
+    @Test
+    fun `gated tool emits ConfirmationRequired and executes when accepted`() = runTest {
+        val tool = GatedTestTool()
+        val registry = ToolRegistry().apply { register(tool) }
+        val mockLlm = MockLlmEngine(listOf(
+            """{"tool": "gated_action", "arguments": {"target": "database"}}""",
+            """{"response": "Action completed successfully."}"""
+        ))
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, mockLlm, registry, ttsEngine = null)
+        val session = manager.newChatSession()
+
+        val events = mutableListOf<ConversationEvent>()
+        val job = launch {
+            session.processUtterance("run action", enableTts = false).collect { event ->
+                events.add(event)
+                if (event is ConversationEvent.ConfirmationRequired) {
+                    session.respondToConfirmation(true)
+                }
+            }
+        }
+        job.join()
+
+        assertTrue(events.any { it is ConversationEvent.ConfirmationRequired })
+        val confirmEvent = events.filterIsInstance<ConversationEvent.ConfirmationRequired>().first()
+        assertEquals("gated_action", confirmEvent.toolName)
+        assertEquals("Perform destructive action on database?", confirmEvent.repeatBack)
+        assertTrue(tool.executed)
+        assertTrue(events.any { it is ConversationEvent.Completed })
+    }
+
+    @Test
+    fun `gated tool emits ConfirmationRequired and records user declined when rejected`() = runTest {
+        val tool = GatedTestTool()
+        val registry = ToolRegistry().apply { register(tool) }
+        val mockLlm = MockLlmEngine(listOf(
+            """{"tool": "gated_action", "arguments": {"target": "database"}}""",
+            """{"response": "Understood, cancelled the action."}"""
+        ))
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, mockLlm, registry, ttsEngine = null)
+        val session = manager.newChatSession()
+
+        val events = mutableListOf<ConversationEvent>()
+        val job = launch {
+            session.processUtterance("run action", enableTts = false).collect { event ->
+                events.add(event)
+                if (event is ConversationEvent.ConfirmationRequired) {
+                    session.respondToConfirmation(false)
+                }
+            }
+        }
+        job.join()
+
+        assertTrue(events.any { it is ConversationEvent.ConfirmationRequired })
+        assertFalse(tool.executed)
+
+        val toolResultTurn = session.conversationContext.getTurns().filterIsInstance<ConversationTurn.ToolExecutionResult>().firstOrNull()
+        org.junit.Assert.assertNotNull(toolResultTurn)
+        assertEquals("User declined the action.", toolResultTurn?.result?.error)
+    }
+
+    @Test
+    fun `gated tool times out when unanswered and records action cancelled`() = runTest {
+        val tool = GatedTestTool()
+        val registry = ToolRegistry().apply { register(tool) }
+        val mockLlm = MockLlmEngine(listOf(
+            """{"tool": "gated_action", "arguments": {"target": "database"}}""",
+            """{"response": "Timed out waiting for confirmation."}"""
+        ))
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, mockLlm, registry, ttsEngine = null)
+        val session = manager.newChatSession()
+
+        val events = mutableListOf<ConversationEvent>()
+        val job = launch {
+            session.processUtterance("run action", enableTts = false).collect { event ->
+                events.add(event)
+                // Do not respond, let timeout elapse
+            }
+        }
+
+        // Advance past 20_000ms timeout
+        testScheduler.advanceTimeBy(25_000L)
+        job.join()
+
+        assertTrue(events.any { it is ConversationEvent.ConfirmationRequired })
+        assertFalse(tool.executed)
+
+        val toolResultTurn = session.conversationContext.getTurns().filterIsInstance<ConversationTurn.ToolExecutionResult>().firstOrNull()
+        org.junit.Assert.assertNotNull(toolResultTurn)
+        assertEquals("No response received; action cancelled.", toolResultTurn?.result?.error)
+    }
+
+    @Test
+    fun `cancel during pending confirmation resolves gate as false without zombie gate`() = runTest {
+        val tool = GatedTestTool()
+        val registry = ToolRegistry().apply { register(tool) }
+        val mockLlm = MockLlmEngine(listOf(
+            """{"tool": "gated_action", "arguments": {"target": "database"}}""",
+            """{"response": "Cancelled."}"""
+        ))
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, mockLlm, registry, ttsEngine = null)
+        val session = manager.newChatSession()
+
+        val events = mutableListOf<ConversationEvent>()
+        val job = launch {
+            session.processUtterance("run action", enableTts = false).collect { event ->
+                events.add(event)
+                if (event is ConversationEvent.ConfirmationRequired) {
+                    session.cancel()
+                }
+            }
+        }
+        job.join()
+
+        assertFalse(tool.executed)
+    }
+
+    @Test
+    fun `empty memory store does not inject memory block into system prompt`() = runTest {
+        val mockLlm = MockLlmEngine(listOf("""{"response": "Hello!"}"""))
+        val tempMemDir = java.nio.file.Files.createTempDirectory("mem_test").toFile()
+        val memStore = MemoryStore(tempMemDir)
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = mockLlm,
+            toolRegistry = ToolRegistry(),
+            memoryStore = memStore
+        )
+
+        manager.processUtterance("What is my schedule?", enableTts = false).toList()
+        val prompt = mockLlm.lastStartedConfig?.systemInstruction
+        org.junit.Assert.assertNotNull(prompt)
+        assertFalse(prompt!!.contains("What you remember about the user"))
+        tempMemDir.deleteRecursively()
+    }
+
+    @Test
+    fun `memory entries are injected into system prompt sorted by most recent first`() = runTest {
+        val mockLlm = MockLlmEngine(listOf("""{"response": "Hello!"}"""))
+        val tempMemDir = java.nio.file.Files.createTempDirectory("mem_test").toFile()
+        var fakeNow = 1_000_000L
+        val memStore = MemoryStore(tempMemDir, nowMillis = { fakeNow += 50; fakeNow })
+
+        memStore.add("User lives in Tokyo")
+        memStore.add("User prefers dark mode")
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = mockLlm,
+            toolRegistry = ToolRegistry(),
+            memoryStore = memStore
+        )
+
+        manager.processUtterance("What is my schedule?", enableTts = false).toList()
+        val prompt = mockLlm.lastStartedConfig?.systemInstruction
+        org.junit.Assert.assertNotNull(prompt)
+        assertTrue(prompt!!.contains("What you remember about the user:\n- User prefers dark mode\n- User lives in Tokyo"))
+        tempMemDir.deleteRecursively()
+    }
+
+    @Test
+    fun `memory injection respects 10 entries cap and sorts most recent first`() = runTest {
+        val mockLlm = MockLlmEngine(listOf("""{"response": "Hello!"}"""))
+        val tempMemDir = java.nio.file.Files.createTempDirectory("mem_test").toFile()
+        var fakeNow = 1_000_000L
+        val memStore = MemoryStore(tempMemDir, nowMillis = { fakeNow += 50; fakeNow })
+
+        for (i in 1..15) {
+            memStore.add("Memory fact number $i")
+        }
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = mockLlm,
+            toolRegistry = ToolRegistry(),
+            memoryStore = memStore
+        )
+
+        manager.processUtterance("What is my schedule?", enableTts = false).toList()
+        val prompt = mockLlm.lastStartedConfig?.systemInstruction
+        org.junit.Assert.assertNotNull(prompt)
+        assertTrue(prompt!!.contains("What you remember about the user:"))
+        val memoryBlock = prompt.substringAfter("What you remember about the user:\n").substringBefore("\n\n")
+        val lines = memoryBlock.lines().filter { it.startsWith("- Memory fact number") }
+        assertEquals(10, lines.size)
+        // Most recent first: 15 down to 6
+        assertEquals("- Memory fact number 15", lines.first())
+        assertEquals("- Memory fact number 6", lines.last())
+        tempMemDir.deleteRecursively()
+    }
+
+    @Test
+    fun `memory injection truncates at entry boundary when exceeding 800 characters`() = runTest {
+        val mockLlm = MockLlmEngine(listOf("""{"response": "Hello!"}"""))
+        val tempMemDir = java.nio.file.Files.createTempDirectory("mem_test").toFile()
+        var fakeNow = 1_000_000L
+        val memStore = MemoryStore(tempMemDir, nowMillis = { fakeNow += 50; fakeNow })
+
+        val longFact1 = "A".repeat(500)
+        val longFact2 = "B".repeat(400)
+        memStore.add(longFact1)
+        memStore.add(longFact2)
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = mockLlm,
+            toolRegistry = ToolRegistry(),
+            memoryStore = memStore
+        )
+
+        manager.processUtterance("What is my schedule?", enableTts = false).toList()
+        val prompt = mockLlm.lastStartedConfig?.systemInstruction
+        org.junit.Assert.assertNotNull(prompt)
+        // longFact2 (most recent, 400 chars) is included, but longFact1 (would exceed 800 chars) is excluded
+        assertTrue(prompt!!.contains(longFact2))
+        assertFalse(prompt.contains(longFact1))
+        tempMemDir.deleteRecursively()
+    }
 }
+
 
 

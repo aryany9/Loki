@@ -4,6 +4,7 @@ import android.util.Log
 import dev.loki.android.core.conversation.ConversationEvent
 import dev.loki.android.core.models.ModelRuntime
 import dev.loki.android.core.voice.stt.SttEvent
+import dev.loki.android.core.voice.tts.TtsEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,6 +25,7 @@ class AssistantSession(
 ) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeTurnJob: Job? = null
+    private var activeVoiceSession: dev.loki.android.core.conversation.ConversationSession? = null
 
     private val _state = MutableStateFlow<AssistantState>(AssistantState.Idle)
     val state: StateFlow<AssistantState> = _state.asStateFlow()
@@ -143,6 +145,7 @@ class AssistantSession(
 
         var turnError: String? = null
         val voiceSession = conversationManager.newVoiceSession()
+        activeVoiceSession = voiceSession
 
         voiceSession.processUtterance(
             userInput = "",
@@ -151,6 +154,14 @@ class AssistantSession(
             source = "DIRECT_AUDIO"
         ).collect { event ->
             when (event) {
+                is ConversationEvent.ConfirmationRequired -> {
+                    handleVerbalConfirmation(
+                        voiceSession = voiceSession,
+                        sttEngine = sttEngine,
+                        ttsEngine = conversationManager.ttsEngine,
+                        repeatBack = event.repeatBack
+                    )
+                }
                 is ConversationEvent.Speaking -> {
                     _state.value = AssistantState.Speaking(responseText = event.text)
                 }
@@ -179,12 +190,21 @@ class AssistantSession(
 
                 _state.value = AssistantState.Processing(query = transcript, isDemoted = true)
                 val fallbackSession = conversationManager.newVoiceSession()
+                activeVoiceSession = fallbackSession
                 fallbackSession.processUtterance(
                     userInput = transcript,
                     enableTts = true,
                     source = "VOICE"
                 ).collect { event ->
                     when (event) {
+                        is ConversationEvent.ConfirmationRequired -> {
+                            handleVerbalConfirmation(
+                                voiceSession = fallbackSession,
+                                sttEngine = sttEngine,
+                                ttsEngine = conversationManager.ttsEngine,
+                                repeatBack = event.repeatBack
+                            )
+                        }
                         is ConversationEvent.Speaking -> {
                             _state.value = AssistantState.Speaking(responseText = event.text)
                         }
@@ -256,8 +276,17 @@ class AssistantSession(
         _state.value = AssistantState.Processing(query = finalTranscript)
 
         val voiceSession = conversationManager.newVoiceSession()
+        activeVoiceSession = voiceSession
         voiceSession.processUtterance(finalTranscript, enableTts = true, source = "VOICE").collect { event ->
             when (event) {
+                is ConversationEvent.ConfirmationRequired -> {
+                    handleVerbalConfirmation(
+                        voiceSession = voiceSession,
+                        sttEngine = sttEngine,
+                        ttsEngine = conversationManager.ttsEngine,
+                        repeatBack = event.repeatBack
+                    )
+                }
                 is ConversationEvent.Speaking -> {
                     _state.value = AssistantState.Speaking(responseText = event.text)
                 }
@@ -269,6 +298,78 @@ class AssistantSession(
                     _state.value = AssistantState.Error(message = event.message)
                 }
                 else -> {}
+            }
+        }
+    }
+
+    internal suspend fun handleVerbalConfirmation(
+        voiceSession: dev.loki.android.core.conversation.ConversationSession,
+        sttEngine: dev.loki.android.core.voice.stt.SttEngine?,
+        ttsEngine: dev.loki.android.core.voice.tts.TtsEngine?,
+        repeatBack: String
+    ) {
+        if (ttsEngine != null) {
+            _state.value = AssistantState.Speaking(responseText = repeatBack)
+            ttsEngine.speak(repeatBack)
+        }
+        _state.value = AssistantState.AwaitingVerbalConfirmation(repeatBack = repeatBack)
+
+        if (sttEngine == null) {
+            Log.w(TAG, "STT engine unavailable for verbal confirmation verdict")
+            return
+        }
+
+        var rePrompted = false
+
+        while (_state.value is AssistantState.AwaitingVerbalConfirmation) {
+            var utterance = ""
+
+            sttEngine.startListening().collect { sttEvent ->
+                when (sttEvent) {
+                    is SttEvent.Amplitude -> processRawRms(sttEvent.rms)
+                    is SttEvent.ListeningStopped -> resetAmplitude()
+                    is SttEvent.FinalResult -> {
+                        resetAmplitude()
+                        utterance = sttEvent.text
+                    }
+                    is SttEvent.Error -> {
+                        resetAmplitude()
+                    }
+                    else -> {}
+                }
+            }
+            resetAmplitude()
+
+            if (utterance.isBlank()) {
+                break
+            }
+
+            val verdict = ConfirmationKeywords.parseVerdict(utterance)
+            when (verdict) {
+                ConfirmationKeywords.Verdict.ACCEPTED -> {
+                    _state.value = AssistantState.Processing(query = utterance)
+                    voiceSession.respondToConfirmation(true)
+                    break
+                }
+                ConfirmationKeywords.Verdict.DENIED -> {
+                    _state.value = AssistantState.Processing(query = utterance)
+                    voiceSession.respondToConfirmation(false)
+                    break
+                }
+                ConfirmationKeywords.Verdict.UNRECOGNIZED -> {
+                    if (!rePrompted) {
+                        rePrompted = true
+                        val rePrompt = "Sorry — yes or no?"
+                        if (ttsEngine != null) {
+                            _state.value = AssistantState.Speaking(responseText = rePrompt)
+                            ttsEngine.speak(rePrompt)
+                        }
+                        _state.value = AssistantState.AwaitingVerbalConfirmation(repeatBack = repeatBack)
+                    } else {
+                        // Second non-matching utterance falls through to timeout
+                        break
+                    }
+                }
             }
         }
     }
@@ -297,6 +398,8 @@ class AssistantSession(
             Log.i(TAG, "cancelTurn() invoked — stopping STT, LLM generation, tools, and TTS playback")
             activeTurnJob?.cancel()
             activeTurnJob = null
+            activeVoiceSession?.cancel()
+            activeVoiceSession = null
 
             val provider = AssistantSessionProvider.instance
             try {

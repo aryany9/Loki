@@ -4,6 +4,9 @@
     <uses-feature
         android:name="android.hardware.telephony"
         android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.flash"
+        android:required="false" />
     <!-- Internet permission — required for downloading local models -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Audio recording permission — required for voice sessions -->
@@ -11,6 +14,14 @@
     <!-- Phone and Contacts permissions for assistant tools -->
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Camera permission — for toggle_flashlight on-demand -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Connectivity state permissions -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
     <!-- Foreground service for ongoing voice capture / interaction -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />

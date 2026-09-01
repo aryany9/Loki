@@ -29,6 +29,7 @@ android {
 
 dependencies {
     implementation(project(":core:tools"))
+    implementation(project(":core:conversation"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)

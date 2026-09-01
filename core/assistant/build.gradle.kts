@@ -35,6 +35,7 @@ dependencies {
     implementation(project(":core:models"))
     implementation(project(":core:conversation"))
     implementation(project(":core:voice:stt"))
+    implementation(project(":core:voice:tts"))
     implementation(project(":core:theme"))
     implementation(project(":core:sound"))
     implementation(libs.androidx.core.ktx)
@@ -45,6 +46,8 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.kotlinx.coroutines.android)
 
+    testImplementation(project(":core:llm"))
+    testImplementation(project(":core:tools"))
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }

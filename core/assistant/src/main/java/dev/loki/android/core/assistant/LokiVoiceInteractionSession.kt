@@ -49,6 +49,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -257,7 +258,7 @@ fun VoiceSessionOverlay(
     onDismiss: () -> Unit
 ) {
     val equalizerMode = when (state) {
-        is AssistantState.Listening -> VoiceEqualizerMode.LISTENING
+        is AssistantState.Listening, is AssistantState.AwaitingVerbalConfirmation -> VoiceEqualizerMode.LISTENING
         is AssistantState.Processing -> VoiceEqualizerMode.PROCESSING
         is AssistantState.Speaking -> VoiceEqualizerMode.SPEAKING
         is AssistantState.Idle, is AssistantState.Error -> VoiceEqualizerMode.IDLE
@@ -322,6 +323,48 @@ fun VoiceSessionOverlay(
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+                is AssistantState.AwaitingVerbalConfirmation -> {
+                    val infiniteTransition = rememberInfiniteTransition(label = "confirmation_pulse")
+                    val pulseAlpha by infiniteTransition.animateFloat(
+                        initialValue = 0.7f,
+                        targetValue = 1.0f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(durationMillis = 1000, easing = LinearEasing),
+                            repeatMode = RepeatMode.Reverse
+                        ),
+                        label = "pulse_alpha"
+                    )
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = "Awaiting Confirmation",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Say \"Yes\" or \"No\"",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Text(
+                            text = state.repeatBack,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = pulseAlpha),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp)
                         )
                     }
                 }

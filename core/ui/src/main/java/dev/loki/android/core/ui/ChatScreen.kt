@@ -131,6 +131,7 @@ fun ChatScreen(
     val isRecording by viewModel.isRecording.collectAsState()
     val voiceError by viewModel.voiceError.collectAsState()
     val modelState by viewModel.modelState.collectAsState()
+    val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
@@ -503,6 +504,79 @@ fun ChatScreen(
                                         tint = MaterialTheme.colorScheme.onErrorContainer,
                                         modifier = Modifier.size(16.dp)
                                     )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Confirmation Card (gated destructive action)
+                AnimatedVisibility(
+                    visible = pendingConfirmation != null,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    pendingConfirmation?.let { confirm ->
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(LokiCornerTokens.medium),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shadowElevation = 4.dp
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Security,
+                                        contentDescription = "Confirmation required",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text(
+                                        text = "Confirmation Required",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+
+                                Text(
+                                    text = confirm.repeatBack.ifEmpty { "Do you want to proceed with ${confirm.toolName}?" },
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    TextButton(
+                                        onClick = { viewModel.respondToConfirmation(false) }
+                                    ) {
+                                        Text("Cancel", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = { viewModel.respondToConfirmation(true) },
+                                        shape = RoundedCornerShape(LokiCornerTokens.small),
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    ) {
+                                        Text("Confirm")
+                                    }
                                 }
                             }
                         }

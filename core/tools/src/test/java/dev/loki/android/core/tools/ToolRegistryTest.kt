@@ -72,4 +72,61 @@ class ToolRegistryTest {
         assertTrue(parsed.success)
         assertEquals("85", parsed.data?.get("battery"))
     }
+
+    // ── Task 1.2 — Confirmation metadata exposure ────────────────────────────
+
+    class GatedDummyTool(
+        override val name: String = "gated_tool"
+    ) : LocalTool {
+        override val description: String = "A gated dummy tool"
+        override val parameters: Map<String, ToolParam> = emptyMap()
+        override val requiresConfirmation: Boolean = true
+        override fun describeAction(arguments: Map<String, Any?>): String =
+            "Performing ${arguments["action"] ?: "gated action"}"
+        override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult =
+            ToolResult.success()
+    }
+
+    @Test
+    fun `registry reports requiresConfirmation true for gated tool`() {
+        val registry = ToolRegistry()
+        registry.register(GatedDummyTool())
+        assertTrue(registry.requiresConfirmation("gated_tool"))
+    }
+
+    @Test
+    fun `registry reports requiresConfirmation false for ungated tool`() {
+        val registry = ToolRegistry()
+        registry.register(DummyTool())
+        assertFalse(registry.requiresConfirmation("dummy_tool"))
+    }
+
+    @Test
+    fun `registry returns false for requiresConfirmation on unknown tool`() {
+        val registry = ToolRegistry()
+        assertFalse(registry.requiresConfirmation("no_such_tool"))
+    }
+
+    @Test
+    fun `registry describeAction returns tool-provided string for gated tool`() {
+        val registry = ToolRegistry()
+        registry.register(GatedDummyTool())
+        val description = registry.describeAction("gated_tool", mapOf("action" to "calling Rahul"))
+        assertEquals("Performing calling Rahul", description)
+    }
+
+    @Test
+    fun `registry describeAction returns tool name for ungated tool (default)`() {
+        val registry = ToolRegistry()
+        registry.register(DummyTool())
+        val description = registry.describeAction("dummy_tool", emptyMap())
+        assertEquals("dummy_tool", description)
+    }
+
+    @Test
+    fun `registry describeAction returns tool name string for unknown tool`() {
+        val registry = ToolRegistry()
+        val description = registry.describeAction("no_such_tool", emptyMap())
+        assertEquals("no_such_tool", description)
+    }
 }

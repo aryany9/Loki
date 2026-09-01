@@ -14,9 +14,25 @@ class CallContactTool : LocalTool {
     override val name: String = "call_contact"
     override val description: String = "Initiate a phone call to a named contact or phone number."
     override val parameters: Map<String, ToolParam> = mapOf(
-        "phone_number" to ToolParam(ToolParamType.STRING, "Phone number or contact URI to call", required = true)
+        "phone_number" to ToolParam(ToolParamType.STRING, "Phone number or contact URI to call", required = true),
+        "name" to ToolParam(ToolParamType.STRING, "Contact name if known", required = false)
     )
     override val requiredPermissions: List<String> = listOf(Manifest.permission.CALL_PHONE)
+    override val requiresConfirmation: Boolean = true
+
+    override fun describeAction(arguments: Map<String, Any?>): String {
+        val name = arguments["name"]?.toString()?.trim()
+            ?: arguments["contact_name"]?.toString()?.trim()
+        val number = arguments["phone_number"]?.toString()?.trim()
+            ?: arguments["number"]?.toString()?.trim()
+
+        return when {
+            !name.isNullOrBlank() && !number.isNullOrBlank() && name != number -> "Call $name at $number?"
+            !name.isNullOrBlank() -> "Call $name?"
+            !number.isNullOrBlank() -> "Call $number?"
+            else -> "Place phone call?"
+        }
+    }
 
     override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult {
         val phoneNumber = arguments["phone_number"]?.toString()?.trim()
