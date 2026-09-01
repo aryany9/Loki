@@ -19,10 +19,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -36,11 +33,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -58,7 +53,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedButton
-import dev.loki.android.core.conversation.MemoryEntry
 import dev.loki.android.core.llm.LlmModelState
 import dev.loki.android.core.theme.LokiCornerTokens
 import dev.loki.android.core.theme.ThemeMode
@@ -326,216 +320,6 @@ fun SettingsScreen(
                         subtitle = "Manage microphone, contacts, and phone call access",
                         onClick = onNavigateToPermissions
                     )
-                }
-            }
-
-            // Memory Section
-            SettingsSectionHeader(title = "Memory")
-            Card(
-                shape = RoundedCornerShape(LokiCornerTokens.medium),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    val memories by viewModel.memories.collectAsState()
-                    var newMemoryText by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
-                    var memoryToEdit by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<MemoryEntry?>(null) }
-                    var showClearConfirm by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "What Loki remembers",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "Loki uses these in every new chat.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        if (memories.isNotEmpty()) {
-                            androidx.compose.material3.TextButton(
-                                onClick = { showClearConfirm = true }
-                            ) {
-                                Text(
-                                    text = "Clear all",
-                                    color = MaterialTheme.colorScheme.error,
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Add memory input field
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        androidx.compose.material3.OutlinedTextField(
-                            value = newMemoryText,
-                            onValueChange = { newMemoryText = it },
-                            placeholder = {
-                                Text(
-                                    text = "Add a fact (e.g. My name is Arya)",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            },
-                            singleLine = true,
-                            shape = RoundedCornerShape(LokiCornerTokens.small),
-                            modifier = Modifier.weight(1f)
-                        )
-
-                        androidx.compose.material3.FilledTonalButton(
-                            onClick = {
-                                if (newMemoryText.isNotBlank()) {
-                                    viewModel.addMemory(newMemoryText)
-                                    newMemoryText = ""
-                                }
-                            },
-                            enabled = newMemoryText.isNotBlank(),
-                            shape = RoundedCornerShape(LokiCornerTokens.small)
-                        ) {
-                            Text("Add")
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    if (memories.isEmpty()) {
-                        Text(
-                            text = "Nothing remembered yet",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            modifier = Modifier.padding(vertical = 12.dp)
-                        )
-                    } else {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            memories.forEach { entry ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "• ${entry.text}",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.weight(1f)
-                                    )
-
-                                    IconButton(
-                                        onClick = { memoryToEdit = entry },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = androidx.compose.material.icons.Icons.Default.Edit,
-                                            contentDescription = "Edit memory",
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-
-                                    IconButton(
-                                        onClick = { viewModel.deleteMemory(entry.id) },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = androidx.compose.material.icons.Icons.Default.Delete,
-                                            contentDescription = "Delete memory",
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Edit memory dialog
-                    memoryToEdit?.let { entry ->
-                        var editText by androidx.compose.runtime.remember(entry) {
-                            androidx.compose.runtime.mutableStateOf(entry.text)
-                        }
-                        androidx.compose.material3.AlertDialog(
-                            onDismissRequest = { memoryToEdit = null },
-                            title = { Text("Edit Memory") },
-                            text = {
-                                androidx.compose.material3.OutlinedTextField(
-                                    value = editText,
-                                    onValueChange = { editText = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(LokiCornerTokens.small)
-                                )
-                            },
-                            confirmButton = {
-                                Button(
-                                    onClick = {
-                                        if (editText.isNotBlank()) {
-                                            viewModel.updateMemory(entry.id, editText)
-                                        }
-                                        memoryToEdit = null
-                                    },
-                                    enabled = editText.isNotBlank()
-                                ) {
-                                    Text("Save")
-                                }
-                            },
-                            dismissButton = {
-                                androidx.compose.material3.TextButton(
-                                    onClick = { memoryToEdit = null }
-                                ) {
-                                    Text("Cancel")
-                                }
-                            }
-                        )
-                    }
-
-                    // Clear all confirm dialog
-                    if (showClearConfirm) {
-                        androidx.compose.material3.AlertDialog(
-                            onDismissRequest = { showClearConfirm = false },
-                            title = { Text("Clear all memories?") },
-                            text = { Text("This will permanently remove all stored facts. New chats will no longer have access to this information.") },
-                            confirmButton = {
-                                Button(
-                                    onClick = {
-                                        viewModel.clearMemories()
-                                        showClearConfirm = false
-                                    },
-                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.error
-                                    )
-                                ) {
-                                    Text("Clear All")
-                                }
-                            },
-                            dismissButton = {
-                                androidx.compose.material3.TextButton(
-                                    onClick = { showClearConfirm = false }
-                                ) {
-                                    Text("Cancel")
-                                }
-                            }
-                        )
-                    }
                 }
             }
 

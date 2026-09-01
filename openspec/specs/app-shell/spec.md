@@ -4,7 +4,7 @@ Application shell: navigation drawer with conversation recents, simplified chat 
 ## Requirements
 
 ### Requirement: Navigation drawer hosts recents and destinations
-The chat surface SHALL be wrapped in a Material 3 navigation drawer containing: an app header, a "New chat" action, a recents list of stored conversations (most recently updated first, capped display at 20) where tapping loads that conversation, a delete affordance per recent, and navigation entries for Model Library, Agent Playground, Permissions, and Settings. The drawer state SHALL close on selection, and the system back gesture SHALL close the drawer before exiting the app. "New chat" SHALL reset the chat to the empty home state and SHALL NOT create a stored conversation until the first message is sent.
+The chat surface SHALL be wrapped in a Material 3 navigation drawer containing: an app header, a "New chat" action, a recents list of stored conversations (most recently updated first, capped display at 20) where tapping loads that conversation, a delete affordance per recent, and navigation entries for Model Library, Agent Playground, Permissions, Memory, and Settings. The drawer state SHALL close on selection, and the system back gesture SHALL close the drawer before exiting the app. "New chat" SHALL reset the chat to the empty home state and SHALL NOT create a stored conversation until the first message is sent.
 
 #### Scenario: User opens a recent conversation
 - **WHEN** the user taps a conversation in the drawer recents list
@@ -25,7 +25,7 @@ The chat surface SHALL be wrapped in a Material 3 navigation drawer containing: 
 ---
 
 ### Requirement: System back navigation walks the destination stack
-Pressing the system back button on a non-root screen (Settings, Model Library, Agent Playground, Permissions) SHALL return to the previously displayed destination, ultimately to the chat home. From the chat home (the root), the system back SHALL finish the activity as expected. No non-root screen SHALL directly exit the app on a single back press.
+Pressing the system back button on a non-root screen (Settings, Model Library, Agent Playground, Permissions, Memory) SHALL return to the previously displayed destination, ultimately to the chat home. From the chat home (the root), the system back SHALL finish the activity as expected. No non-root screen SHALL directly exit the app on a single back press.
 
 #### Scenario: Back returns to chat from settings
 - **WHEN** the user is on the Settings screen and presses the system back button once
@@ -70,11 +70,11 @@ A Settings screen SHALL provide: a theme mode selector (SYSTEM, LIGHT, DARK) tha
 - **WHEN** the user opens the navigation drawer and taps Settings
 - **THEN** the Settings screen is displayed with a back affordance returning to chat
 
-### Requirement: Settings hosts the memory management section
-The Settings screen SHALL include a "What Loki remembers" section listing all memory entries with an add field, per-entry edit/delete, and clear-all with confirmation, styled with theme tokens and stating that memories apply to new chats.
+### Requirement: Dedicated Memory screen manages persistent memories
+A dedicated Memory screen accessible from the navigation drawer SHALL provide a "What Loki remembers" section listing all memory entries with an add field, per-entry edit/delete, and clear-all with confirmation, styled with theme tokens and stating that memories apply to new chats.
 
 #### Scenario: Memory section reflects store state
-- **WHEN** memories are added, edited, or deleted in the section
+- **WHEN** memories are added, edited, or deleted in the Memory screen
 - **THEN** the list updates immediately from the store
 - **AND** an empty store shows a "Nothing remembered yet" empty state
 

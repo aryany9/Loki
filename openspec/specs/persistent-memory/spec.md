@@ -1,5 +1,5 @@
 ## Purpose
-Durable on-device persistent memory store for user facts and preferences, injected into conversation system prompts and manageable via Settings.
+Durable on-device persistent memory store for user facts and preferences, injected into conversation system prompts and manageable via a dedicated Memory screen.
 
 ## Requirements
 
@@ -15,10 +15,10 @@ The system SHALL persist user memory entries as a single JSON file under app-pri
 - **THEN** the store returns an empty list and logs non-fatally
 
 ### Requirement: Memory is fully user-visible and manageable
-The Settings screen SHALL provide a "What Loki remembers" section listing all memory entries with per-entry edit and delete, manual add, and clear-all (with confirmation). Nothing SHALL be stored as memory that the user cannot view and erase. Deletion SHALL be immediate and permanent.
+A dedicated Memory screen (accessible from the navigation drawer) SHALL provide a "What Loki remembers" view listing all memory entries with per-entry edit and delete, manual add, and clear-all (with confirmation). Nothing SHALL be stored as memory that the user cannot view and erase. Deletion SHALL be immediate and permanent.
 
 #### Scenario: User deletes a memory
-- **WHEN** the user deletes an entry in Settings
+- **WHEN** the user deletes an entry in the Memory screen
 - **THEN** the entry is permanently removed from the store
 - **AND** it no longer appears in injected prompts from the next conversation start
 

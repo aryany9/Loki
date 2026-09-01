@@ -70,6 +70,7 @@ enum class AppScreen {
     PERMISSIONS,
     MODEL_LIBRARY,
     AGENT_PLAYGROUND,
+    MEMORY,
     SETTINGS
 }
 
@@ -101,6 +102,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var chatViewModel: ChatViewModel
     private lateinit var agentPlaygroundViewModel: dev.loki.android.core.ui.AgentPlaygroundViewModel
+    private lateinit var memoryViewModel: dev.loki.android.core.ui.MemoryViewModel
     private lateinit var settingsViewModel: dev.loki.android.core.ui.SettingsViewModel
 
     private var permissionRefreshTrigger by mutableStateOf(0)
@@ -142,6 +144,10 @@ class MainActivity : ComponentActivity() {
             conversationManager = conversationManager,
             agentConfigRepository = agentConfigRepository,
             modelLibraryManager = modelLibraryManager
+        )
+
+        memoryViewModel = dev.loki.android.core.ui.MemoryViewModel(
+            conversationManager = conversationManager
         )
 
         settingsViewModel = dev.loki.android.core.ui.SettingsViewModel(
@@ -348,8 +354,19 @@ class MainActivity : ComponentActivity() {
                                     onNavigateToAgentPlayground = {
                                         navigateTo(AppScreen.AGENT_PLAYGROUND)
                                     },
+                                    onNavigateToMemory = {
+                                        navigateTo(AppScreen.MEMORY)
+                                    },
                                     onNavigateToSettings = {
                                         navigateTo(AppScreen.SETTINGS)
+                                    }
+                                )
+                            }
+                            AppScreen.MEMORY -> {
+                                dev.loki.android.core.ui.MemoryScreen(
+                                    viewModel = memoryViewModel,
+                                    onNavigateBack = {
+                                        goBack()
                                     }
                                 )
                             }

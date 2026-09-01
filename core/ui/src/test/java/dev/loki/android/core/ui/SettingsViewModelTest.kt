@@ -126,60 +126,6 @@ class SettingsViewModelTest {
     }
 
     @Test
-    fun `SettingsViewModel memories CRUD methods update memories state flow`() = runTest(testDispatcher) {
-        val fakeLlm = FakeLlmEngine()
-        val dummyContext = object : ContextWrapper(null) {
-            override fun getApplicationContext(): Context = this
-            override fun getFilesDir(): File = tempDir
-        }
-        val convStore = ConversationStore(File(tempDir, "convs"), ioDispatcher = testDispatcher)
-        val memStore = dev.loki.android.core.conversation.MemoryStore(File(tempDir, "memories"), ioDispatcher = testDispatcher)
-        val manager = ConversationManager(
-            context = dummyContext,
-            llmEngine = fakeLlm,
-            toolRegistry = ToolRegistry(),
-            ttsEngine = null,
-            conversationStore = convStore,
-            memoryStore = memStore,
-            ioDispatcher = testDispatcher
-        )
-        val themeRepo = ThemeRepository(dummyContext)
-        val viewModel = SettingsViewModel(themeRepository = themeRepo, conversationManager = manager)
-
-        advanceUntilIdle()
-        assertTrue(viewModel.memories.value.isEmpty())
-
-        // Add
-        viewModel.addMemory("My favorite coffee is Espresso")
-        advanceUntilIdle()
-        assertEquals(1, viewModel.memories.value.size)
-        assertEquals("My favorite coffee is Espresso", viewModel.memories.value[0].text)
-        val entryId = viewModel.memories.value[0].id
-
-        // Update
-        viewModel.updateMemory(entryId, "My favorite coffee is Cortado")
-        advanceUntilIdle()
-        assertEquals(1, viewModel.memories.value.size)
-        assertEquals("My favorite coffee is Cortado", viewModel.memories.value[0].text)
-
-        // Add another
-        viewModel.addMemory("Live in Kyoto")
-        advanceUntilIdle()
-        assertEquals(2, viewModel.memories.value.size)
-
-        // Delete
-        viewModel.deleteMemory(entryId)
-        advanceUntilIdle()
-        assertEquals(1, viewModel.memories.value.size)
-        assertEquals("Live in Kyoto", viewModel.memories.value[0].text)
-
-        // Clear
-        viewModel.clearMemories()
-        advanceUntilIdle()
-        assertTrue(viewModel.memories.value.isEmpty())
-    }
-
-    @Test
     fun `SettingsViewModel setConversationLanguage persists to repository and updates active config`() = runTest(testDispatcher) {
         val fakeLlm = FakeLlmEngine()
         val dummyContext = object : ContextWrapper(null) {

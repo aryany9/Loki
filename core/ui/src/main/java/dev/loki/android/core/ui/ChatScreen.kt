@@ -43,6 +43,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -124,6 +125,7 @@ fun ChatScreen(
     onNavigateToPermissions: (() -> Unit)? = null,
     onNavigateToModelLibrary: (() -> Unit)? = null,
     onNavigateToAgentPlayground: (() -> Unit)? = null,
+    onNavigateToMemory: (() -> Unit)? = null,
     onNavigateToSettings: (() -> Unit)? = null
 ) {
     val messages by viewModel.messages.collectAsState()
@@ -305,6 +307,19 @@ fun ChatScreen(
                             onClick = {
                                 coroutineScope.launch { drawerState.close() }
                                 onNavigateToPermissions()
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp)
+                        )
+                    }
+
+                    if (onNavigateToMemory != null) {
+                        NavigationDrawerItem(
+                            icon = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
+                            label = { Text("Memory", style = MaterialTheme.typography.labelLarge) },
+                            selected = false,
+                            onClick = {
+                                coroutineScope.launch { drawerState.close() }
+                                onNavigateToMemory()
                             },
                             modifier = Modifier.padding(horizontal = 12.dp)
                         )
