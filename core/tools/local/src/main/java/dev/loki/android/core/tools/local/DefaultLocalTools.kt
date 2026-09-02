@@ -28,5 +28,6 @@ object DefaultLocalTools {
         registry.register(GetRamUsageTool())
         registry.register(RememberFactTool(memoryStore))
         registry.register(SearchChatHistoryTool(conversationStore))
+        registry.register(SelectContactTool())
     }
 }

@@ -44,19 +44,31 @@ class ToolRegistry {
 
     fun getAvailableTools(
         context: Context,
-        permissionManager: PermissionManager = PermissionManager()
+        permissionManager: PermissionManager = PermissionManager(),
+        activeCapability: String? = null,
+        advancingTool: String? = null,
+        offline: Boolean = false
     ): List<Tool> {
         return tools.values.filter { tool ->
-            tool.requiredPermissions.isEmpty() || permissionManager.arePermissionsGranted(context, tool.requiredPermissions)
+            val envAvailable = !offline || tool !is OnlineTool
+            val permissionGranted = tool.requiredPermissions.isEmpty() || permissionManager.arePermissionsGranted(context, tool.requiredPermissions)
+            val capabilityMatches = activeCapability == null || tool.capability == "general" || tool.capability == activeCapability
+            val internalMatches = !tool.isInternal || tool.name == advancingTool
+            envAvailable && permissionGranted && capabilityMatches && internalMatches
         }
     }
 
     fun getDisabledTools(
         context: Context,
-        permissionManager: PermissionManager = PermissionManager()
+        permissionManager: PermissionManager = PermissionManager(),
+        activeCapability: String? = null,
+        advancingTool: String? = null
     ): List<Pair<Tool, String>> {
         val disabled = mutableListOf<Pair<Tool, String>>()
         for (tool in tools.values) {
+            val capabilityMatches = activeCapability == null || tool.capability == "general" || tool.capability == activeCapability
+            val internalMatches = !tool.isInternal || tool.name == advancingTool
+            if (!capabilityMatches || !internalMatches) continue
             for (perm in tool.requiredPermissions) {
                 if (!permissionManager.isPermissionGranted(context, perm)) {
                     disabled.add(tool to perm)

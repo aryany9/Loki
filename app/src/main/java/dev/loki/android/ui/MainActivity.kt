@@ -1,6 +1,7 @@
 package dev.loki.android.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -123,9 +124,21 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { importModel(uri) }
     }
 
+    private var pendingOpenScreen by mutableStateOf<String?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra("openScreen")?.let {
+            pendingOpenScreen = it
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        pendingOpenScreen = intent?.getStringExtra("openScreen")
 
         lifecycleScope.launch {
             val savedConfig = agentConfigRepository.getAgentConfig()
@@ -202,6 +215,20 @@ class MainActivity : ComponentActivity() {
                         backStack.clear()
                         backStack.add(AppScreen.SETUP)
                     }
+                }
+            }
+
+            LaunchedEffect(pendingOpenScreen) {
+                val target = pendingOpenScreen
+                if (target != null) {
+                    when (target) {
+                        "PERMISSIONS" -> navigateTo(AppScreen.PERMISSIONS)
+                        "MODEL_LIBRARY" -> navigateTo(AppScreen.MODEL_LIBRARY)
+                        "AGENT_PLAYGROUND" -> navigateTo(AppScreen.AGENT_PLAYGROUND)
+                        "MEMORY" -> navigateTo(AppScreen.MEMORY)
+                        "SETTINGS" -> navigateTo(AppScreen.SETTINGS)
+                    }
+                    pendingOpenScreen = null
                 }
             }
 

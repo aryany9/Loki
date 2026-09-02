@@ -111,9 +111,30 @@ class LiteRtWhisperEngine(
         }
     }
 
+    fun ensureInitialized(): Boolean {
+        if (isInitialized) return true
+        val defaultWhisper = storage.artifactFile("whisper-tiny-litert", "whisper_tiny_30s_f32.tflite")
+        if (defaultWhisper.exists()) {
+            Log.i(TAG, "Auto-initializing LiteRtWhisperEngine from: ${defaultWhisper.absolutePath}")
+            return initialize(defaultWhisper.absolutePath)
+        }
+        val modelsDir = File(storage.rootDirectory, "models")
+        if (modelsDir.exists() && modelsDir.isDirectory) {
+            val found = modelsDir.walkTopDown().firstOrNull { it.isFile && it.name.endsWith(".tflite") }
+            if (found != null && found.exists()) {
+                Log.i(TAG, "Auto-initializing LiteRtWhisperEngine from discovered model: ${found.absolutePath}")
+                return initialize(found.absolutePath)
+            }
+        }
+        return false
+    }
+
     override fun startListening(): Flow<SttEvent> = startListening("auto")
 
     override fun startListening(language: String): Flow<SttEvent> = channelFlow {
+        if (!isInitialized) {
+            ensureInitialized()
+        }
         if (!isInitialized) {
             send(SttEvent.Error(IllegalStateException("Whisper model not initialized")))
             return@channelFlow
@@ -157,7 +178,11 @@ class LiteRtWhisperEngine(
     }.flowOn(Dispatchers.IO)
 
     override suspend fun transcribeAudio(pcmAudio: FloatArray, language: String): String {
-        if (!isInitialized || pcmAudio.isEmpty()) return ""
+        if (pcmAudio.isEmpty()) return ""
+        if (!isInitialized) {
+            ensureInitialized()
+        }
+        if (!isInitialized) return ""
         return withContext(Dispatchers.Default) {
             transcribePcmAudio(pcmAudio, language)
         }.trim()

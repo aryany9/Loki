@@ -15,6 +15,7 @@ class SearchChatHistoryTool(
     private val conversationStore: ConversationStore? = null
 ) : LocalTool {
     override val name: String = "search_chat_history"
+    override val capability: String = "general"
     override val description: String = "Search previous conversation turns and chat history by keyword."
     override val parameters: Map<String, ToolParam> = mapOf(
         "query" to ToolParam(

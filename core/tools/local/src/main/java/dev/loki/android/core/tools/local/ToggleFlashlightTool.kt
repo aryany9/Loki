@@ -12,6 +12,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class ToggleFlashlightTool : LocalTool {
     override val name: String = "toggle_flashlight"
+    override val capability: String = "device"
     override val description: String = "Turn the device flashlight (torch) on or off."
     override val parameters: Map<String, ToolParam> = mapOf(
         "enabled" to ToolParam(

@@ -13,6 +13,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class GetBluetoothStateTool : LocalTool {
     override val name: String = "get_bluetooth_state"
+    override val capability: String = "device"
     override val description: String = "Check whether Bluetooth is currently enabled on the device."
     override val parameters: Map<String, ToolParam> = emptyMap()
     override val requiredPermissions: List<String> = emptyList()

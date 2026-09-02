@@ -11,6 +11,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class DialNumberTool : LocalTool {
     override val name: String = "dial_number"
+    override val capability: String = "calling"
     override val description: String = "Open the phone dialer with a pre-filled phone number."
     override val parameters: Map<String, ToolParam> = mapOf(
         "phone_number" to ToolParam(ToolParamType.STRING, "The phone number to dial", required = true)

@@ -10,6 +10,7 @@ import java.util.Locale
 
 class GetCurrentTimeTool : LocalTool {
     override val name: String = "get_current_time"
+    override val capability: String = "general"
     override val description: String = "Get the current time, day, and date from the device clock."
     override val parameters: Map<String, ToolParam> = emptyMap()
 

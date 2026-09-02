@@ -10,6 +10,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class GetWifiStateTool : LocalTool {
     override val name: String = "get_wifi_state"
+    override val capability: String = "device"
     override val description: String = "Check whether Wi-Fi is currently enabled on the device."
     override val parameters: Map<String, ToolParam> = emptyMap()
     override val requiredPermissions: List<String> = listOf(Manifest.permission.ACCESS_WIFI_STATE)

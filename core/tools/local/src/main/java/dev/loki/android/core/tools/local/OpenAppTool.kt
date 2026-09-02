@@ -10,6 +10,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class OpenAppTool : LocalTool {
     override val name: String = "open_app"
+    override val capability: String = "apps"
     override val description: String = "Open an installed application by its name."
     override val parameters: Map<String, ToolParam> = mapOf(
         "app_name" to ToolParam(ToolParamType.STRING, "The common or display name of the application to open", required = true)

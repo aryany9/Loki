@@ -11,6 +11,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class MediaControlTool : LocalTool {
     override val name: String = "media_control"
+    override val capability: String = "media"
     override val description: String = "Control media playback (play, pause, next, previous, toggle)."
     override val parameters: Map<String, ToolParam> = mapOf(
         "action" to ToolParam(ToolParamType.STRING, "Action to perform: play, pause, next, previous, toggle", required = true)

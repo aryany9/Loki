@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
 
 /**
  * Holds the in-progress confirmation gate for a destructive tool call.
@@ -36,7 +37,7 @@ data class PendingConfirmation(
  * ConversationSession executes a ReAct-style agent loop for a specific conversation context.
  * Can be persistent (for multi-turn Chat UI) or ephemeral (for hands-free Voice turns).
  */
-class ConversationSession(
+open class ConversationSession(
     private val context: Context,
     val llmEngine: LlmEngine,
     val toolRegistry: ToolRegistry,
@@ -50,6 +51,12 @@ class ConversationSession(
     val memoryStore: MemoryStore = MemoryStore(context, ioDispatcher),
     val conversationId: String? = null
 ) {
+
+    var activeCapability: String? = null
+        internal set
+
+    var taskState: TaskState? = null
+        internal set
 
     @Volatile
     private var pendingConfirmation: PendingConfirmation? = null
@@ -73,7 +80,7 @@ class ConversationSession(
         }
     }
 
-    fun processUtterance(
+    open fun processUtterance(
         userInput: String,
         audioBytes: ByteArray? = null,
         enableTts: Boolean = true,
@@ -109,16 +116,12 @@ class ConversationSession(
         var lastToolResult: ToolResult? = null
         var finalResponseText = ""
         var correctiveRetryUsed = false
+        var isActivationTurn = false
 
-        val availableTools = toolRegistry.getAvailableTools(context, permissionManager)
-        val disabledTools = toolRegistry.getDisabledTools(context, permissionManager)
-        TurnLogger.logTools(turnId, availableTools.size, disabledTools.size)
-
-        val systemPrompt = buildSystemPrompt(availableTools, disabledTools)
-
-        // Initialize persistent native conversation with system prompt ONCE per logical conversation session
+        // Initialize persistent native conversation with KV-prefilled CORE prompt ONCE per logical conversation session
         if (conversationContext.getTurns().size <= 1) {
-            val effectiveConfig = agentConfig.copy(systemInstruction = systemPrompt)
+            val corePrompt = buildCoreSystemPrompt()
+            val effectiveConfig = agentConfig.copy(systemInstruction = corePrompt)
             val started = llmEngine.startConversation(effectiveConfig)
             TurnLogger.logTurnStart(turnId, "STATEFUL_INIT (success=$started)")
         }
@@ -129,10 +132,42 @@ class ConversationSession(
             while (iterations < maxIterations) {
                 iterations++
 
-                val promptToSend = if (correctiveRetryUsed) {
-                    "$currentTurnPrompt\nReturn exactly one JSON object and nothing else. Do not use Markdown, explanations, or additional turns."
-                } else {
-                    currentTurnPrompt
+                val currentAvailableTools = toolRegistry.getAvailableTools(
+                    context = context,
+                    permissionManager = permissionManager,
+                    activeCapability = activeCapability,
+                    advancingTool = taskState?.advancingTool
+                )
+                val currentDisabledTools = toolRegistry.getDisabledTools(
+                    context = context,
+                    permissionManager = permissionManager,
+                    activeCapability = activeCapability,
+                    advancingTool = taskState?.advancingTool
+                )
+                TurnLogger.logTools(turnId, currentAvailableTools.size, currentDisabledTools.size)
+
+                val perTurnPrompt = buildPerTurnPrompt(
+                    availableTools = currentAvailableTools,
+                    disabledTools = currentDisabledTools,
+                    activeCapability = activeCapability,
+                    taskState = taskState,
+                    isActivationTurn = isActivationTurn
+                )
+                isActivationTurn = false
+
+                val content = if (iterations == 1) userInput else currentTurnPrompt
+
+                val promptToSend = buildString {
+                    if (perTurnPrompt.isNotBlank()) {
+                        append(perTurnPrompt)
+                        if (content.isNotBlank()) {
+                            append("\n\n")
+                        }
+                    }
+                    append(content)
+                    if (correctiveRetryUsed) {
+                        append("\nReturn exactly one JSON object and nothing else. Do not use Markdown, explanations, or additional turns.")
+                    }
                 }
 
                 // DIAGNOSTIC (Requirement 8): Log application history and prompt stats before generation
@@ -147,9 +182,11 @@ class ConversationSession(
 
                 val maxTokens = agentConfig.generationConfig.maxOutputTokens ?: 256
                 val cumulativePartial = StringBuilder()
+                val scopedGrammar = GrammarBuilder.buildFrom(currentAvailableTools)
                 val llmResult = llmEngine.generate(
                     prompt = promptToSend,
                     audioBytes = if (iterations == 1) audioBytes else null,
+                    grammar = scopedGrammar,
                     maxTokens = maxTokens,
                     onToken = { token ->
                         cumulativePartial.append(token)
@@ -180,42 +217,169 @@ class ConversationSession(
                             )
                         )
 
-                        // ── Confirmation gate (D1/D2) ─────────────────────────────────────
-                        if (toolRegistry.requiresConfirmation(parsed.tool)) {
-                            val repeatBack = toolRegistry.describeAction(parsed.tool, parsed.arguments)
-                            val gate = PendingConfirmation(parsed.tool, parsed.arguments, repeatBack)
-                            pendingConfirmation = gate
-                            send(ConversationEvent.ConfirmationRequired(parsed.tool, repeatBack))
-
-                            val accepted: Boolean = try {
-                                withTimeout(CONFIRMATION_TIMEOUT_MS) {
-                                    gate.deferred.await()
-                                }
-                            } catch (e: TimeoutCancellationException) {
-                                false // treat timeout as denial
-                            } finally {
-                                pendingConfirmation = null
+                        // ── TaskState advancing tool: select_contact ─────────────────────
+                        if (parsed.tool == "select_contact") {
+                            val resolution = taskState as? ContactResolution
+                            if (resolution == null || resolution.advancingTool != "select_contact") {
+                                val coachMessage = "Tool 'select_contact' is unavailable. No contact selection is currently pending."
+                                val coachedResult = ToolResult.error(coachMessage, ToolErrorCode.EXECUTION_ERROR)
+                                lastToolResult = coachedResult
+                                send(ConversationEvent.ToolExecuted(parsed.tool, coachedResult))
+                                recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, coachedResult))
+                                currentTurnPrompt = "Tool result for select_contact: $coachMessage"
+                                continue
                             }
 
-                            if (!accepted) {
-                                val isDenied = gate.deferred.isCompleted && !gate.deferred.isCancelled
-                                val denialMessage = if (isDenied) {
-                                    "User declined the action."
-                                } else {
-                                    "No response received; action cancelled."
-                                }
-                                val denialResult = ToolResult.error(denialMessage, ToolErrorCode.EXECUTION_ERROR)
-                                lastToolResult = denialResult
-                                send(ConversationEvent.ToolExecuted(parsed.tool, denialResult))
-                                recordTurn(
-                                    ConversationTurn.ToolExecutionResult(
-                                        tool = parsed.tool,
-                                        result = denialResult
-                                    )
-                                )
-                                // Feed denial to model so it can respond conversationally
-                                currentTurnPrompt = "Tool result for ${parsed.tool}: $denialMessage"
+                            val candidateId = parsed.arguments["candidate_id"]?.toString()?.trim()
+                            val matchedCandidate = resolution.candidates.firstOrNull { it.id.equals(candidateId, ignoreCase = true) }
+                            if (matchedCandidate == null) {
+                                val validOptions = resolution.candidates.joinToString(", ") { "${it.id}: ${it.name}" }
+                                val coachMessage = "Invalid candidate ID '$candidateId'. Valid candidates are: $validOptions. Please select a valid candidate ID."
+                                val errorResult = ToolResult.error(coachMessage, ToolErrorCode.VALIDATION_ERROR)
+                                lastToolResult = errorResult
+                                send(ConversationEvent.ToolExecuted(parsed.tool, errorResult))
+                                recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, errorResult))
+                                currentTurnPrompt = "Tool result for select_contact: $coachMessage"
                                 continue
+                            }
+
+                            // Advance state
+                            taskState = resolution.copy(selectedId = matchedCandidate.id)
+                            val successResult = ToolResult.success(
+                                mapOf(
+                                    "candidate_id" to matchedCandidate.id,
+                                    "name" to matchedCandidate.name,
+                                    "status" to "selected"
+                                )
+                            )
+                            lastToolResult = successResult
+                            send(ConversationEvent.ToolExecuted(parsed.tool, successResult))
+                            recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, successResult))
+                            currentTurnPrompt = "Tool result for select_contact: Selected ${matchedCandidate.name} (${matchedCandidate.id}). Ask the user for confirmation before calling."
+                            continue
+                        }
+                        // ─────────────────────────────────────────────────────────────────
+
+                        val targetTool = toolRegistry.get(parsed.tool)
+                        if (targetTool == null) {
+                            val notFoundResult = ToolResult.error("Tool '${parsed.tool}' not found", ToolErrorCode.NOT_FOUND)
+                            lastToolResult = notFoundResult
+                            send(ConversationEvent.ToolExecuted(parsed.tool, notFoundResult))
+                            recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, notFoundResult))
+                            currentTurnPrompt = "Tool result for ${parsed.tool}: Tool '${parsed.tool}' not found."
+                            continue
+                        }
+
+                        // ── Capability & scope validation ────────────────────────────────
+                        val isInScope = (activeCapability == null) ||
+                            (targetTool.capability == "general") ||
+                            (targetTool.capability == activeCapability) ||
+                            (parsed.tool == taskState?.advancingTool)
+
+                        if (!isInScope) {
+                            val coachMessage = if (taskState != null && !taskState!!.resolved) {
+                                "Tool '${parsed.tool}' is unavailable. Please resolve the current task first."
+                            } else {
+                                "Tool '${parsed.tool}' is currently unavailable while $activeCapability is active."
+                            }
+                            val coachedResult = ToolResult.error(coachMessage, ToolErrorCode.EXECUTION_ERROR)
+                            lastToolResult = coachedResult
+                            send(ConversationEvent.ToolExecuted(parsed.tool, coachedResult))
+                            recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, coachedResult))
+                            currentTurnPrompt = "Tool result for ${parsed.tool}: $coachMessage"
+                            continue
+                        }
+
+                        // Activation rule: tool of domain capability activates it
+                        if (activeCapability == null && targetTool.capability != "general") {
+                            activeCapability = targetTool.capability
+                            isActivationTurn = true
+                        }
+                        // ─────────────────────────────────────────────────────────────────
+
+                        // ── App-side validation & resolution for call_contact ─────────────
+                        val resolvedArguments = parsed.arguments.toMutableMap()
+                        if (parsed.tool == "call_contact") {
+                            val candId = parsed.arguments["candidate_id"]?.toString()?.trim()
+                            val resolution = taskState as? ContactResolution
+                            if (resolution != null) {
+                                val cand = if (!candId.isNullOrBlank()) {
+                                    resolution.candidates.firstOrNull { it.id.equals(candId, ignoreCase = true) }
+                                } else if (resolution.selectedId != null) {
+                                    resolution.candidates.firstOrNull { it.id == resolution.selectedId }
+                                } else if (resolution.candidates.size == 1) {
+                                    resolution.candidates[0]
+                                } else null
+
+                                if (cand != null) {
+                                    resolvedArguments["phone_number"] = cand.phoneNumber
+                                    resolvedArguments["name"] = cand.name
+                                    resolvedArguments["candidate_id"] = cand.id
+                                }
+                            }
+                        }
+                        // ─────────────────────────────────────────────────────────────────
+
+                        // ── Confirmation gate (D1/D2) ─────────────────────────────────────
+                        val voiceSources = setOf("VOICE", "DIRECT_AUDIO", "VOICE_FOLLOW_UP")
+                        val isVoiceSource = source in voiceSources
+
+                        if (toolRegistry.requiresConfirmation(parsed.tool)) {
+                            if (isVoiceSource) {
+                                val hasAskedConfirmation = source == "VOICE_FOLLOW_UP" ||
+                                    conversationContext.getTurns().any {
+                                        (it is ConversationTurn.Assistant && it.text.trim().endsWith("?")) ||
+                                        (it is ConversationTurn.ToolExecutionResult && it.result.error?.contains("Action requires verbal confirmation") == true)
+                                    }
+
+                                if (!hasAskedConfirmation) {
+                                    val contactName = resolvedArguments["name"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+                                        ?: resolvedArguments["calling"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+                                        ?: "the contact"
+                                    val coachMessage = "Action requires verbal confirmation. Do not execute yet. First ask the user for confirmation by stating the contact name in a question. Only execute this tool after the user verbally confirms."
+                                    val coachedResult = ToolResult.error(coachMessage, ToolErrorCode.EXECUTION_ERROR)
+                                    lastToolResult = coachedResult
+                                    send(ConversationEvent.ToolExecuted(parsed.tool, coachedResult))
+                                    recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, coachedResult))
+                                    currentTurnPrompt = "Tool result for ${parsed.tool}: $coachMessage"
+                                    continue
+                                }
+                            } else {
+                                val repeatBack = toolRegistry.describeAction(parsed.tool, resolvedArguments)
+                                val gate = PendingConfirmation(parsed.tool, resolvedArguments, repeatBack)
+                                pendingConfirmation = gate
+                                send(ConversationEvent.ConfirmationRequired(parsed.tool, repeatBack))
+
+                                val accepted: Boolean = try {
+                                    withTimeout(CONFIRMATION_TIMEOUT_MS) {
+                                        gate.deferred.await()
+                                    }
+                                } catch (e: TimeoutCancellationException) {
+                                    false // treat timeout as denial
+                                } finally {
+                                    pendingConfirmation = null
+                                }
+
+                                if (!accepted) {
+                                    val isDenied = gate.deferred.isCompleted && !gate.deferred.isCancelled
+                                    val denialMessage = if (isDenied) {
+                                        "User declined the action."
+                                    } else {
+                                        "No response received; action cancelled."
+                                    }
+                                    val denialResult = ToolResult.error(denialMessage, ToolErrorCode.EXECUTION_ERROR)
+                                    lastToolResult = denialResult
+                                    send(ConversationEvent.ToolExecuted(parsed.tool, denialResult))
+                                    recordTurn(
+                                        ConversationTurn.ToolExecutionResult(
+                                            tool = parsed.tool,
+                                            result = denialResult
+                                        )
+                                    )
+                                    // Feed denial to model so it can respond conversationally
+                                    currentTurnPrompt = "Tool result for ${parsed.tool}: $denialMessage"
+                                    continue
+                                }
                             }
                         }
                         // ─────────────────────────────────────────────────────────────────
@@ -223,7 +387,7 @@ class ConversationSession(
                         val execResult = toolRegistry.executeDetailed(
                             context = context,
                             name = parsed.tool,
-                            arguments = parsed.arguments,
+                            arguments = resolvedArguments,
                             permissionManager = permissionManager
                         )
 
@@ -240,6 +404,35 @@ class ConversationSession(
                                         result = result
                                     )
                                 )
+
+                                if (parsed.tool == "lookup_contact") {
+                                    activeCapability = "calling"
+                                    isActivationTurn = true
+                                    val contactsJson = result.data?.get("contacts")
+                                    val candidates = if (!contactsJson.isNullOrBlank()) {
+                                        try {
+                                            Json.decodeFromString<List<ContactCandidate>>(contactsJson)
+                                        } catch (e: Throwable) {
+                                            emptyList()
+                                        }
+                                    } else emptyList()
+
+                                    taskState = ContactResolution(
+                                        candidates = candidates,
+                                        selectedId = if (candidates.size == 1) candidates[0].id else null,
+                                        confirmed = false
+                                    )
+
+                                    val summary = candidates.joinToString(", ") { "${it.id}: ${it.name}" }
+                                    currentTurnPrompt = "Tool result for lookup_contact: Found ${candidates.size} matching contacts: $summary"
+                                    continue
+                                }
+
+                                if (parsed.tool == "call_contact") {
+                                    taskState = (taskState as? ContactResolution)?.copy(confirmed = true)
+                                    activeCapability = null
+                                    taskState = null
+                                }
 
                                 val fastResponse = formatFastPathResponse(parsed.tool, result)
                                 if (fastResponse != null) {
@@ -294,6 +487,10 @@ class ConversationSession(
                     is ParsedLlmResponse.DirectResponse -> {
                         finalResponseText = parsed.text
                         recordTurn(ConversationTurn.Assistant(finalResponseText))
+                        if (taskState == null || taskState?.resolved == true) {
+                            activeCapability = null
+                            taskState = null
+                        }
                         break
                     }
 
@@ -303,13 +500,19 @@ class ConversationSession(
                             correctiveRetryUsed = true
                             continue
                         }
-                        finalResponseText = "I couldn't determine that request. Please try again."
+                        finalResponseText = if (parsed.raw.isNotBlank() && !parsed.raw.contains("{") && !parsed.raw.contains("\"tool\"")) {
+                            parsed.raw.trim()
+                        } else {
+                            "I couldn't determine that request. Please try again."
+                        }
                         recordTurn(ConversationTurn.Assistant(finalResponseText))
                         break
                     }
                 }
             }
         } catch (e: CancellationException) {
+            activeCapability = null
+            taskState = null
             TurnLogger.logCancel(turnId, "Session cancelled")
             throw e
         } catch (e: Throwable) {
@@ -332,10 +535,7 @@ class ConversationSession(
         send(ConversationEvent.Completed(finalResponseText, lastToolResult))
     }.flowOn(ioDispatcher)
 
-    private suspend fun buildSystemPrompt(
-        availableTools: List<Tool>,
-        disabledTools: List<Pair<Tool, String>>
-    ): String {
+    internal suspend fun buildCoreSystemPrompt(): String {
         val sb = StringBuilder()
         sb.append("You are Loki, a private offline Android assistant running on the user's device. You operate entirely on-device with privacy and safety as highest priority.\n\n")
 
@@ -373,6 +573,19 @@ class ConversationSession(
             }
         }
 
+        sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}} or {\"response\": \"conversational answer\"}.")
+        return sb.toString()
+    }
+
+    internal fun buildPerTurnPrompt(
+        availableTools: List<Tool>,
+        disabledTools: List<Pair<Tool, String>> = emptyList(),
+        activeCapability: String? = null,
+        taskState: TaskState? = null,
+        isActivationTurn: Boolean = false
+    ): String {
+        val sb = StringBuilder()
+
         if (availableTools.isNotEmpty()) {
             sb.append("Available tools (respond with JSON {\"tool\": \"name\", \"arguments\": {...}}):\n")
             for (tool in availableTools) {
@@ -382,7 +595,20 @@ class ConversationSession(
                 sb.append("- ${tool.name}$params: ${tool.description}\n")
             }
             sb.append("\n")
-            sb.append("Tool usage guidance: Use remember_fact to save durable user facts, identity, or preferences when the user shares them or asks you to remember. Use search_chat_history to search past conversation history.\n\n")
+        }
+
+        if (activeCapability != null) {
+            val instructions = getCapabilityInstructions(activeCapability, isActivationTurn)
+            if (instructions.isNotBlank()) {
+                sb.append(instructions).append("\n\n")
+            }
+        }
+
+        if (taskState != null) {
+            val stateBlock = renderTaskState(taskState)
+            if (stateBlock.isNotBlank()) {
+                sb.append(stateBlock).append("\n\n")
+            }
         }
 
         if (disabledTools.isNotEmpty()) {
@@ -394,8 +620,55 @@ class ConversationSession(
             sb.append("\n")
         }
 
-        sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}} or {\"response\": \"conversational answer\"}.")
-        return sb.toString()
+        return sb.toString().trim()
+    }
+
+    internal fun getCapabilityInstructions(capability: String, isActivationTurn: Boolean): String {
+        return when (capability) {
+            "calling" -> {
+                if (isActivationTurn) {
+                    "Calling guidance: When looking up contacts to call: if multiple contacts match, list them by NAME only. Never speak, display, or invent phone numbers — phone numbers are unavailable to you. Ask the user which contact to call using their name or candidate ID (e.g. using select_contact). If there is a unique match or once selected, ask for verbal confirmation before placing the call."
+                } else {
+                    "Calling reminder: Refer to candidates by name or candidate ID; phone numbers are unavailable to you. Do not execute call_contact until the user confirms."
+                }
+            }
+            else -> ""
+        }
+    }
+
+    internal fun renderTaskState(state: TaskState): String {
+        return when (state) {
+            is ContactResolution -> {
+                val sb = StringBuilder()
+                sb.append("Current Task: Contact Resolution\n")
+                if (state.selectedId == null) {
+                    sb.append("Matching candidates:\n")
+                    for (c in state.candidates) {
+                        sb.append("- [${c.id}] ${c.name}\n")
+                    }
+                    sb.append("Phone numbers are unavailable to you. Ask the user which contact they want to call.")
+                } else {
+                    val candidate = state.candidates.firstOrNull { it.id == state.selectedId }
+                    val name = candidate?.name ?: state.selectedId
+                    sb.append("Selected candidate: [${state.selectedId}] $name\n")
+                    if (!state.confirmed) {
+                        sb.append("Ask the user for verbal confirmation to call $name before placing the call.")
+                    } else {
+                        sb.append("User has confirmed calling $name.")
+                    }
+                }
+                sb.toString()
+            }
+        }
+    }
+
+    internal suspend fun buildSystemPrompt(
+        availableTools: List<Tool>,
+        disabledTools: List<Pair<Tool, String>> = emptyList()
+    ): String {
+        val core = buildCoreSystemPrompt()
+        val perTurn = buildPerTurnPrompt(availableTools, disabledTools)
+        return if (perTurn.isBlank()) core else "$core\n\n$perTurn"
     }
 
     private fun formatErrorResponse(toolName: String, result: ToolResult): String {
@@ -409,7 +682,7 @@ class ConversationSession(
         }
     }
 
-    private fun formatFastPathResponse(toolName: String, result: ToolResult): String? {
+    internal fun formatFastPathResponse(toolName: String, result: ToolResult): String? {
         if (!result.success) return null
         val data = result.data ?: return null
 
@@ -420,7 +693,7 @@ class ConversationSession(
             "set_timer" -> data["seconds"]?.let { "Timer set for $it seconds" }
             "set_alarm" -> "Alarm set for ${data["hour"]}:${data["minute"]}"
             "media_control" -> "Media command sent"
-            "call_contact" -> "Calling ${data["calling"]}"
+            "call_contact" -> "Calling ${data["calling"] ?: data["name"] ?: data["phone_number"]}"
             "dial_number" -> "Opening dialer for ${data["dialed"]}"
             else -> null
         }

@@ -10,6 +10,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class OpenBluetoothSettingsTool : LocalTool {
     override val name: String = "open_bluetooth_settings"
+    override val capability: String = "device"
     override val description: String = "Open the system Bluetooth settings screen so the user can pair or toggle Bluetooth."
     override val parameters: Map<String, ToolParam> = emptyMap()
     override val requiredPermissions: List<String> = emptyList()

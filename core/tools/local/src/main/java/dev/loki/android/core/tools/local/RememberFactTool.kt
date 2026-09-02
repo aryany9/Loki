@@ -13,6 +13,7 @@ class RememberFactTool(
     private val memoryStore: MemoryStore? = null
 ) : LocalTool {
     override val name: String = "remember_fact"
+    override val capability: String = "general"
     override val description: String = "Store a durable fact, preference, or identity detail about the user for future conversations."
     override val parameters: Map<String, ToolParam> = mapOf(
         "content" to ToolParam(

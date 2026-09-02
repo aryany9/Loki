@@ -9,6 +9,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class GetRamUsageTool : LocalTool {
     override val name: String = "get_ram_usage"
+    override val capability: String = "device"
     override val description: String = "Get current system RAM memory usage statistics."
     override val parameters: Map<String, ToolParam> = emptyMap()
     override val requiredPermissions: List<String> = emptyList()

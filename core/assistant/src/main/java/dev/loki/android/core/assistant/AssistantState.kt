@@ -14,6 +14,7 @@ sealed interface AssistantState {
         val isDemoted: Boolean = false
     ) : AssistantState
     data class Speaking(val responseText: String) : AssistantState
-    data class AwaitingVerbalConfirmation(val repeatBack: String) : AssistantState
+    data class AwaitingFollowUp(val responseText: String) : AssistantState
     data class Error(val message: String) : AssistantState
+    data class Completed(val responseText: String) : AssistantState
 }

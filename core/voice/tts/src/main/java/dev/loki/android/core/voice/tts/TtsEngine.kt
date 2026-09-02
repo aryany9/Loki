@@ -16,3 +16,32 @@ interface TtsEngine {
     fun stop()
     fun release()
 }
+
+/**
+ * Speaks the provided [text] and suspends until playback completes (or errors/is cancelled).
+ */
+suspend fun TtsEngine.speakAndAwait(
+    text: String,
+    utteranceId: String = "loki_${System.currentTimeMillis()}"
+) {
+    if (!isReady || text.isBlank()) return
+    kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        speak(
+            text = text,
+            utteranceId = utteranceId,
+            onDone = {
+                if (continuation.isActive) {
+                    continuation.resume(Unit) {}
+                }
+            },
+            onError = { _ ->
+                if (continuation.isActive) {
+                    continuation.resume(Unit) {}
+                }
+            }
+        )
+        continuation.invokeOnCancellation {
+            stop()
+        }
+    }
+}

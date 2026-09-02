@@ -129,4 +129,109 @@ class ToolRegistryTest {
         val description = registry.describeAction("no_such_tool", emptyMap())
         assertEquals("no_such_tool", description)
     }
+
+    @Test
+    fun `getAvailableTools and getDisabledTools filter according to permission manager`() {
+        val registry = ToolRegistry()
+        val ungated = DummyTool("ungated", "ungated tool", emptyMap(), emptyList())
+        val permitted = DummyTool("permitted", "permitted tool", emptyMap(), listOf("android.permission.CAMERA"))
+        val denied = DummyTool("denied", "denied tool", emptyMap(), listOf("android.permission.RECORD_AUDIO"))
+        registry.register(ungated)
+        registry.register(permitted)
+        registry.register(denied)
+
+        val dummyContext = object : android.content.ContextWrapper(null) {
+            override fun checkPermission(permission: String, pid: Int, uid: Int): Int {
+                return if (permission == "android.permission.CAMERA") {
+                    android.content.pm.PackageManager.PERMISSION_GRANTED
+                } else {
+                    android.content.pm.PackageManager.PERMISSION_DENIED
+                }
+            }
+        }
+        val permissionManager = PermissionManager()
+
+        val available = registry.getAvailableTools(dummyContext, permissionManager)
+        assertEquals(2, available.size)
+        assertTrue(available.any { it.name == "ungated" })
+        assertTrue(available.any { it.name == "permitted" })
+
+        val disabled = registry.getDisabledTools(dummyContext, permissionManager)
+        assertEquals(1, disabled.size)
+        assertEquals("denied", disabled[0].first.name)
+        assertEquals("android.permission.RECORD_AUDIO", disabled[0].second)
+    }
+
+    class ScopedDummyTool(
+        override val name: String,
+        override val capability: String,
+        override val isInternal: Boolean = false,
+        override val requiredPermissions: List<String> = emptyList()
+    ) : LocalTool {
+        override val description: String = "scoped tool"
+        override val parameters: Map<String, ToolParam> = emptyMap()
+        override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult = ToolResult.success()
+    }
+
+    @Test
+    fun `getAvailableTools with activeCapability filters out other domain capabilities and includes general and active`() {
+        val registry = ToolRegistry()
+        registry.register(ScopedDummyTool("general_tool", capability = "general"))
+        registry.register(ScopedDummyTool("calling_tool", capability = "calling"))
+        registry.register(ScopedDummyTool("device_tool", capability = "device"))
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val available = registry.getAvailableTools(dummyContext, activeCapability = "calling")
+
+        assertEquals(2, available.size)
+        assertTrue(available.any { it.name == "general_tool" })
+        assertTrue(available.any { it.name == "calling_tool" })
+        assertFalse(available.any { it.name == "device_tool" })
+    }
+
+    @Test
+    fun `getAvailableTools with null activeCapability returns all tools`() {
+        val registry = ToolRegistry()
+        registry.register(ScopedDummyTool("general_tool", capability = "general"))
+        registry.register(ScopedDummyTool("calling_tool", capability = "calling"))
+        registry.register(ScopedDummyTool("device_tool", capability = "device"))
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val available = registry.getAvailableTools(dummyContext, activeCapability = null)
+
+        assertEquals(3, available.size)
+    }
+
+    @Test
+    fun `advancing tool visibility invariant - internal tools visible only when advancingTool matches`() {
+        val registry = ToolRegistry()
+        registry.register(ScopedDummyTool("general_tool", capability = "general"))
+        registry.register(ScopedDummyTool("select_contact", capability = "calling", isInternal = true))
+        registry.register(ScopedDummyTool("call_contact", capability = "calling", isInternal = false))
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        // When activeCapability is calling and advancingTool is select_contact
+        val availableWithSelect = registry.getAvailableTools(
+            dummyContext,
+            activeCapability = "calling",
+            advancingTool = "select_contact"
+        )
+        assertTrue(availableWithSelect.any { it.name == "select_contact" })
+        assertTrue(availableWithSelect.any { it.name == "call_contact" })
+
+        // When activeCapability is calling but advancingTool is call_contact
+        val availableWithCall = registry.getAvailableTools(
+            dummyContext,
+            activeCapability = "calling",
+            advancingTool = "call_contact"
+        )
+        assertFalse(availableWithCall.any { it.name == "select_contact" })
+        assertTrue(availableWithCall.any { it.name == "call_contact" })
+
+        // When activeCapability is null and advancingTool is null (session start)
+        val availableStart = registry.getAvailableTools(dummyContext, activeCapability = null, advancingTool = null)
+        assertFalse(availableStart.any { it.name == "select_contact" })
+        assertTrue(availableStart.any { it.name == "call_contact" })
+    }
 }

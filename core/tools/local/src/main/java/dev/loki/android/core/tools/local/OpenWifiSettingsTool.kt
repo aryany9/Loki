@@ -10,6 +10,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class OpenWifiSettingsTool : LocalTool {
     override val name: String = "open_wifi_settings"
+    override val capability: String = "device"
     override val description: String = "Open the system Wi-Fi settings screen so the user can connect or toggle Wi-Fi."
     override val parameters: Map<String, ToolParam> = emptyMap()
     override val requiredPermissions: List<String> = emptyList()

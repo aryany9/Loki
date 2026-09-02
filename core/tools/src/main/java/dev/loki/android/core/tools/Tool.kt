@@ -18,6 +18,10 @@ interface Tool {
     val name: String
     val description: String
     val parameters: Map<String, ToolParam>
+    val capability: String
+        get() = "general"
+    val isInternal: Boolean
+        get() = false
     val requiredPermissions: List<String>
         get() = emptyList()
 
