@@ -78,7 +78,7 @@ class WhisperTokenizer(context: Context) {
      * Resolves the language token for a given BCP-47 tag in Whisper's multilingual vocabulary.
      */
     fun getLanguageToken(language: String): Int {
-        val index = LANGUAGES.indexOf(language.lowercase().substringBefore('-'))
+        val index = LANGUAGES.indexOf(language.lowercase(java.util.Locale.ROOT).substringBefore('-'))
         return if (index >= 0) {
             startOfTranscriptToken + 1 + index
         } else {
@@ -88,20 +88,24 @@ class WhisperTokenizer(context: Context) {
 
     /**
      * Returns the prefix token IDs for transcription without timestamps:
-     * `[<|startoftranscript|>, <|lang|>, <|transcribe|>, <|notimestamps|>]`
+     * When [language] is explicit: `[<|startoftranscript|>, <|lang|>, <|transcribe|>, <|notimestamps|>]`
+     * When [language] is "auto" (or blank): `[<|startoftranscript|>, <|transcribe|>, <|notimestamps|>]`
      */
     fun getPrefixTokens(language: String = "auto"): IntArray {
-        val langToken = if (language.isBlank() || language.equals("auto", ignoreCase = true)) {
-            languageTokenEn
+        return if (language.isBlank() || language.equals("auto", ignoreCase = true)) {
+            intArrayOf(
+                startOfTranscriptToken,
+                transcribeToken,
+                noTimestampsToken
+            )
         } else {
-            getLanguageToken(language)
+            intArrayOf(
+                startOfTranscriptToken,
+                getLanguageToken(language),
+                transcribeToken,
+                noTimestampsToken
+            )
         }
-        return intArrayOf(
-            startOfTranscriptToken,
-            langToken,
-            transcribeToken,
-            noTimestampsToken
-        )
     }
 
     /**

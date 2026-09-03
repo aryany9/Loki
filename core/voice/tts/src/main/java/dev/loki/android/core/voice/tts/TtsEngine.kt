@@ -1,5 +1,7 @@
 package dev.loki.android.core.voice.tts
 
+import kotlin.coroutines.resume
+
 interface TtsEngine {
     val isSpeaking: Boolean
     val isReady: Boolean
@@ -31,12 +33,12 @@ suspend fun TtsEngine.speakAndAwait(
             utteranceId = utteranceId,
             onDone = {
                 if (continuation.isActive) {
-                    continuation.resume(Unit) {}
+                    continuation.resume(Unit)
                 }
             },
             onError = { _ ->
                 if (continuation.isActive) {
-                    continuation.resume(Unit) {}
+                    continuation.resume(Unit)
                 }
             }
         )
