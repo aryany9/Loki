@@ -1,6 +1,6 @@
 # Spec: LLM Engine — Context-Preserving KV Reset (delta)
 
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: KV-overflow handling is context-preserving
 

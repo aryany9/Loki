@@ -70,7 +70,8 @@ class LiteRtLlmEngine(
         val promptText: String,
         val assistantResponse: String,
         val estimatedTokens: Int,
-        val executedAction: Boolean = false
+        val executedAction: Boolean = false,
+        val source: String = "VOICE"
     )
 
     internal val recentTurns = mutableListOf<TurnEntry>()
@@ -348,7 +349,7 @@ class LiteRtLlmEngine(
                 Log.i(TAG, "[Loki] before createConversation() with AgentConfig")
                 val systemPromptEst = (agentConfig.systemInstruction.length / 4) + 32
                 val replayBudget = activeKvCapacity - (systemPromptEst + 512 + 128)
-                val replayableTurns = recentTurns.filterNot { it.executedAction }
+                val replayableTurns = recentTurns.filter { !it.executedAction && it.source != "TEXT" }
                 val selectedReplayTurns = computeReplayTurns(replayableTurns, replayBudget)
                 val replayMessages = mutableListOf<Message>()
                 for (turn in selectedReplayTurns) {
@@ -414,6 +415,15 @@ class LiteRtLlmEngine(
         grammar: String?,
         maxTokens: Int,
         onToken: ((String) -> Unit)?
+    ): Result<String> = generate(prompt, audioBytes, grammar, maxTokens, onToken, "VOICE")
+
+    override suspend fun generate(
+        prompt: String,
+        audioBytes: ByteArray?,
+        grammar: String?,
+        maxTokens: Int,
+        onToken: ((String) -> Unit)?,
+        source: String
     ): Result<String> = withContext(Dispatchers.Default) {
         val currentEngine = engine ?: run {
             Log.i(TAG, "[Loki] Engine not initialized yet, calling initializeAsync()")
@@ -490,7 +500,7 @@ class LiteRtLlmEngine(
             val resultText = fullResponse.toString()
             val turnEstTokens = ((prompt.length + resultText.length) / 4) + 16
             val executedAction = isActionExecution(resultText)
-            recentTurns.add(TurnEntry(userMessage, prompt, resultText, turnEstTokens, executedAction = executedAction))
+            recentTurns.add(TurnEntry(userMessage, prompt, resultText, turnEstTokens, executedAction = executedAction, source = source))
             if (recentTurns.size > 10) {
                 recentTurns.removeAt(0)
             }

@@ -118,6 +118,15 @@ interface LlmEngine {
         onToken: ((String) -> Unit)? = null
     ): Result<String>
 
+    suspend fun generate(
+        prompt: String,
+        audioBytes: ByteArray?,
+        grammar: String? = null,
+        maxTokens: Int = 256,
+        onToken: ((String) -> Unit)? = null,
+        source: String = "VOICE"
+    ): Result<String> = generate(prompt, audioBytes, grammar, maxTokens, onToken)
+
     fun cancel()
     fun release()
 }

@@ -22,20 +22,29 @@ object GrammarBuilder {
         context: Context? = null,
         permissionManager: PermissionManager = PermissionManager(),
         activeCapability: String? = null,
-        advancingTool: String? = null
+        advancingTool: String? = null,
+        taskState: dev.loki.android.core.tools.TaskStateGate? = null
     ): String {
         val tools = if (context != null) {
             toolRegistry.getAvailableTools(
                 context = context,
                 permissionManager = permissionManager,
                 activeCapability = activeCapability,
-                advancingTool = advancingTool
+                advancingTool = advancingTool,
+                taskState = taskState
             )
         } else {
             toolRegistry.getAllTools().filter { tool ->
                 val capMatches = activeCapability == null || tool.capability == "general" || tool.capability == activeCapability
                 val internalMatches = !tool.isInternal || tool.name == advancingTool
-                capMatches && internalMatches
+
+                // State-scoped gating for context-less path (tests)
+                val restrictTo = taskState?.restrictToTool
+                val stateRestrictionPasses = restrictTo == null || tool.name == restrictTo || tool.capability == "general"
+                val hideTools = taskState?.hiddenTools ?: setOfNotNull(taskState?.hiddenTool)
+                val stateHidePasses = tool.name !in hideTools
+
+                capMatches && internalMatches && stateRestrictionPasses && stateHidePasses
             }
         }
         return buildFrom(tools)

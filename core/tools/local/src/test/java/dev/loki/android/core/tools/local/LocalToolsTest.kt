@@ -11,11 +11,11 @@ import org.junit.Test
 class LocalToolsTest {
 
     @Test
-    fun `DefaultLocalTools registers all 18 tools`() {
+    fun `DefaultLocalTools registers all 19 tools`() {
         val registry = ToolRegistry()
         DefaultLocalTools.registerAll(registry)
 
-        assertEquals(18, registry.getAllTools().size)
+        assertEquals(19, registry.getAllTools().size)
         assertNotNull(registry.get("get_current_time"))
         assertNotNull(registry.get("get_battery_status"))
         assertNotNull(registry.get("open_app"))
@@ -34,10 +34,11 @@ class LocalToolsTest {
         assertNotNull(registry.get("remember_fact"))
         assertNotNull(registry.get("search_chat_history"))
         assertNotNull(registry.get("select_contact"))
+        assertNotNull(registry.get("ask_user"))
     }
 
     @Test
-    fun `General governance rule D2 assertion - exactly four tools are general`() {
+    fun `General governance rule D2 assertion - exactly five tools are general`() {
         val registry = ToolRegistry()
         DefaultLocalTools.registerAll(registry)
 
@@ -47,7 +48,7 @@ class LocalToolsTest {
             .toSet()
 
         assertEquals(
-            setOf("get_current_time", "get_battery_status", "remember_fact", "search_chat_history"),
+            setOf("get_current_time", "get_battery_status", "remember_fact", "search_chat_history", "ask_user"),
             generalTools
         )
     }
@@ -410,5 +411,18 @@ class LocalToolsTest {
         assertTrue(result.success)
         assertEquals("c2", result.data?.get("candidate_id"))
         assertEquals("selected", result.data?.get("status"))
+    }
+
+    @Test
+    fun `AskUserTool executes successfully and has general capability`() = runTest {
+        val tool = AskUserTool()
+        assertEquals("ask_user", tool.name)
+        assertEquals("general", tool.capability)
+        org.junit.Assert.assertFalse(tool.requiresConfirmation)
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val result = tool.execute(dummyContext, mapOf("text" to "Which Mom?"))
+        assertTrue(result.success)
+        assertEquals("Which Mom?", result.data?.get("text"))
+        assertEquals("asked", result.data?.get("status"))
     }
 }

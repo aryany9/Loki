@@ -319,4 +319,51 @@ class LlmEngineTest {
         engine.resetConversation()
         assertEquals(0, engine.recentTurns.size)
     }
+
+    @Test
+    fun `chat turns recorded in recentTurns are excluded from startConversation activation replay while voice turns replay`() {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val dummyModelManager = ModelManager(dummyContext)
+        val engine = LiteRtLlmEngine(dummyContext, dummyModelManager)
+
+        val turns = listOf(
+            LiteRtLlmEngine.TurnEntry(
+                userMessage = com.google.ai.edge.litertlm.Message.user("voice turn"),
+                promptText = "voice turn",
+                assistantResponse = """{"response": "voice answer"}""",
+                estimatedTokens = 100,
+                executedAction = false,
+                source = "VOICE"
+            ),
+            LiteRtLlmEngine.TurnEntry(
+                userMessage = com.google.ai.edge.litertlm.Message.user("chat turn"),
+                promptText = "chat turn",
+                assistantResponse = """{"response": "chat answer"}""",
+                estimatedTokens = 100,
+                executedAction = false,
+                source = "TEXT"
+            ),
+            LiteRtLlmEngine.TurnEntry(
+                userMessage = com.google.ai.edge.litertlm.Message.user("voice action turn"),
+                promptText = "voice action turn",
+                assistantResponse = """{"tool": "call_contact", "arguments": {"contact_name": "Mom"}}""",
+                estimatedTokens = 100,
+                executedAction = true,
+                source = "VOICE"
+            )
+        )
+
+        // Activation replay filters out executedAction AND source == "TEXT"
+        val activationReplayInput = turns.filter { !it.executedAction && it.source != "TEXT" }
+        val activationReplay = engine.computeReplayTurns(activationReplayInput, budget = 500)
+        assertEquals(1, activationReplay.size)
+        assertEquals("voice turn", activationReplay[0].promptText)
+
+        // Compaction replay keeps all turns regardless of source or action
+        val compactionReplay = engine.computeReplayTurns(turns, budget = 500)
+        assertEquals(3, compactionReplay.size)
+        assertEquals("voice turn", compactionReplay[0].promptText)
+        assertEquals("chat turn", compactionReplay[1].promptText)
+        assertEquals("voice action turn", compactionReplay[2].promptText)
+    }
 }

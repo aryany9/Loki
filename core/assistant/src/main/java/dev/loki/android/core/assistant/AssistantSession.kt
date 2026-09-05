@@ -255,6 +255,7 @@ class AssistantSession(
         var turnError: String? = null
         var turnOutcome = TurnOutcome.SUCCESS
         var finalResponseText = ""
+        var turnEndedInAskUser = false
         val language = conversationManager.getAgentConfig().conversationLanguage
 
         val voiceSession = conversationManager.newVoiceSession()
@@ -277,11 +278,18 @@ class AssistantSession(
                         turnOutcome = TurnOutcome.PERMISSION_OPENED
                     }
                 }
+                is ConversationEvent.AskUser -> {
+                    turnEndedInAskUser = true
+                    finalResponseText = event.question
+                    _state.value = AssistantState.Speaking(responseText = event.question)
+                }
                 is ConversationEvent.Speaking -> {
                     _state.value = AssistantState.Speaking(responseText = event.text)
                 }
                 is ConversationEvent.Completed -> {
-                    finalResponseText = event.finalResponse
+                    if (finalResponseText.isEmpty()) {
+                        finalResponseText = event.finalResponse
+                    }
                     _state.value = AssistantState.Speaking(responseText = event.finalResponse)
                 }
                 is ConversationEvent.Error -> {
@@ -321,11 +329,18 @@ class AssistantSession(
                                 turnOutcome = TurnOutcome.PERMISSION_OPENED
                             }
                         }
+                        is ConversationEvent.AskUser -> {
+                            turnEndedInAskUser = true
+                            finalResponseText = event.question
+                            _state.value = AssistantState.Speaking(responseText = event.question)
+                        }
                         is ConversationEvent.Speaking -> {
                             _state.value = AssistantState.Speaking(responseText = event.text)
                         }
                         is ConversationEvent.Completed -> {
-                            finalResponseText = event.finalResponse
+                            if (finalResponseText.isEmpty()) {
+                                finalResponseText = event.finalResponse
+                            }
                             _state.value = AssistantState.Speaking(responseText = event.finalResponse)
                         }
                         is ConversationEvent.Error -> {
@@ -343,7 +358,7 @@ class AssistantSession(
         }
 
         if (turnOutcome == TurnOutcome.SUCCESS && finalResponseText.isNotEmpty()) {
-            if (finalResponseText.trim().endsWith("?")) {
+            if (turnEndedInAskUser) {
                 finalResponseText = handleFollowUpLoop(
                     conversationManager = conversationManager,
                     voiceSession = activeVoiceSession ?: voiceSession,
@@ -353,6 +368,9 @@ class AssistantSession(
                     useDirectAudio = true
                 )
             } else {
+                if (finalResponseText.contains("?")) {
+                    Log.d("LokiTurn", "[LokiTurn] turn ended with question prose but no ask_user — mic stays off")
+                }
                 speakAndAwait(conversationManager.ttsEngine, finalResponseText)
             }
         }
@@ -412,6 +430,7 @@ class AssistantSession(
 
         var turnOutcome = TurnOutcome.SUCCESS
         var finalResponseText = ""
+        var turnEndedInAskUser = false
 
         val voiceSession = conversationManager.newVoiceSession()
         activeVoiceSession = voiceSession
@@ -427,11 +446,18 @@ class AssistantSession(
                         turnOutcome = TurnOutcome.PERMISSION_OPENED
                     }
                 }
+                is ConversationEvent.AskUser -> {
+                    turnEndedInAskUser = true
+                    finalResponseText = event.question
+                    _state.value = AssistantState.Speaking(responseText = event.question)
+                }
                 is ConversationEvent.Speaking -> {
                     _state.value = AssistantState.Speaking(responseText = event.text)
                 }
                 is ConversationEvent.Completed -> {
-                    finalResponseText = event.finalResponse
+                    if (finalResponseText.isEmpty()) {
+                        finalResponseText = event.finalResponse
+                    }
                     _state.value = AssistantState.Speaking(responseText = event.finalResponse)
                 }
                 is ConversationEvent.Error -> {
@@ -444,7 +470,7 @@ class AssistantSession(
         }
 
         if (turnOutcome == TurnOutcome.SUCCESS && finalResponseText.isNotEmpty()) {
-            if (finalResponseText.trim().endsWith("?")) {
+            if (turnEndedInAskUser) {
                 finalResponseText = handleFollowUpLoop(
                     conversationManager = conversationManager,
                     voiceSession = activeVoiceSession ?: voiceSession,
@@ -454,6 +480,9 @@ class AssistantSession(
                     useDirectAudio = false
                 )
             } else {
+                if (finalResponseText.contains("?")) {
+                    Log.d("LokiTurn", "[LokiTurn] turn ended with question prose but no ask_user — mic stays off")
+                }
                 speakAndAwait(conversationManager.ttsEngine, finalResponseText)
             }
         }
@@ -509,11 +538,12 @@ class AssistantSession(
         }
 
         var currentResponse = initialResponseText
+        var currentTurnEndedInAskUser = true
         var lastSpokenResponse: String? = null
 
         try {
             var rounds = 0
-            while (rounds < 3 && currentResponse.trim().endsWith("?")) {
+            while (rounds < 10 && currentTurnEndedInAskUser) {
                 rounds++
 
                 // Attempt capture for this follow-up round with 20s timeout
@@ -636,16 +666,21 @@ class AssistantSession(
 
                 if (!speechCaptured) {
                     Log.i(TAG, "Follow-up missed after retry; exiting follow-up loop")
+                    conversationManager.pendingVoiceAsk = null
                     break
                 }
 
-                // Feed input back as a new user turn on the same voiceSession
+                // Fresh voice session per turn (D2)
+                val followUpSession = conversationManager.newVoiceSession()
+                activeVoiceSession = followUpSession
+
                 val promptText = transcript ?: ""
                 _state.value = AssistantState.Processing(query = promptText)
                 var nextResponseText = ""
                 var followUpError = false
+                var nextTurnEndedInAskUser = false
 
-                voiceSession.processUtterance(
+                followUpSession.processUtterance(
                     userInput = promptText,
                     audioBytes = audioPcmBytes,
                     enableTts = false,
@@ -661,11 +696,18 @@ class AssistantSession(
                                 openPermissionsScreen(null)
                             }
                         }
+                        is ConversationEvent.AskUser -> {
+                            nextTurnEndedInAskUser = true
+                            nextResponseText = event.question
+                            _state.value = AssistantState.Speaking(responseText = event.question)
+                        }
                         is ConversationEvent.Speaking -> {
                             _state.value = AssistantState.Speaking(responseText = event.text)
                         }
                         is ConversationEvent.Completed -> {
-                            nextResponseText = event.finalResponse
+                            if (nextResponseText.isEmpty()) {
+                                nextResponseText = event.finalResponse
+                            }
                             _state.value = AssistantState.Speaking(responseText = event.finalResponse)
                         }
                         is ConversationEvent.Error -> {
@@ -677,10 +719,28 @@ class AssistantSession(
                 }
 
                 if (followUpError || nextResponseText.isBlank()) {
+                    conversationManager.pendingVoiceAsk = null
                     break
                 }
 
                 currentResponse = nextResponseText
+                currentTurnEndedInAskUser = nextTurnEndedInAskUser
+
+                if (!currentTurnEndedInAskUser) {
+                    if (currentResponse.contains("?")) {
+                        Log.d("LokiTurn", "[LokiTurn] turn ended with question prose but no ask_user — mic stays off")
+                    }
+                    conversationManager.pendingVoiceAsk = null
+                    speakAndAwait(ttsEngine, currentResponse)
+                    return currentResponse
+                }
+            }
+
+            if (rounds >= 10 && currentTurnEndedInAskUser) {
+                val exitText = "Let's stop here."
+                conversationManager.pendingVoiceAsk = null
+                speakAndAwait(ttsEngine, exitText)
+                return exitText
             }
 
             if (currentResponse.isNotBlank() && currentResponse != lastSpokenResponse) {
@@ -760,12 +820,18 @@ class AssistantSession(
 
     fun dismiss() {
         cancelTurn()
+        try {
+            AssistantSessionProvider.instance?.getConversationManager()?.clearVoiceCandidates()
+        } catch (_: Exception) {}
         onDismissCallback?.invoke()
     }
 
     fun destroy() {
         Log.i(TAG, "destroy() invoked")
         cancelTurn()
+        try {
+            AssistantSessionProvider.instance?.getConversationManager()?.clearVoiceCandidates()
+        } catch (_: Exception) {}
         scope.coroutineContext[Job]?.cancel()
     }
 

@@ -72,4 +72,123 @@ class GrammarBuilderTest {
         assertTrue(grammar3.contains("open_app"))
         assertFalse(grammar3.contains("select_contact"))
     }
+
+    // ── Task 2.4: State-scoped grammar gating tests ─────────────────────────
+
+    @Test
+    fun `CONTACT_DISAMBIGUATION state restricts grammar to select_contact and general tools only`() {
+        GrammarBuilder.clearCache()
+        val registry = ToolRegistry()
+        registry.register(MockTool("get_current_time", capability = "general"))
+        registry.register(MockTool("ask_user", capability = "general"))
+        registry.register(MockTool("lookup_contact", capability = "calling"))
+        registry.register(MockTool("call_contact", capability = "calling"))
+        registry.register(MockTool("select_contact", capability = "calling", isInternal = true))
+
+        val disambiguationState = dev.loki.android.core.conversation.ContactResolution(
+            candidates = listOf(dev.loki.android.core.conversation.ContactCandidate("c1", "Mom", "123")),
+            selectedId = null,   // CONTACT_DISAMBIGUATION
+            confirmed = false
+        )
+
+        val grammar = GrammarBuilder.buildFrom(
+            toolRegistry = registry,
+            activeCapability = "calling",
+            advancingTool = "select_contact",
+            taskState = disambiguationState
+        )
+
+        // Only select_contact and general tools (except ask_user) should appear
+        assertTrue("select_contact must be in disambiguation grammar", grammar.contains("select_contact"))
+        assertTrue("get_current_time (general) must be in grammar", grammar.contains("get_current_time"))
+        // ask_user, call_contact, and lookup_contact must NOT appear
+        assertFalse("ask_user must NOT appear in disambiguation grammar", grammar.contains("ask_user"))
+        assertFalse("call_contact must NOT appear in disambiguation grammar", grammar.contains("call_contact"))
+        assertFalse("lookup_contact must NOT appear in disambiguation grammar", grammar.contains("lookup_contact"))
+    }
+
+    @Test
+    fun `CALL_CONFIRMATION state before question is asked hides call_contact and allows ask_user`() {
+        GrammarBuilder.clearCache()
+        val registry = ToolRegistry()
+        registry.register(MockTool("get_current_time", capability = "general"))
+        registry.register(MockTool("ask_user", capability = "general"))
+        registry.register(MockTool("call_contact", capability = "calling"))
+        registry.register(MockTool("select_contact", capability = "calling", isInternal = true))
+
+        val confirmationState = dev.loki.android.core.conversation.ContactResolution(
+            candidates = listOf(dev.loki.android.core.conversation.ContactCandidate("c1", "Mom", "123")),
+            selectedId = "c1",   // CALL_CONFIRMATION
+            isAsked = false,     // Question not yet asked
+            confirmed = false
+        )
+
+        val grammar = GrammarBuilder.buildFrom(
+            toolRegistry = registry,
+            activeCapability = "calling",
+            advancingTool = "call_contact",
+            taskState = confirmationState
+        )
+
+        // call_contact must be hidden before question is asked
+        assertFalse("call_contact must NOT appear before confirmation question", grammar.contains("call_contact"))
+        // ask_user must be available to generate the confirmation question
+        assertTrue("ask_user must be in grammar to ask confirmation", grammar.contains("ask_user"))
+        assertTrue("get_current_time must still be in grammar", grammar.contains("get_current_time"))
+    }
+
+    @Test
+    fun `AWAITING_CONFIRMATION state exposes call_contact and hides ask_user`() {
+        GrammarBuilder.clearCache()
+        val registry = ToolRegistry()
+        registry.register(MockTool("get_current_time", capability = "general"))
+        registry.register(MockTool("ask_user", capability = "general"))
+        registry.register(MockTool("call_contact", capability = "calling"))
+        registry.register(MockTool("select_contact", capability = "calling", isInternal = true))
+
+        val awaitingState = dev.loki.android.core.conversation.ContactResolution(
+            candidates = listOf(dev.loki.android.core.conversation.ContactCandidate("c1", "Mom", "123")),
+            selectedId = "c1",
+            isAsked = true,     // Confirmation question already asked
+            confirmed = false
+        )
+
+        val grammar = GrammarBuilder.buildFrom(
+            toolRegistry = registry,
+            activeCapability = "calling",
+            advancingTool = "call_contact",
+            taskState = awaitingState
+        )
+
+        // call_contact must be EXPOSED so affirmative user reply can invoke it
+        assertTrue("call_contact must appear in awaiting confirmation grammar", grammar.contains("call_contact"))
+        // ask_user must be HIDDEN to prevent confirmation loops
+        assertFalse("ask_user must NOT appear in awaiting confirmation grammar", grammar.contains("ask_user"))
+        assertTrue("get_current_time must still be in grammar", grammar.contains("get_current_time"))
+    }
+
+    @Test
+    fun `CONFIRMED state has no grammar restrictions - call_contact is exposed`() {
+        GrammarBuilder.clearCache()
+        val registry = ToolRegistry()
+        registry.register(MockTool("get_current_time", capability = "general"))
+        registry.register(MockTool("call_contact", capability = "calling"))
+
+        val confirmedState = dev.loki.android.core.conversation.ContactResolution(
+            candidates = listOf(dev.loki.android.core.conversation.ContactCandidate("c1", "Mom", "123")),
+            selectedId = "c1",
+            confirmed = true   // CONFIRMED
+        )
+
+        val grammar = GrammarBuilder.buildFrom(
+            toolRegistry = registry,
+            activeCapability = "calling",
+            advancingTool = null,
+            taskState = confirmedState
+        )
+
+        // In CONFIRMED state, no restrictions — call_contact must be available
+        assertTrue("call_contact must appear in confirmed grammar", grammar.contains("call_contact"))
+        assertTrue("get_current_time must appear in confirmed grammar", grammar.contains("get_current_time"))
+    }
 }

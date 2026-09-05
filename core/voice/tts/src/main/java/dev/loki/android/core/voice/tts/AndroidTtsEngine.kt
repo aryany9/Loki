@@ -92,6 +92,21 @@ class AndroidTtsEngine(
             }
         })
 
+        if (text.any { it in '\u0900'..'\u097F' }) {
+            try {
+                tts?.setLanguage(Locale("hi", "IN"))
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to set Hindi locale for Devanagari text", e)
+            }
+        } else {
+            val targetLocale = resolveLocale(pendingLanguageTag)
+            try {
+                tts?.setLanguage(targetLocale)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to restore locale $targetLocale", e)
+            }
+        }
+
         val params = Bundle()
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
     }

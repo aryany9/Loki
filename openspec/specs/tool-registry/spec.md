@@ -19,7 +19,7 @@ The system SHALL define a `Tool` interface that every assistant capability (loca
 ---
 
 ### Requirement: `ToolRegistry` is the authoritative source for available tools
-The system SHALL maintain a `ToolRegistry` that holds all registered tools. The `ConversationSession`, `GrammarBuilder`, and `ToolRouter` SHALL consult the `ToolRegistry` exclusively. `ToolRegistry.getAvailableTools` SHALL accept an optional `activeCapability` parameter and SHALL return only tools that satisfy ALL of: granted permissions, satisfied environment availability (e.g. online tools excluded offline), and capability scope (tools whose `capability` is `"general"` or equal to `activeCapability`; all permission-granted tools when no capability is active). Unavailable tools SHALL be omitted from the callable set — not exposed for runtime rejection — and SHALL appear in the disabled-tools notice when the user might plausibly request them.
+The system SHALL maintain a `ToolRegistry` that holds all registered tools. The `ConversationSession`, `GrammarBuilder`, and `ToolRouter` SHALL consult the `ToolRegistry` exclusively. `ToolRegistry.getAvailableTools` SHALL accept optional `activeCapability`, `advancingTool`, and `taskState` parameters and SHALL return only tools that satisfy ALL of: granted permissions, satisfied environment availability (e.g. online tools excluded offline), capability scope, and task state legality (e.g. `select_contact` is exposed only during `CONTACT_DISAMBIGUATION`). Unavailable tools SHALL be omitted from the callable set — not exposed for runtime rejection — and SHALL appear in the disabled-tools notice when the user might plausibly request them.
 
 #### Scenario: Tool registered at startup
 - **WHEN** the application initializes

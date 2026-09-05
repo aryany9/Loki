@@ -13,10 +13,9 @@ import dev.loki.android.core.tools.ToolResult
 class CallContactTool : LocalTool {
     override val name: String = "call_contact"
     override val capability: String = "calling"
-    override val description: String = "Initiate a phone call using a confirmed candidate_id or direct phone number. To call or find contacts by name, use lookup_contact first."
+    override val description: String = "Initiate a phone call using a confirmed candidate_id or contact name from a previous lookup. To call or find contacts by name, use lookup_contact first."
     override val parameters: Map<String, ToolParam> = mapOf(
         "candidate_id" to ToolParam(ToolParamType.STRING, "Candidate ID from contact lookup (e.g. 'c1')", required = false),
-        "phone_number" to ToolParam(ToolParamType.STRING, "Phone number or contact URI to call", required = false),
         "name" to ToolParam(ToolParamType.STRING, "Contact name if known", required = false)
     )
     override val requiredPermissions: List<String> = listOf(Manifest.permission.CALL_PHONE)

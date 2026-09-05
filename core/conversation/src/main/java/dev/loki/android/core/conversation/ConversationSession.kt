@@ -49,7 +49,12 @@ open class ConversationSession(
     val conversationStore: ConversationStore? = null,
     val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
     val memoryStore: MemoryStore = MemoryStore(context, ioDispatcher),
-    val conversationId: String? = null
+    val conversationId: String? = null,
+    val contactCandidateRegistry: MutableMap<String, ContactCandidate> = mutableMapOf(),
+    var pendingAsk: PendingAsk? = null,
+    val onPendingAskUpdated: ((PendingAsk?) -> Unit)? = null,
+    var pendingVoiceConfirmation: PendingVoiceConfirmation? = null,
+    val onPendingVoiceConfirmationUpdated: ((PendingVoiceConfirmation?) -> Unit)? = null
 ) {
 
     var activeCapability: String? = null
@@ -58,10 +63,59 @@ open class ConversationSession(
     var taskState: TaskState? = null
         internal set
 
+    init {
+        if (pendingVoiceConfirmation != null) {
+            val cand = pendingVoiceConfirmation!!.candidate
+            if (cand.id.isNotBlank()) {
+                contactCandidateRegistry[cand.id.lowercase()] = cand
+            }
+            if (cand.name.isNotBlank() && cand.name != "the contact") {
+                contactCandidateRegistry[cand.name.lowercase()] = cand
+            }
+            if (taskState == null) {
+                taskState = ContactResolution(
+                    candidates = listOf(cand),
+                    selectedId = cand.id,
+                    isAsked = pendingVoiceConfirmation!!.isAsked
+                )
+                activeCapability = "calling"
+            } else if (taskState is ContactResolution) {
+                val res = taskState as ContactResolution
+                if (res.isAsked != pendingVoiceConfirmation!!.isAsked) {
+                    taskState = res.copy(isAsked = pendingVoiceConfirmation!!.isAsked)
+                }
+            }
+        }
+        if (taskState == null && pendingAsk != null && pendingAsk!!.candidates.isNotEmpty()) {
+            taskState = ContactResolution(
+                candidates = pendingAsk!!.candidates,
+                selectedId = pendingAsk!!.selectedId,
+                isAsked = pendingVoiceConfirmation?.isAsked ?: false
+            )
+            activeCapability = "calling"
+        }
+        if (pendingVoiceConfirmation == null && taskState is ContactResolution && (taskState as ContactResolution).selectedId != null) {
+            val res = taskState as ContactResolution
+            val selected = res.candidates.firstOrNull { it.id == res.selectedId }
+            if (selected != null) {
+                val phoneArg = selected.phoneNumber
+                val digits = phoneArg.filter { it.isDigit() }
+                val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                val suffixPart = if (suffix.isNotBlank()) ", the number ending in $suffix" else ""
+                pendingVoiceConfirmation = PendingVoiceConfirmation(
+                    candidate = selected,
+                    repeatBack = "Shall I call ${selected.name}$suffixPart?",
+                    isAsked = res.isAsked
+                )
+            }
+        }
+    }
+
     var needsSchemaInjection: Boolean = true
         internal set
 
-    private val lastContactCandidates = mutableMapOf<String, ContactCandidate>()
+    private val lastContactCandidates: MutableMap<String, ContactCandidate>
+        get() = contactCandidateRegistry
 
     @Volatile
     private var pendingConfirmation: PendingConfirmation? = null
@@ -131,6 +185,7 @@ open class ConversationSession(
         var finalResponseText = ""
         var correctiveRetryUsed = false
         var isActivationTurn = false
+        var endedInAskUser = false
 
         // Initialize persistent native conversation with KV-prefilled CORE prompt ONCE per logical conversation session
         if (conversationContext.getTurns().size <= 1) {
@@ -160,7 +215,8 @@ open class ConversationSession(
                     context = context,
                     permissionManager = permissionManager,
                     activeCapability = activeCapability,
-                    advancingTool = taskState?.advancingTool
+                    advancingTool = taskState?.advancingTool,
+                    taskState = taskState as? dev.loki.android.core.tools.TaskStateGate
                 )
                 val currentDisabledTools = toolRegistry.getDisabledTools(
                     context = context,
@@ -227,7 +283,8 @@ open class ConversationSession(
                     onToken = { token ->
                         cumulativePartial.append(token)
                         trySend(ConversationEvent.GeneratingToken(cumulativePartial.toString()))
-                    }
+                    },
+                    source = source
                 )
 
                 if (llmResult.isFailure) {
@@ -252,6 +309,72 @@ open class ConversationSession(
                                 arguments = parsed.arguments.mapValues { it.value?.toString() ?: "" }
                             )
                         )
+
+                        // ── ask_user turn-intent protocol (no side effects / round-trip) ─
+                        if (parsed.tool == "ask_user") {
+                            val rawText = parsed.arguments["text"]?.toString()?.trim() ?: ""
+                            val hasPendingConfirm = pendingVoiceConfirmation != null
+                            val isRawValid = rawText.isNotBlank() && !containsProtocolArtifacts(rawText)
+
+                            // Loop breaker: If confirmation question was already asked and model emits ask_user again,
+                            // break out of the infinite repetition loop, cancel the task, and don't re-arm mic.
+                            if (hasPendingConfirm && pendingVoiceConfirmation!!.isAsked) {
+                                val cancelMsg = "Okay, cancelled."
+                                finalResponseText = cancelMsg
+                                recordTurn(ConversationTurn.Assistant(finalResponseText))
+                                activeCapability = null
+                                taskState = null
+                                contactCandidateRegistry.clear()
+                                pendingAsk = null
+                                onPendingAskUpdated?.invoke(null)
+                                pendingVoiceConfirmation = null
+                                onPendingVoiceConfirmationUpdated?.invoke(null)
+                                endedInAskUser = false
+                                break
+                            }
+
+                            val (sanitized, wasAppRenderedConfirm) = when {
+                                isRawValid -> {
+                                    rawText to false
+                                }
+                                hasPendingConfirm -> {
+                                    // Empty-ask_user enhancement: when parsed ask_user has empty text and
+                                    // pendingVoiceConfirmation exists, the app emits AskUser with its rendered repeat-back string.
+                                    pendingVoiceConfirmation!!.repeatBack to true
+                                }
+                                else -> {
+                                    if (rawText.isNotBlank()) {
+                                        TurnLogger.logError(turnId, "Sanitized malformed LLM output (contained protocol artifacts): $rawText")
+                                        try {
+                                            android.util.Log.d("LokiTurn", "[LokiTurn] Sanitized malformed LLM output (contained protocol artifacts): $rawText")
+                                        } catch (_: Throwable) {}
+                                    }
+                                    RECOVERY_RESPONSE_TEXT to false
+                                }
+                            }
+                            finalResponseText = sanitized
+                            recordTurn(ConversationTurn.Assistant(finalResponseText))
+
+                            if (hasPendingConfirm && (isRawValid || wasAppRenderedConfirm)) {
+                                val updatedConfirm = pendingVoiceConfirmation!!.copy(isAsked = true)
+                                pendingVoiceConfirmation = updatedConfirm
+                                onPendingVoiceConfirmationUpdated?.invoke(updatedConfirm)
+                                taskState = (taskState as? ContactResolution)?.copy(isAsked = true)
+                            }
+
+                            val currentResolution = taskState as? ContactResolution
+                            val updatedPending = PendingAsk(
+                                question = sanitized,
+                                candidates = currentResolution?.candidates ?: pendingAsk?.candidates ?: emptyList(),
+                                selectedId = currentResolution?.selectedId ?: pendingAsk?.selectedId
+                            )
+                            pendingAsk = updatedPending
+                            onPendingAskUpdated?.invoke(updatedPending)
+
+                            endedInAskUser = true
+                            break
+                        }
+                        // ─────────────────────────────────────────────────────────────────
 
                         // ── TaskState advancing tool: select_contact ─────────────────────
                         if (parsed.tool == "select_contact") {
@@ -283,6 +406,18 @@ open class ConversationSession(
                             taskState = resolution.copy(selectedId = matchedCandidate.id)
                             lastContactCandidates[matchedCandidate.id.lowercase()] = matchedCandidate
                             lastContactCandidates[matchedCandidate.name.lowercase()] = matchedCandidate
+
+                            val phoneArg = matchedCandidate.phoneNumber
+                            val digits = phoneArg.filter { it.isDigit() }
+                            val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                            val suffixPart = if (suffix.isNotBlank()) ", the number ending in $suffix" else ""
+                            val confirmationState = PendingVoiceConfirmation(
+                                candidate = matchedCandidate,
+                                repeatBack = "Shall I call ${matchedCandidate.name}$suffixPart?",
+                                isAsked = false
+                            )
+                            pendingVoiceConfirmation = confirmationState
+                            onPendingVoiceConfirmationUpdated?.invoke(confirmationState)
                             val successResult = ToolResult.success(
                                 mapOf(
                                     "candidate_id" to matchedCandidate.id,
@@ -335,20 +470,33 @@ open class ConversationSession(
                         }
                         // ─────────────────────────────────────────────────────────────────
 
-                        // ── App-side validation & resolution for call_contact ─────────────
                         val resolvedArguments = parsed.arguments.toMutableMap()
+                        var resolvedContactCandidate: ContactCandidate? = null
                         if (parsed.tool == "call_contact") {
                             val candId = parsed.arguments["candidate_id"]?.toString()?.trim()
                             val nameArg = parsed.arguments["name"]?.toString()?.trim()
                             val phoneArg = parsed.arguments["phone_number"]?.toString()?.trim()
-                            val hasValidPhone = isValidPhoneNumber(phoneArg)
 
-                            // Candidate resolution order: 1) taskState candidates, 2) lastContactCandidates registry, 3) name/search re-query
+                            if (!phoneArg.isNullOrBlank()) {
+                                try {
+                                    android.util.Log.d("LokiTurn", "[LokiTurn] Discarded model-supplied phone_number '$phoneArg' in favor of registry resolution")
+                                } catch (_: Throwable) {}
+                            }
+
+                            // Candidate resolution order: 1) taskState candidates, 2) contactCandidateRegistry, 3) name match
                             var cand: ContactCandidate? = null
                             val resolution = taskState as? ContactResolution
                             if (resolution != null) {
                                 cand = if (!candId.isNullOrBlank()) {
                                     resolution.candidates.firstOrNull { it.id.equals(candId, ignoreCase = true) }
+                                        ?: resolution.candidates.firstOrNull { it.name.equals(candId, ignoreCase = true) }?.also {
+                                            try {
+                                                android.util.Log.d("LokiTurn", "[LokiTurn] Coerced candidate_id '$candId' as contact name")
+                                            } catch (_: Throwable) {}
+                                        }
+                                } else if (!nameArg.isNullOrBlank()) {
+                                    resolution.candidates.firstOrNull { it.name.equals(nameArg, ignoreCase = true) }
+                                        ?: resolution.candidates.firstOrNull { it.id.equals(nameArg, ignoreCase = true) }
                                 } else if (resolution.selectedId != null) {
                                     resolution.candidates.firstOrNull { it.id == resolution.selectedId }
                                 } else if (resolution.candidates.size == 1) {
@@ -357,21 +505,42 @@ open class ConversationSession(
                             }
 
                             if (cand == null && !candId.isNullOrBlank()) {
-                                cand = lastContactCandidates[candId.lowercase()]
+                                cand = contactCandidateRegistry[candId.lowercase()]
+                                if (cand != null && !candId.startsWith("c", ignoreCase = true)) {
+                                    try {
+                                        android.util.Log.d("LokiTurn", "[LokiTurn] Coerced candidate_id '$candId' as contact name")
+                                    } catch (_: Throwable) {}
+                                }
+                            }
+                            if (cand == null && !nameArg.isNullOrBlank()) {
+                                cand = contactCandidateRegistry[nameArg.lowercase()]
+                                    ?: contactCandidateRegistry.values.firstOrNull { it.id.equals(nameArg, ignoreCase = true) }
                             }
 
                             if (cand != null) {
+                                resolvedContactCandidate = cand
                                 resolvedArguments["phone_number"] = cand.phoneNumber
-                                resolvedArguments["name"] = cand.name
+                                if (!nameArg.isNullOrBlank() || cand.name != "the contact") {
+                                    resolvedArguments["name"] = cand.name
+                                }
                                 resolvedArguments["candidate_id"] = cand.id
                                 taskState = (resolution ?: ContactResolution(candidates = listOf(cand))).copy(selectedId = cand.id)
-                                lastContactCandidates[cand.id.lowercase()] = cand
-                                lastContactCandidates[cand.name.lowercase()] = cand
-                            } else if (!hasValidPhone) {
+                                contactCandidateRegistry[cand.id.lowercase()] = cand
+                                if (!nameArg.isNullOrBlank() || cand.name != "the contact") {
+                                    contactCandidateRegistry[cand.name.lowercase()] = cand
+                                }
+                            } else if (!candId.isNullOrBlank()) {
+                                val staleMessage = "Contact selection '$candId' is stale or invalid. Please search contacts using lookup_contact first."
+                                val staleResult = ToolResult.error(staleMessage, ToolErrorCode.EXECUTION_ERROR)
+                                lastToolResult = staleResult
+                                send(ConversationEvent.ToolExecuted(parsed.tool, staleResult))
+                                recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, staleResult))
+                                currentTurnPrompt = "Tool result for call_contact: $staleMessage"
+                                continue
+                            } else {
                                 val searchQuery = nameArg?.takeIf { it.isNotBlank() && !it.equals("N/A", ignoreCase = true) }
-                                    ?: candId?.takeIf { it.isNotBlank() && !it.equals("N/A", ignoreCase = true) }
 
-                                if (!searchQuery.isNullOrBlank()) {
+                                if (!searchQuery.isNullOrBlank() && toolRegistry.get("lookup_contact") != null) {
                                     val lookupExec = toolRegistry.executeDetailed(
                                         context = context,
                                         name = "lookup_contact",
@@ -390,20 +559,21 @@ open class ConversationSession(
                                         } else emptyList<ContactCandidate>()
 
                                         for (c in candidates) {
-                                            lastContactCandidates[c.id.lowercase()] = c
-                                            lastContactCandidates[c.name.lowercase()] = c
+                                            contactCandidateRegistry[c.id.lowercase()] = c
+                                            contactCandidateRegistry[c.name.lowercase()] = c
                                         }
 
                                         if (candidates.size == 1) {
                                             val resolved = candidates[0]
+                                            cand = resolved
+                                            resolvedContactCandidate = resolved
                                             resolvedArguments["phone_number"] = resolved.phoneNumber
                                             resolvedArguments["name"] = resolved.name
                                             resolvedArguments["candidate_id"] = resolved.id
                                             taskState = ContactResolution(candidates = candidates, selectedId = resolved.id)
                                         } else if (candidates.size > 1) {
                                             taskState = ContactResolution(candidates = candidates)
-                                            val candidateList = candidates.joinToString(", ") { "${it.id}: ${it.name}" }
-                                            val coachMessage = "Found multiple contacts for '$searchQuery': $candidateList. Ask the user which contact to call."
+                                            val coachMessage = buildDuplicateDisambiguationCoachMessage(candidates, searchQuery)
                                             val coachedResult = ToolResult.error(coachMessage, ToolErrorCode.EXECUTION_ERROR)
                                             lastToolResult = coachedResult
                                             send(ConversationEvent.ToolExecuted(parsed.tool, coachedResult))
@@ -420,6 +590,14 @@ open class ConversationSession(
                                             continue
                                         }
                                     }
+                                } else if (!searchQuery.isNullOrBlank()) {
+                                    val staleMessage = "Contact selection '$searchQuery' is stale or invalid. Please search contacts using lookup_contact first."
+                                    val staleResult = ToolResult.error(staleMessage, ToolErrorCode.EXECUTION_ERROR)
+                                    lastToolResult = staleResult
+                                    send(ConversationEvent.ToolExecuted(parsed.tool, staleResult))
+                                    recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, staleResult))
+                                    currentTurnPrompt = "Tool result for call_contact: $staleMessage"
+                                    continue
                                 }
                             }
                         }
@@ -431,17 +609,55 @@ open class ConversationSession(
 
                         if (toolRegistry.requiresConfirmation(parsed.tool)) {
                             if (isVoiceSource) {
-                                val hasAskedConfirmation = source == "VOICE_FOLLOW_UP" ||
-                                    conversationContext.getTurns().any {
-                                        (it is ConversationTurn.Assistant && it.text.trim().endsWith("?")) ||
-                                        (it is ConversationTurn.ToolExecutionResult && it.result.error?.contains("Action requires verbal confirmation") == true)
-                                    }
+                                val targetCandidate = resolvedContactCandidate
+                                    ?: (taskState as? ContactResolution)?.candidates?.firstOrNull { it.id == resolvedArguments["candidate_id"] }
+                                    ?: (taskState as? ContactResolution)?.candidates?.firstOrNull { it.name.equals(resolvedArguments["name"]?.toString(), ignoreCase = true) }
+                                    ?: resolvedArguments["candidate_id"]?.toString()?.lowercase()?.let { contactCandidateRegistry[it] }
+                                    ?: resolvedArguments["name"]?.toString()?.lowercase()?.let { contactCandidateRegistry[it] }
+                                    ?: if (pendingVoiceConfirmation != null && (
+                                            pendingVoiceConfirmation!!.candidate.id.equals(resolvedArguments["candidate_id"]?.toString(), ignoreCase = true) ||
+                                            pendingVoiceConfirmation!!.candidate.name.equals(resolvedArguments["name"]?.toString(), ignoreCase = true)
+                                       )) pendingVoiceConfirmation!!.candidate else null
 
-                                if (!hasAskedConfirmation) {
-                                    val contactName = resolvedArguments["name"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
-                                        ?: resolvedArguments["calling"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+                                val isConfirmed = targetCandidate != null &&
+                                    pendingVoiceConfirmation != null &&
+                                    pendingVoiceConfirmation!!.isAsked &&
+                                    (pendingVoiceConfirmation!!.candidate.id.equals(targetCandidate.id, ignoreCase = true) ||
+                                     pendingVoiceConfirmation!!.candidate.phoneNumber == targetCandidate.phoneNumber ||
+                                     pendingVoiceConfirmation!!.candidate.name.equals(targetCandidate.name, ignoreCase = true))
+
+                                if (!isConfirmed) {
+                                    val contactName = targetCandidate?.name?.takeIf { it.isNotBlank() && it != "null" }
+                                        ?: resolvedArguments["name"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
                                         ?: "the contact"
-                                    val coachMessage = "Action requires verbal confirmation. Do not execute yet. First ask the user for confirmation by stating the contact name in a question. Only execute this tool after the user verbally confirms."
+                                    val phoneArg = targetCandidate?.phoneNumber
+                                        ?: resolvedArguments["phone_number"]?.toString()?.trim()
+                                        ?: ""
+                                    val digits = phoneArg.filter { it.isDigit() }
+                                    val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                                    val suffixPart = if (suffix.isNotBlank()) ", the number ending in $suffix" else ""
+                                    val repeatBack = "Shall I call $contactName$suffixPart?"
+                                    val coachMessage = "Action requires verbal confirmation. Do not execute yet. First ask the user for confirmation via ask_user (e.g. '$repeatBack'). Only execute this tool after the user verbally confirms."
+
+                                    val resolvedCandForConfirm = targetCandidate ?: ContactCandidate(
+                                        id = resolvedArguments["candidate_id"]?.toString()?.ifBlank { "c1" } ?: "c1",
+                                        name = contactName,
+                                        phoneNumber = phoneArg
+                                    )
+                                    if (resolvedCandForConfirm.id.isNotBlank()) {
+                                        contactCandidateRegistry[resolvedCandForConfirm.id.lowercase()] = resolvedCandForConfirm
+                                    }
+                                    if (resolvedCandForConfirm.name.isNotBlank() && resolvedCandForConfirm.name != "the contact") {
+                                        contactCandidateRegistry[resolvedCandForConfirm.name.lowercase()] = resolvedCandForConfirm
+                                    }
+                                    val confirmationState = PendingVoiceConfirmation(
+                                        candidate = resolvedCandForConfirm,
+                                        repeatBack = repeatBack,
+                                        isAsked = false
+                                    )
+                                    pendingVoiceConfirmation = confirmationState
+                                    onPendingVoiceConfirmationUpdated?.invoke(confirmationState)
+
                                     val coachedResult = ToolResult.error(coachMessage, ToolErrorCode.EXECUTION_ERROR)
                                     lastToolResult = coachedResult
                                     send(ConversationEvent.ToolExecuted(parsed.tool, coachedResult))
@@ -500,13 +716,14 @@ open class ConversationSession(
                             is ToolExecutionResult.Success -> {
                                 val result = execResult.toolResult
                                 lastToolResult = result
-                                TurnLogger.logToolExecution(turnId, parsed.tool, true, result.data.toString())
-                                send(ConversationEvent.ToolExecuted(parsed.tool, result))
+                                val modelResult = maskToolResultForModel(result)
+                                TurnLogger.logToolExecution(turnId, parsed.tool, true, modelResult.data.toString())
+                                send(ConversationEvent.ToolExecuted(parsed.tool, modelResult))
 
                                 recordTurn(
                                     ConversationTurn.ToolExecutionResult(
                                         tool = parsed.tool,
-                                        result = result
+                                        result = modelResult
                                     )
                                 )
 
@@ -522,14 +739,60 @@ open class ConversationSession(
                                         }
                                     } else emptyList<ContactCandidate>()
 
-                                    taskState = ContactResolution(
-                                        candidates = candidates,
-                                        selectedId = if (candidates.size == 1) candidates[0].id else null,
-                                        confirmed = false
-                                    )
+                                    for (c in candidates) {
+                                        contactCandidateRegistry[c.id.lowercase()] = c
+                                        contactCandidateRegistry[c.name.lowercase()] = c
+                                    }
 
-                                    val summary = candidates.joinToString(", ") { "${it.id}: ${it.name}" }
-                                    currentTurnPrompt = "Tool result for lookup_contact: Found ${candidates.size} matching contacts: $summary"
+                                    // Optimization C: Unique exact display-name pre-selection.
+                                    // When multiple contacts are returned, if exactly one has a name
+                                    // that exactly matches the query (case-insensitive, trimmed),
+                                    // auto-select it and skip CONTACT_DISAMBIGUATION.
+                                    val query = parsed.arguments["query"]?.toString()?.trim() ?: ""
+                                    val exactMatches = if (query.isNotBlank() && candidates.size > 1) {
+                                        candidates.filter { it.name.trim().equals(query, ignoreCase = true) }
+                                    } else emptyList()
+
+                                    if (exactMatches.size == 1) {
+                                        // Unique exact match: auto-select and advance to CALL_CONFIRMATION
+                                        val autoSelected = exactMatches[0]
+                                        taskState = ContactResolution(
+                                            candidates = candidates,
+                                            selectedId = autoSelected.id,
+                                            confirmed = false
+                                        )
+                                        lastContactCandidates[autoSelected.id.lowercase()] = autoSelected
+                                        lastContactCandidates[autoSelected.name.lowercase()] = autoSelected
+
+                                        val phoneArg = autoSelected.phoneNumber
+                                        val digits = phoneArg.filter { it.isDigit() }
+                                        val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                                        val suffixPart = if (suffix.isNotBlank()) ", the number ending in $suffix" else ""
+                                        val confirmationState = PendingVoiceConfirmation(
+                                            candidate = autoSelected,
+                                            repeatBack = "Shall I call ${autoSelected.name}$suffixPart?",
+                                            isAsked = false
+                                        )
+                                        pendingVoiceConfirmation = confirmationState
+                                        onPendingVoiceConfirmationUpdated?.invoke(confirmationState)
+
+                                        android.util.Log.d("ConversationSession", "[ExactMatch] Auto-selected '${autoSelected.name}' (${autoSelected.id}), skipping disambiguation.")
+                                        currentTurnPrompt = "Tool result for lookup_contact: Exact match found. Selected ${autoSelected.name} (${autoSelected.id}). Ask the user for confirmation before calling."
+                                    } else {
+                                        taskState = ContactResolution(
+                                            candidates = candidates,
+                                            selectedId = if (candidates.size == 1) candidates[0].id else null,
+                                            confirmed = false
+                                        )
+
+                                        if (candidates.size > 1) {
+                                            val coachMessage = buildDuplicateDisambiguationCoachMessage(candidates)
+                                            currentTurnPrompt = "Tool result for lookup_contact: $coachMessage"
+                                        } else {
+                                            val summary = candidates.joinToString(", ") { it.name }
+                                            currentTurnPrompt = "Tool result for lookup_contact: Found ${candidates.size} matching contacts: $summary"
+                                        }
+                                    }
                                     continue
                                 }
 
@@ -537,6 +800,11 @@ open class ConversationSession(
                                     taskState = (taskState as? ContactResolution)?.copy(confirmed = true)
                                     activeCapability = null
                                     taskState = null
+                                    contactCandidateRegistry.clear()
+                                    pendingAsk = null
+                                    onPendingAskUpdated?.invoke(null)
+                                    pendingVoiceConfirmation = null
+                                    onPendingVoiceConfirmationUpdated?.invoke(null)
                                 }
 
                                 val fastResponse = formatFastPathResponse(parsed.tool, result)
@@ -546,8 +814,8 @@ open class ConversationSession(
                                     break
                                 }
 
-                                // For next ReAct iteration, send ONLY the tool execution result message
-                                currentTurnPrompt = "Tool result for ${parsed.tool}: ${result.data}"
+                                // For next ReAct iteration, send ONLY the masked tool execution result message
+                                currentTurnPrompt = "Tool result for ${parsed.tool}: ${modelResult.data}"
                             }
                             is ToolExecutionResult.PermissionRequired -> {
                                 TurnLogger.logPermissionCheck(turnId, execResult.permission, execResult.state.name)
@@ -590,12 +858,37 @@ open class ConversationSession(
                     }
 
                     is ParsedLlmResponse.DirectResponse -> {
-                        finalResponseText = parsed.text
+                        val sanitized = if (containsProtocolArtifacts(parsed.text)) {
+                            TurnLogger.logError(turnId, "Sanitized malformed LLM output (contained protocol artifacts): ${parsed.text}")
+                            try {
+                                android.util.Log.d("LokiTurn", "[LokiTurn] Sanitized malformed LLM output (contained protocol artifacts): ${parsed.text}")
+                            } catch (_: Throwable) {}
+                            RECOVERY_RESPONSE_TEXT
+                        } else {
+                            parsed.text
+                        }
+                        finalResponseText = sanitized
                         recordTurn(ConversationTurn.Assistant(finalResponseText))
+
+                        if (pendingVoiceConfirmation != null && parsed.text.trim().endsWith("?")) {
+                            val updatedConfirm = pendingVoiceConfirmation!!.copy(isAsked = true)
+                            pendingVoiceConfirmation = updatedConfirm
+                            onPendingVoiceConfirmationUpdated?.invoke(updatedConfirm)
+                            taskState = (taskState as? ContactResolution)?.copy(isAsked = true)
+                        }
+
                         val isUnresolvedContact = (taskState as? ContactResolution)?.let { !it.resolved && it.candidates.isNotEmpty() } ?: false
                         if (!isUnresolvedContact && (taskState == null || taskState?.resolved == true)) {
                             activeCapability = null
                             taskState = null
+                        }
+                        if (pendingVoiceConfirmation != null && !parsed.text.trim().endsWith("?")) {
+                            pendingVoiceConfirmation = null
+                            onPendingVoiceConfirmationUpdated?.invoke(null)
+                            taskState = null
+                            activeCapability = null
+                            pendingAsk = null
+                            onPendingAskUpdated?.invoke(null)
                         }
                         break
                     }
@@ -606,10 +899,13 @@ open class ConversationSession(
                             correctiveRetryUsed = true
                             continue
                         }
-                        finalResponseText = if (parsed.raw.isNotBlank() && !parsed.raw.contains("{") && !parsed.raw.contains("\"tool\"")) {
+                        finalResponseText = if (parsed.raw.isNotBlank() && !containsProtocolArtifacts(parsed.raw) && !parsed.raw.contains("{") && !parsed.raw.contains("\"tool\"")) {
                             parsed.raw.trim()
                         } else {
-                            "I couldn't determine that request. Please try again."
+                            try {
+                                android.util.Log.d("LokiTurn", "[LokiTurn] Sanitized malformed LLM output (contained protocol artifacts): ${parsed.raw}")
+                            } catch (_: Throwable) {}
+                            RECOVERY_RESPONSE_TEXT
                         }
                         recordTurn(ConversationTurn.Assistant(finalResponseText))
                         break
@@ -627,6 +923,13 @@ open class ConversationSession(
             return@channelFlow
         }
 
+        if (containsProtocolArtifacts(finalResponseText)) {
+            try {
+                android.util.Log.d("LokiTurn", "[LokiTurn] Sanitized malformed LLM output (contained protocol artifacts): $finalResponseText")
+            } catch (_: Throwable) {}
+            finalResponseText = RECOVERY_RESPONSE_TEXT
+        }
+
         if (finalResponseText.isEmpty()) {
             finalResponseText = "Task completed."
         }
@@ -638,19 +941,29 @@ open class ConversationSession(
             ttsEngine.speak(finalResponseText)
         }
 
+        if (endedInAskUser) {
+            send(ConversationEvent.AskUser(finalResponseText))
+        }
+
         send(ConversationEvent.Completed(finalResponseText, lastToolResult))
     }.flowOn(ioDispatcher)
 
     internal suspend fun buildCoreSystemPrompt(isCompact: Boolean = false): String {
         if (isCompact) {
             val sb = StringBuilder()
-            sb.append("You are Loki, an on-device assistant. When the user asks to call or message someone, immediately call lookup_contact with their name — do not ask for contact information. Only ask which contact when a lookup returns multiple matches.\n")
+            sb.append("You are Loki, an on-device assistant.\n")
+            sb.append("Always respond in the same language the user writes or speaks in (e.g. Hindi, English, Hinglish).\n")
+            sb.append("When you need the user's answer — a choice, a confirmation, any missing information — you MUST end your turn by invoking the ask_user tool with your question as its text argument. If you end your turn with a plain question in text, the conversation ENDS and the user CANNOT reply. ask_user is the ONLY way to hand the turn to the user.\n")
+            sb.append("Example — WRONG: replying with plain text \"Which Mom would you like to call?\" — RIGHT: {\"tool\": \"ask_user\", \"arguments\": {\"text\": \"Which Mom would you like to call?\"}}\n")
+            sb.append("When the user asks to call or message someone, immediately call lookup_contact with their name — do not ask for contact information. Only ask which contact when a lookup returns multiple matches.\n")
             sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}} or {\"response\": \"conversational answer\"}.")
             return sb.toString()
         }
 
         val sb = StringBuilder()
         sb.append("You are Loki, a private offline Android assistant running on the user's device. You operate entirely on-device with privacy and safety as highest priority.\n\n")
+        sb.append("When you need the user's answer — a choice, a confirmation, any missing information — you MUST end your turn by invoking the ask_user tool with your question as its text argument. If you end your turn with a plain question in text, the conversation ENDS and the user CANNOT reply. ask_user is the ONLY way to hand the turn to the user.\n")
+        sb.append("Example — WRONG: replying with plain text \"Which Mom would you like to call?\" — RIGHT: {\"tool\": \"ask_user\", \"arguments\": {\"text\": \"Which Mom would you like to call?\"}}\n\n")
         sb.append("When the user asks to call or message someone, immediately call lookup_contact with their name — do not ask for contact information. Only ask which contact when a lookup returns multiple matches.\n\n")
 
         val customInstruction = agentConfig.systemInstruction.trim()
@@ -750,9 +1063,9 @@ open class ConversationSession(
         return when (capability) {
             "calling" -> {
                 if (isActivationTurn) {
-                    "Calling guidance: When looking up contacts to call: if multiple contacts match, list them by NAME only. Never speak, display, or invent phone numbers — phone numbers are unavailable to you. Ask the user which contact to call using their name or candidate ID (e.g. using select_contact). If there is a unique match or once selected, ask for verbal confirmation before placing the call."
+                    "Calling capability active. Look up or resolve contacts using available calling tools."
                 } else {
-                    "Calling reminder: Refer to candidates by name or candidate ID; phone numbers are unavailable to you. Do not execute call_contact until the user confirms."
+                    "Calling capability active. Respond to the user naturally based on the current task state below."
                 }
             }
             "media" -> {
@@ -770,22 +1083,39 @@ open class ConversationSession(
         return when (state) {
             is ContactResolution -> {
                 val sb = StringBuilder()
-                sb.append("Current Task: Contact Resolution\n")
                 if (state.selectedId == null) {
-                    sb.append("Matching candidates:\n")
+                    // CONTACT_DISAMBIGUATION state: LLM must choose a contact using select_contact.
+                    sb.append("Current Task: Contact Disambiguation\n")
+                    sb.append("Matching contacts:\n")
+                    val nameCounts = state.candidates.groupingBy { it.name.trim().lowercase() }.eachCount()
                     for (c in state.candidates) {
-                        sb.append("- [${c.id}] ${c.name}\n")
+                        val isDuplicate = (nameCounts[c.name.trim().lowercase()] ?: 0) > 1
+                        val label = formatCandidateModelLabel(c, isDuplicate)
+                        sb.append("- $label\n")
                     }
-                    sb.append("Phone numbers are unavailable to you. Ask the user which contact they want to call.")
-                } else {
+                    sb.append("The user is choosing a contact. Emit select_contact with the matching candidate_id.")
+                } else if (!state.confirmed) {
                     val candidate = state.candidates.firstOrNull { it.id == state.selectedId }
                     val name = candidate?.name ?: state.selectedId
-                    sb.append("Selected candidate: [${state.selectedId}] $name\n")
-                    if (!state.confirmed) {
-                        sb.append("Ask the user for verbal confirmation to call $name before placing the call.")
+                    if (!state.isAsked) {
+                        // CALL_CONFIRMATION state (before question is generated): LLM asks for verbal confirmation.
+                        sb.append("Current Task: Pending Confirmation\n")
+                        sb.append("Selected contact: $name\n")
+                        sb.append("Ask the user for verbal confirmation before placing the call.")
                     } else {
-                        sb.append("User has confirmed calling $name.")
+                        // AWAITING_CONFIRMATION state: question was asked, awaiting user's affirmative/negative answer.
+                        sb.append("Current Task: Awaiting Confirmation\n")
+                        sb.append("Selected contact: $name\n")
+                        val question = pendingVoiceConfirmation?.repeatBack ?: pendingAsk?.question ?: "Shall I call $name?"
+                        sb.append("Confirmation question already asked: \"$question\"\n")
+                        sb.append("The user's response is their answer. If affirmed, invoke call_contact. If declined, respond conversationally.")
                     }
+                } else {
+                    // CONFIRMED state: call_contact is available for execution.
+                    val candidate = state.candidates.firstOrNull { it.id == state.selectedId }
+                    val name = candidate?.name ?: state.selectedId
+                    sb.append("Current Task: Confirmed Call\n")
+                    sb.append("User has confirmed calling $name.")
                 }
                 sb.toString()
             }
@@ -836,7 +1166,11 @@ open class ConversationSession(
         needsSchemaInjection = true
         taskState = null
         activeCapability = null
-        lastContactCandidates.clear()
+        contactCandidateRegistry.clear()
+        pendingAsk = null
+        onPendingAskUpdated?.invoke(null)
+        pendingVoiceConfirmation = null
+        onPendingVoiceConfirmationUpdated?.invoke(null)
     }
 
     /**
@@ -858,5 +1192,93 @@ open class ConversationSession(
     companion object {
         /** How long to wait (ms) for a user verdict before auto-cancelling the gate. */
         const val CONFIRMATION_TIMEOUT_MS = 20_000L
+
+        const val RECOVERY_RESPONSE_TEXT = "Sorry, I didn't catch that — could you say it again?"
+
+        private val TOOL_JSON_REGEX = """\{\s*"tool"\s*:""".toRegex()
+        private val STANDALONE_TOOL_NAME_REGEX = """\b(ask_user|call_contact|lookup_contact|dial_number|select_contact|get_current_time|get_battery_status|open_app|set_timer|set_alarm|media_control|toggle_flashlight|open_wifi_settings|open_bluetooth_settings|get_wifi_state|get_bluetooth_state|get_ram_usage|remember_fact|search_chat_history)\b""".toRegex(RegexOption.IGNORE_CASE)
+
+        internal fun containsProtocolArtifacts(text: String): Boolean {
+            if (text.contains("<|") || text.contains("<|tool_call")) return true
+            if (text.contains("```")) return true
+            if (TOOL_JSON_REGEX.containsMatchIn(text)) return true
+            if (STANDALONE_TOOL_NAME_REGEX.containsMatchIn(text)) return true
+            return false
+        }
+
+        internal fun maskNumbersInString(text: String): String {
+            if (text.isBlank()) return text
+            var masked = text.replace("""("number"|"phone_number"|"phone")\s*:\s*"([^"]+)"""".toRegex()) { matchResult ->
+                val field = matchResult.groupValues[1]
+                val rawNum = matchResult.groupValues[2]
+                val digits = rawNum.filter { it.isDigit() }
+                val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                """$field: "ending in $suffix""""
+            }
+            masked = masked.replace("""(number|phone_number|phone)=([^,\}\]]+)""".toRegex()) { matchResult ->
+                val field = matchResult.groupValues[1]
+                val rawNum = matchResult.groupValues[2].trim()
+                val digits = rawNum.filter { it.isDigit() }
+                val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                """$field=ending in $suffix"""
+            }
+            val digits = text.filter { it.isDigit() }
+            if (digits.length >= 5 && !masked.contains("ending in")) {
+                val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                return "ending in $suffix"
+            }
+            return masked
+        }
+
+        internal fun maskToolResultForModel(result: ToolResult): ToolResult {
+            val data = result.data ?: return result
+            if (!result.success) return result
+            val maskedData = data.mapValues { (_, value) ->
+                maskNumbersInString(value)
+            }
+            return result.copy(data = maskedData)
+        }
+
+        internal fun formatCandidateModelLabel(candidate: ContactCandidate, isDuplicateName: Boolean): String {
+            val idPrefix = if (candidate.id.isNotBlank()) "[${candidate.id}] " else ""
+            return if (isDuplicateName) {
+                val digits = candidate.phoneNumber.filter { it.isDigit() }
+                val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                if (suffix.isNotEmpty()) {
+                    "$idPrefix${candidate.name} — ending in $suffix"
+                } else {
+                    "$idPrefix${candidate.name}"
+                }
+            } else {
+                "$idPrefix${candidate.name}"
+            }
+        }
+
+        internal fun formatCandidateSpeechLabel(candidate: ContactCandidate, isDuplicateName: Boolean): String {
+            return if (isDuplicateName) {
+                val digits = candidate.phoneNumber.filter { it.isDigit() }
+                val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                if (suffix.isNotEmpty()) {
+                    "${candidate.name} — number ending in $suffix"
+                } else {
+                    candidate.name
+                }
+            } else {
+                candidate.name
+            }
+        }
+
+        internal fun formatCandidateLabel(candidate: ContactCandidate, isDuplicateName: Boolean): String {
+            return formatCandidateSpeechLabel(candidate, isDuplicateName)
+        }
+
+        internal fun buildDuplicateDisambiguationCoachMessage(candidates: List<ContactCandidate>, query: String? = null): String {
+            val nameCounts = candidates.groupingBy { it.name.trim().lowercase() }.eachCount()
+            val formattedList = candidates.joinToString("; ") { c ->
+                val isDuplicate = (nameCounts[c.name.trim().lowercase()] ?: 0) > 1
+                formatCandidateModelLabel(c, isDuplicate)
+            }
+            return "Multiple contacts match. Options: $formattedList. Present the options to the user via ask_user without candidate IDs (e.g. using names and distinguishers like 'the number ending in 95'). When confirmed, invoke call_contact with the resolved candidate_id."
+        }
     }
 }

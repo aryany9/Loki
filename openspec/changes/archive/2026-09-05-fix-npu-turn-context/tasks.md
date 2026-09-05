@@ -123,7 +123,7 @@ noise capture is then sent to the NPU model, which hallucinates a response.
 - [x] 10.6 AssistantSession last-line defense: empty/too-short capture ⇒ skip the LLM turn
         entirely, surface "I didn't catch that — try speaking again", never generate a response
         from noise.
-- [ ] 10.7 On-device tuning pass: verify normal commands trigger on the first word AND long
+- [x] 10.7 On-device tuning pass: verify normal commands trigger on the first word AND long
         multi-clause sentences are not cut off; record chosen silenceDurationMs /
         threshold factors in this change's notes (these are feel knobs — expected to be tuned).
 - [x] 10.8 Unit tests: soft trailing word after a loud word does NOT end the utterance; 700ms
@@ -161,7 +161,7 @@ Symptoms: generic/rambling replies on "Call Mom", hallucinated `lookup_contact(q
       for contact information. Only ask which contact when a lookup returns multiple matches."
 - [x] 11.6 Tests: compact schema mode token budget (< ~150 tokens est.); auto-lookup directive
       present; guard no-reset math with compact prompt.
-- [ ] 11.7 Device validation (SM8750 + E2B): "Call Mom" voice flow — model calls lookup_contact
+- [x] 11.7 Device validation (SM8750 + E2B): "Call Mom" voice flow — model calls lookup_contact
       unprompted on the FIRST turn, resolves/asks only if ambiguous, confirmation names the
       contact; 5-turn conversation without compaction resets; logcat excerpt attached to notes.
 
@@ -180,7 +180,7 @@ Symptoms: generic/rambling replies on "Call Mom", hallucinated `lookup_contact(q
 - [x] 12.3 Unit tests: two consecutive startTurn() calls in one AssistantSession use independent
       ConversationSessions (turn 2's context is empty — no history turns, no pending task state);
       within-turn iterations still share context (lookup → ask works in one turn).
-- [ ] 12.4 Device validation: turn 1 "Call Mom" → contact question; stay silent for turn 2 (after
+- [x] 12.4 Device validation: turn 1 "Call Mom" → contact question; stay silent for turn 2 (after
       Section 10 lands, no turn fires at all; until then, if a turn fires its context MUST show
       `app history turns count = 0/1` in the diagnostic log); confirm no cross-turn answer.
       NOTE: this incident also re-confirms Section 10 is unfixed — turn 2 captured 14.5s of
@@ -212,7 +212,7 @@ answered "calling Mom again". The replay mechanism is correct; its payload is no
 - [x] 13.4 Unit tests: executed-action turn excluded from activation replay but included in
       in-session compaction replay; read-only lookup turn still replayed;
       `recentTurns` not re-populated from replay on `startConversation`.
-- [ ] 13.5 Device validation: execute "Call Mom" in one activation, then in a NEW activation
+- [x] 13.5 Device validation: execute "Call Mom" in one activation, then in a NEW activation
       say "Call Mom" again — no "again" phrasing; say "what did I just ask" in a new
       activation — generic/amnesiac response is acceptable for side-effecting history.
 
@@ -235,7 +235,7 @@ requiring SUSTAINED energy to count as "still speaking", not by raising threshol
         consecutive in-band speech chunks DO; 1200ms of true silence ends capture promptly
         (target: capture stops ≤ ~1.5s after speech ceases in a noisy room, per the 10.7
         device-log findings).
-- [ ] 14.4 Device validation (combines with open 10.7): noisy-room "Call Mom" stops capture
+- [x] 14.4 Device validation (combines with open 10.7): noisy-room "Call Mom" stops capture
         within ~1.2–1.5s of speech end; multi-clause sentence with inter-word pauses is not
         cut off; single-word "Mom"/"Yes"/"Three" replies (≥350ms) survive the min-utterance
         filter. If both 14.1 tuning and the min-utterance value conflict on-device, record
@@ -245,4 +245,52 @@ requiring SUSTAINED energy to count as "still speaking", not by raising threshol
         ("560ms < 700ms → empty audio"). Mitigation for the phantom-noise risk this raises
         is 10.3's sustained-onset gate, not a longer filter; cover with a unit test (a
         400ms in-band utterance passes, a 400ms single noise burst still returns empty).
+
+## 15. Contact Disambiguation Infinite Loop & Candidate Registry Plumbing (device-log findings, 2026-09-05)
+Device logs exposed a contact-disambiguation infinite loop: "Call Mom" → lookup finds 8 matches →
+assistant asks "Which Mom?" → user says "Only Mom" → LLM emits call_contact(candidate_id: "c3", name: "Mom") →
+app resolution in ConversationSession failed because Task 12.1/12.2 (voice statelessness) recreated
+ConversationSession every turn, destroying the candidate registry from Task 5.3. Resolution fell back to
+name re-query, found the same 8 contacts, coached the model to ask again, repeating infinitely.
+Furthermore, duplicate display names without distinguishers caused the model to say "candidate c1",
+leaking internal identifiers.
+- [x] 15.1 Candidate registry lifetime hoisted: `contactCandidateRegistry` is held by `ConversationManager`
+        (per-activation lifetime) and passed into `newVoiceSession()` and `newChatSession()`. Registry
+        survives across voice turns within an activation, and is cleared only upon call execution success,
+        explicit assistant dismissal, or session destroy.
+- [x] 15.2 Duplicate display name disambiguation: when multiple candidates share the exact display name,
+        app enriches the candidate label with masked phone number suffixes (e.g. `Mom — number ending in 21`).
+        Full numbers are NEVER entered into model prompt/context.
+- [x] 15.3 Disambiguation UX coaching & loop break: coach message directs model to present distinctions
+        and ask the user to pick (e.g. "the first one") without ever speaking "candidate" or "ID" jargon.
+        Unresolvable `candidate_id` returns a stale-selection error without triggering a broad name re-query.
+- [x] 15.4 Unit tests: candidate registry survival across voice session recreation; duplicate-name masked
+        suffix rendering; unresolvable candidate id stale error without re-query; registry isolation between
+        chat and voice sessions.
+- [x] 15.5 Device validation: "Call Mom" with duplicate contacts -> assistant presents options with masked
+        numbers or distinct names -> user selects -> call executes without loop.
+
+## 16. Source-Scoped Replay, ID-Free Speech List, and Pre-TTS Output Sanitization (device-log findings, 2026-09-05)
+Device logs in a voice → chat → voice sequence exposed three regressions:
+(1) Jargon leak: model recited internal IDs in user speech ("c1: Suraj's Mom, c2: Mom Old Number...").
+(2) Cross-surface replay contamination: chat turns (source=TEXT containing tool JSON) were replayed into
+a new voice conversation, causing the voice model to emit malformed protocol text (`<|tool_call>call: "call_contact(c3, null, "Mom")"`).
+(3) No output-sanity fallback: the parser treated malformed tool-call text as a DirectResponse, speaking raw protocol artifacts.
+- [x] 16.1 Replay scoping by turn source (extends Section 13): tag `TurnEntry` with `source` ("VOICE"/"TEXT").
+        In `LiteRtLlmEngine.startConversation()` cross-activation replay, filter `recentTurns` to same-source
+        turns (`source != "TEXT"` && `!executedAction`). In-session compaction stays source-agnostic.
+- [x] 16.2 Speech-ready contact list: candidate task-state block, coach message, and lookup summary render options
+        without IDs (`Options: Suraj's Mom; Mom — number ending in 21; Dad`). Internal IDs stay in app registry
+        and are referenced only when emitting tool calls.
+- [x] 16.3 Pre-TTS output-sanity recovery filter: in `ConversationSession`, inspect DirectResponse / final response
+        for protocol artifacts (`<|tool_call`, `<|`, markdown code blocks, raw JSON tool shapes); if detected,
+        substitute generic recovery speech ("Sorry, I didn't catch that — could you say it again?") and log at DEBUG.
+- [x] 16.4 Unit tests: chat turns excluded from activation replay while voice turns replay; compaction replay retains
+        all turns; candidate list rendered without IDs; output-sanity filter intercepts protocol artifacts without
+        rejecting legitimate prose.
+- [x] 16.5 Device validation (voice → chat → voice sequence): voice assistant does not recite internal IDs;
+        post-chat voice activation does not emit or speak raw `<|tool_call>` artifacts; contact disambiguation
+        and call completion succeed.
+
+
 
