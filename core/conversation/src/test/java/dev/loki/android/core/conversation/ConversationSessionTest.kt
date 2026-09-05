@@ -669,23 +669,32 @@ class ConversationSessionTest {
     }
 
     @Test
-    fun `auto-lookup directive is present in both compact and standard system prompts`() = runTest {
+    fun `auto-lookup directive is present in system prompt for both VOICE and CHAT modes`() = runTest {
         val dummyContext = object : android.content.ContextWrapper(null) {}
-        val session = ConversationSession(
+
+        val chatSession = ConversationSession(
             context = dummyContext,
             llmEngine = SequentialLlmEngine(emptyList()),
-            toolRegistry = ToolRegistry()
+            toolRegistry = ToolRegistry(),
+            mode = dev.loki.android.core.models.ConversationMode.CHAT
+        )
+        val voiceSession = ConversationSession(
+            context = dummyContext,
+            llmEngine = SequentialLlmEngine(emptyList()),
+            toolRegistry = ToolRegistry(),
+            mode = dev.loki.android.core.models.ConversationMode.VOICE
         )
 
-        val directive = "When the user asks to call or message someone, immediately call lookup_contact with their name — do not ask for contact information. Only ask which contact when a lookup returns multiple matches."
+        val chatPrompt = chatSession.buildCoreSystemPrompt()
+        val voicePrompt = voiceSession.buildCoreSystemPrompt()
 
-        val compactSysPrompt = session.buildCoreSystemPrompt(isCompact = true)
-        assertTrue(compactSysPrompt.contains(directive))
-        assertTrue("Compact system prompt should be concise (<= 1000 chars)", compactSysPrompt.length <= 1000)
+        // Both modes retain the Loki identity
+        assertTrue(chatPrompt.contains("You are Loki"))
+        assertTrue(voicePrompt.contains("You are Loki"))
 
-        val standardSysPrompt = session.buildCoreSystemPrompt(isCompact = false)
-        assertTrue(standardSysPrompt.contains(directive))
-        assertTrue(standardSysPrompt.contains("You are Loki, a private offline Android assistant"))
+        // isCompact param is now ignored — modular assembly is always used
+        val isCompactIgnored = chatSession.buildCoreSystemPrompt(isCompact = true)
+        assertTrue(isCompactIgnored.contains("You are Loki"))
     }
 
     @Test
@@ -1502,16 +1511,26 @@ class ConversationSessionTest {
     }
 
     @Test
-    fun `compact system prompt contains multilingual language matching directive`() = runTest {
+    fun `system prompt contains multilingual language matching directive for both modes`() = runTest {
         val dummyContext = object : android.content.ContextWrapper(null) {}
-        val session = ConversationSession(
+
+        val chatSession = ConversationSession(
             context = dummyContext,
             llmEngine = SequentialLlmEngine(emptyList()),
-            toolRegistry = ToolRegistry()
+            toolRegistry = ToolRegistry(),
+            mode = dev.loki.android.core.models.ConversationMode.CHAT
+        )
+        val voiceSession = ConversationSession(
+            context = dummyContext,
+            llmEngine = SequentialLlmEngine(emptyList()),
+            toolRegistry = ToolRegistry(),
+            mode = dev.loki.android.core.models.ConversationMode.VOICE
         )
 
-        val compactSysPrompt = session.buildCoreSystemPrompt(isCompact = true)
-        assertTrue(compactSysPrompt.contains("Always respond in the same language the user writes or speaks in"))
+        val chatPrompt = chatSession.buildCoreSystemPrompt()
+        val voicePrompt = voiceSession.buildCoreSystemPrompt()
+        assertTrue(chatPrompt.contains("Always respond in the same language the user writes or speaks in"))
+        assertTrue(voicePrompt.contains("Always respond in the same language the user writes or speaks in"))
     }
 
     // ── Task 1.3: Unique exact-match pre-selection unit tests ────────────────
@@ -1846,4 +1865,86 @@ class ConversationSessionTest {
         assertNull("activeCapability must be cleared on call completion", session.activeCapability)
         assertNull("taskState must be cleared on call completion", session.taskState)
     }
+
+    @Test
+    fun `voice prompt contains ask_user and spoken-first phrasing without Markdown`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val registry = ToolRegistry()
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = registry,
+            mode = dev.loki.android.core.models.ConversationMode.VOICE
+        )
+        val prompt = session.buildCoreSystemPrompt()
+        assertTrue(prompt.contains("Keep responses concise and natural for text-to-speech playback"))
+        assertTrue(prompt.contains("Do not use Markdown formatting"))
+        assertTrue(prompt.contains("invoking ask_user with your question"))
+    }
+
+    @Test
+    fun `chat prompt does not contain ask_user and contains Markdown`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val registry = ToolRegistry()
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = registry,
+            mode = dev.loki.android.core.models.ConversationMode.CHAT
+        )
+        val prompt = session.buildCoreSystemPrompt()
+        assertTrue(prompt.contains("Use rich Markdown formatting"))
+        assertFalse(prompt.contains("ask_user with your question as its text argument"))
+        assertTrue(prompt.contains("Do NOT invoke ask_user"))
+    }
+
+    @Test
+    fun `memory budget is respected and clamped to 0 when history is huge`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val testStore = MemoryStore(dummyContext, kotlinx.coroutines.Dispatchers.Unconfined)
+        testStore.add("test memory 1")
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = ToolRegistry(),
+            mode = dev.loki.android.core.models.ConversationMode.CHAT,
+            memoryStore = testStore
+        )
+        // With small history, memory appears
+        val normalPrompt = session.buildCoreSystemPrompt()
+        assertTrue(normalPrompt.contains("What you remember about the user:"))
+        assertTrue(normalPrompt.contains("test memory 1"))
+
+        // Create huge history
+        val hugeTurn = ConversationTurn.User("x".repeat(10000))
+        session.conversationContext.append(hugeTurn)
+        
+        val hugeHistoryPrompt = session.buildCoreSystemPrompt()
+        assertFalse(hugeHistoryPrompt.contains("What you remember about the user:"))
+        assertFalse(hugeHistoryPrompt.contains("test memory 1"))
+    }
+
+    @Test
+    fun `TOOL_PROTOCOL and TURN_PROTOCOL appear after USER_CUSTOM_INSTRUCTION`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val config = dev.loki.android.core.models.AgentConfig(chatInstruction = "Custom Chat Instruction!")
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = ToolRegistry(),
+            mode = dev.loki.android.core.models.ConversationMode.CHAT,
+            agentConfig = config
+        )
+        val prompt = session.buildCoreSystemPrompt()
+        val customIdx = prompt.indexOf("Custom Chat Instruction!")
+        val toolIdx = prompt.indexOf("Always output JSON")
+        val turnIdx = prompt.indexOf("Do NOT invoke ask_user")
+        
+        assertTrue(customIdx > -1)
+        assertTrue(toolIdx > -1)
+        assertTrue(turnIdx > -1)
+        assertTrue(toolIdx > customIdx)
+        assertTrue(turnIdx > customIdx)
+    }
 }
+

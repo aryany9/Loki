@@ -513,6 +513,8 @@ class AssistantSession(
         return transcript
     }
 
+
+
     internal suspend fun handleFollowUpLoop(
         conversationManager: dev.loki.android.core.conversation.ConversationManager,
         voiceSession: dev.loki.android.core.conversation.ConversationSession,
@@ -543,7 +545,7 @@ class AssistantSession(
 
         try {
             var rounds = 0
-            while (rounds < 10 && currentTurnEndedInAskUser) {
+            while (rounds < MAX_VOICE_ROUNDS && currentTurnEndedInAskUser) {
                 rounds++
 
                 // Attempt capture for this follow-up round with 20s timeout
@@ -736,9 +738,11 @@ class AssistantSession(
                 }
             }
 
-            if (rounds >= 10 && currentTurnEndedInAskUser) {
+            if (rounds >= MAX_VOICE_ROUNDS && currentTurnEndedInAskUser) {
+                Log.i(TAG, "MAX_VOICE_ROUNDS ($MAX_VOICE_ROUNDS) reached; triggering terminal circuit-breaker")
                 val exitText = "Let's stop here."
                 conversationManager.pendingVoiceAsk = null
+                conversationManager.clearVoiceCandidates()
                 speakAndAwait(ttsEngine, exitText)
                 return exitText
             }
@@ -837,6 +841,7 @@ class AssistantSession(
 
     companion object {
         private const val TAG = "AssistantSession"
+        const val MAX_VOICE_ROUNDS = 10
         const val RMS_CEILING = 8000f
         const val THROTTLE_INTERVAL_MS = 33L
         const val SMOOTHING_ALPHA = 0.4f

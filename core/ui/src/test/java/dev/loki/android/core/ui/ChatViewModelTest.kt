@@ -934,4 +934,202 @@ class ChatViewModelTest {
 
         tempDir.deleteRecursively()
     }
+
+    @Test
+    fun `multi tool accumulation adds multiple invocations to message`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val tempDir = Files.createTempDirectory("cvm_multitool").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        
+        val fakeLlm = object : LlmEngine {
+            private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready("TestModel"))
+            override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+            override val capabilities = ModelCapabilities(supportsText = true)
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?, runtimeConfig: RuntimeConfig, force: Boolean): Boolean = true
+            override suspend fun startConversation(agentConfig: AgentConfig): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                return Result.success("") // We won't actually trigger generate here, we will mock ConversationSession
+            }
+            override fun cancel() {}
+            override fun release() {}
+        }
+        
+        val manager = object : ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        ) {
+            override fun newChatSession(): dev.loki.android.core.conversation.ConversationSession {
+                return object : dev.loki.android.core.conversation.ConversationSession(
+                    context = dummyContext,
+                    llmEngine = fakeLlm,
+                    toolRegistry = ToolRegistry()
+                ) {
+                    override fun processUtterance(
+                        userInput: String,
+                        audioBytes: ByteArray?,
+                        enableTts: Boolean,
+                        source: String
+                    ): kotlinx.coroutines.flow.Flow<dev.loki.android.core.conversation.ConversationEvent> =
+                        kotlinx.coroutines.flow.flow {
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolExecuting("tool1", emptyMap()))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolExecuted("tool1", dev.loki.android.core.tools.ToolResult.success()))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolExecuting("tool2", emptyMap()))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolExecuted("tool2", dev.loki.android.core.tools.ToolResult.success()))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.Completed("Done"))
+                        }
+                }
+            }
+        }
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        viewModel.sendMessage("Test multi tool")
+        advanceUntilIdle()
+
+        val msgs = viewModel.messages.value
+        val assistantMsg = msgs.last()
+        assertEquals(2, assistantMsg.toolInvocations.size)
+        assertEquals("tool1", assistantMsg.toolInvocations[0].toolName)
+        assertEquals("tool2", assistantMsg.toolInvocations[1].toolName)
+        
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `text streaming does not overwrite toolInvocations`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val tempDir = Files.createTempDirectory("cvm_streamtool").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        
+        val fakeLlm = object : LlmEngine {
+            private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready("TestModel"))
+            override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+            override val capabilities = ModelCapabilities(supportsText = true)
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?, runtimeConfig: RuntimeConfig, force: Boolean): Boolean = true
+            override suspend fun startConversation(agentConfig: AgentConfig): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                return Result.success("")
+            }
+            override fun cancel() {}
+            override fun release() {}
+        }
+        
+        val manager = object : ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        ) {
+            override fun newChatSession(): dev.loki.android.core.conversation.ConversationSession {
+                return object : dev.loki.android.core.conversation.ConversationSession(
+                    context = dummyContext,
+                    llmEngine = fakeLlm,
+                    toolRegistry = ToolRegistry()
+                ) {
+                    override fun processUtterance(
+                        userInput: String,
+                        audioBytes: ByteArray?,
+                        enableTts: Boolean,
+                        source: String
+                    ): kotlinx.coroutines.flow.Flow<dev.loki.android.core.conversation.ConversationEvent> =
+                        kotlinx.coroutines.flow.flow {
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolExecuting("tool1", emptyMap()))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolExecuted("tool1", dev.loki.android.core.tools.ToolResult.success()))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.GeneratingToken("Hello"))
+                            kotlinx.coroutines.delay(60)
+                            emit(dev.loki.android.core.conversation.ConversationEvent.GeneratingToken(" World"))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.Completed("Hello World"))
+                        }
+                }
+            }
+        }
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        viewModel.sendMessage("Test stream")
+        advanceUntilIdle()
+
+        val msgs = viewModel.messages.value
+        val assistantMsg = msgs.last()
+        assertEquals(1, assistantMsg.toolInvocations.size)
+        assertEquals("tool1", assistantMsg.toolInvocations[0].toolName)
+        assertEquals("Hello World", assistantMsg.text)
+        
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `fine grained tool events accumulate correctly`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val tempDir = Files.createTempDirectory("cvm_finegrained").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        
+        val fakeLlm = object : LlmEngine {
+            private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready("TestModel"))
+            override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+            override val capabilities = ModelCapabilities(supportsText = true)
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?, runtimeConfig: RuntimeConfig, force: Boolean): Boolean = true
+            override suspend fun startConversation(agentConfig: AgentConfig): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                return Result.success("")
+            }
+            override fun cancel() {}
+            override fun release() {}
+        }
+        
+        val manager = object : ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        ) {
+            override fun newChatSession(): dev.loki.android.core.conversation.ConversationSession {
+                return object : dev.loki.android.core.conversation.ConversationSession(
+                    context = dummyContext,
+                    llmEngine = fakeLlm,
+                    toolRegistry = ToolRegistry()
+                ) {
+                    override fun processUtterance(
+                        userInput: String,
+                        audioBytes: ByteArray?,
+                        enableTts: Boolean,
+                        source: String
+                    ): kotlinx.coroutines.flow.Flow<dev.loki.android.core.conversation.ConversationEvent> =
+                        kotlinx.coroutines.flow.flow {
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolCallStarted("call_1", "tool_a", emptyMap()))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolCallCompleted("call_1", "tool_a", dev.loki.android.core.tools.ToolResult.success()))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolCallStarted("call_2", "tool_b", emptyMap()))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.ToolCallFailed("call_2", "tool_b", "error"))
+                            emit(dev.loki.android.core.conversation.ConversationEvent.Completed("Done"))
+                        }
+                }
+            }
+        }
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        viewModel.sendMessage("Test fine grained")
+        advanceUntilIdle()
+
+        val msgs = viewModel.messages.value
+        val assistantMsg = msgs.last()
+        assertEquals(2, assistantMsg.toolInvocations.size)
+        assertEquals("tool_a", assistantMsg.toolInvocations[0].toolName)
+        assertEquals(true, assistantMsg.toolInvocations[0].result?.success)
+        assertEquals("tool_b", assistantMsg.toolInvocations[1].toolName)
+        assertEquals(false, assistantMsg.toolInvocations[1].isExecuting)
+        
+        tempDir.deleteRecursively()
+    }
 }

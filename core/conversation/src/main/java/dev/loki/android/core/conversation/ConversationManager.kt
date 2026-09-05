@@ -2,6 +2,7 @@ package dev.loki.android.core.conversation
 
 import android.content.Context
 import dev.loki.android.core.llm.LlmEngine
+import dev.loki.android.core.models.ConversationMode
 import dev.loki.android.core.models.AgentConfig
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.ToolResult
@@ -16,6 +17,18 @@ sealed interface ConversationEvent {
     data class GeneratingToken(val partial: String) : ConversationEvent
     data class ToolExecuting(val toolName: String, val args: Map<String, Any?>) : ConversationEvent
     data class ToolExecuted(val toolName: String, val result: ToolResult) : ConversationEvent
+    /**
+     * Emitted when a tool execution begins. [callId] correlates with [ToolCallCompleted] and [ToolCallFailed].
+     */
+    data class ToolCallStarted(val callId: String, val toolName: String, val arguments: Map<String, Any?>) : ConversationEvent
+    /**
+     * Emitted when a tool execution completes successfully. [callId] matches the originating [ToolCallStarted].
+     */
+    data class ToolCallCompleted(val callId: String, val toolName: String, val result: dev.loki.android.core.tools.ToolResult) : ConversationEvent
+    /**
+     * Emitted when a tool execution fails. [callId] matches the originating [ToolCallStarted].
+     */
+    data class ToolCallFailed(val callId: String, val toolName: String, val error: String) : ConversationEvent
     /**
      * Emitted when a tool with [requiresConfirmation] = true is about to execute.
      * The session will suspend until [ConversationSession.respondToConfirmation] is called,
@@ -57,7 +70,7 @@ data class PendingVoiceConfirmation(
  * ConversationManager manages LLM & tool coordination, providing scoped ConversationSessions
  * for persistent chat and ephemeral voice interactions.
  */
-class ConversationManager(
+open class ConversationManager(
     private val context: Context,
     val llmEngine: LlmEngine,
     val toolRegistry: ToolRegistry,
@@ -160,7 +173,7 @@ class ConversationManager(
         return conversationStore.renameConversation(id, title)
     }
 
-    fun newChatSession(): ConversationSession {
+    open fun newChatSession(): ConversationSession {
         val convId = activeConversationId ?: run {
             val newId = UUID.randomUUID().toString()
             activeConversationId = newId
@@ -178,6 +191,7 @@ class ConversationManager(
             conversationStore = conversationStore,
             memoryStore = memoryStore,
             conversationId = convId,
+            mode = ConversationMode.CHAT,
             ioDispatcher = ioDispatcher,
             contactCandidateRegistry = chatContactCandidates
         )
@@ -196,6 +210,7 @@ class ConversationManager(
             conversationStore = null,
             memoryStore = memoryStore,
             conversationId = null,
+            mode = ConversationMode.VOICE,
             ioDispatcher = ioDispatcher,
             contactCandidateRegistry = sharedVoiceCandidates,
             pendingAsk = pendingVoiceAsk,

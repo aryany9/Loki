@@ -350,4 +350,75 @@ class ToolRegistryTest {
         assertTrue(available.any { it.name == "call_contact" })
         assertTrue(available.any { it.name == "lookup_contact" })
     }
+
+    // ── Task 3.4: ToolPolicy mode filtering ──────────────────────────────────
+
+    private fun makeAskUserTool() = object : LocalTool {
+        override val name = "ask_user"
+        override val description = "Ask user a question"
+        override val parameters: Map<String, ToolParam> = emptyMap()
+        override val requiredPermissions: List<String> = emptyList()
+        override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult =
+            ToolResult.success(emptyMap())
+    }
+
+    @Test
+    fun `ToolPolicy ALL allows every tool by default`() {
+        val registry = ToolRegistry()
+        registry.register(DummyTool())
+        registry.register(makeAskUserTool())
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val available = registry.getAvailableTools(
+            context = dummyContext,
+            policy = ToolPolicy.ALL
+        )
+        assertEquals(2, available.size)
+    }
+
+    @Test
+    fun `ChatToolPolicy excludes ask_user from effective tool set`() {
+        val registry = ToolRegistry()
+        registry.register(DummyTool())
+        registry.register(makeAskUserTool())
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val chatPolicy = ToolPolicy { it.name != "ask_user" }
+        val available = registry.getAvailableTools(
+            context = dummyContext,
+            policy = chatPolicy
+        )
+        assertEquals(1, available.size)
+        assertFalse(available.any { it.name == "ask_user" })
+        assertTrue(available.any { it.name == "dummy_tool" })
+    }
+
+    @Test
+    fun `VoiceToolPolicy permits ask_user in effective tool set`() {
+        val registry = ToolRegistry()
+        registry.register(DummyTool())
+        registry.register(makeAskUserTool())
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val voicePolicy = ToolPolicy { true }
+        val available = registry.getAvailableTools(
+            context = dummyContext,
+            policy = voicePolicy
+        )
+        assertEquals(2, available.size)
+        assertTrue(available.any { it.name == "ask_user" })
+    }
+
+    @Test
+    fun `existing callers work without specifying policy (backward compatible default)`() {
+        val registry = ToolRegistry()
+        registry.register(DummyTool())
+        registry.register(makeAskUserTool())
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        // Call without policy parameter — must compile and return all tools
+        val available = registry.getAvailableTools(context = dummyContext)
+        assertEquals(2, available.size)
+    }
 }
+

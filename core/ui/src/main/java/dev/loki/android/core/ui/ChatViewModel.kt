@@ -221,8 +221,8 @@ class ChatViewModel(
         generationJob?.cancel()
         generationJob = viewModelScope.launch {
             var lastUpdateTime = 0L
-            var latestToolResult: ToolResult? = null
-            var latestToolName: String? = null
+            var currentToolInvocations = mutableListOf<ToolInvocation>()
+            var inFlightCallId: String? = null
 
             try {
                 if (conversationManager.currentConversationId == null) {
@@ -245,16 +245,18 @@ class ChatViewModel(
                             }
                         }
                         is ConversationEvent.ToolExecuting -> {
-                            latestToolName = event.toolName
+                            val callId = inFlightCallId ?: java.util.UUID.randomUUID().toString()
+                            val newInvocation = ToolInvocation(
+                                id = callId,
+                                toolName = event.toolName,
+                                arguments = event.args,
+                                result = null,
+                                isExecuting = true
+                            )
+                            currentToolInvocations = (currentToolInvocations + newInvocation).toMutableList()
+                            inFlightCallId = callId
                             _messages.value = _messages.value.map { msg ->
-                                if (msg.id == inFlightMessageId) {
-                                    msg.copy(
-                                        isThinking = true,
-                                        isStreaming = false,
-                                        text = "Executing ${event.toolName}...",
-                                        toolName = event.toolName
-                                    )
-                                } else msg
+                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
                             }
                         }
                         is ConversationEvent.ConfirmationRequired -> {
@@ -266,14 +268,13 @@ class ChatViewModel(
                         }
                         is ConversationEvent.ToolExecuted -> {
                             _pendingConfirmation.value = null
-                            latestToolResult = event.result
+                            val cid = inFlightCallId
+                            currentToolInvocations = currentToolInvocations.map { inv ->
+                                if (inv.id == cid) inv.copy(result = event.result, isExecuting = false) else inv
+                            }.toMutableList()
+                            inFlightCallId = null
                             _messages.value = _messages.value.map { msg ->
-                                if (msg.id == inFlightMessageId) {
-                                    msg.copy(
-                                        toolResult = event.result,
-                                        toolName = latestToolName ?: msg.toolName
-                                    )
-                                } else msg
+                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
                             }
                         }
                         is ConversationEvent.GeneratingToken -> {
@@ -285,9 +286,7 @@ class ChatViewModel(
                                         msg.copy(
                                             text = event.partial,
                                             isThinking = false,
-                                            isStreaming = true,
-                                            toolResult = latestToolResult ?: msg.toolResult,
-                                            toolName = latestToolName ?: msg.toolName
+                                            isStreaming = true
                                         )
                                     } else msg
                                 }
@@ -295,20 +294,47 @@ class ChatViewModel(
                         }
                         is ConversationEvent.Completed -> {
                             _pendingConfirmation.value = null
-                            val finalToolResult = event.toolResult ?: latestToolResult
-                            val finalToolName = latestToolName
                             _messages.value = _messages.value.map { msg ->
                                 if (msg.id == inFlightMessageId) {
                                     msg.copy(
                                         text = event.finalResponse,
                                         isThinking = false,
-                                        isStreaming = false,
-                                        toolResult = finalToolResult,
-                                        toolName = finalToolName ?: msg.toolName
+                                        isStreaming = false
                                     )
                                 } else msg
                             }
                             refreshConversations()
+                        }
+                        is ConversationEvent.ToolCallStarted -> {
+                            val newInvocation = ToolInvocation(
+                                id = event.callId,
+                                toolName = event.toolName,
+                                arguments = event.arguments,
+                                isExecuting = true
+                            )
+                            currentToolInvocations = (currentToolInvocations + newInvocation).toMutableList()
+                            inFlightCallId = event.callId
+                            _messages.value = _messages.value.map { msg ->
+                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
+                            }
+                        }
+                        is ConversationEvent.ToolCallCompleted -> {
+                            currentToolInvocations = currentToolInvocations.map { inv ->
+                                if (inv.id == event.callId) inv.copy(result = event.result, isExecuting = false) else inv
+                            }.toMutableList()
+                            inFlightCallId = null
+                            _messages.value = _messages.value.map { msg ->
+                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
+                            }
+                        }
+                        is ConversationEvent.ToolCallFailed -> {
+                            currentToolInvocations = currentToolInvocations.map { inv ->
+                                if (inv.id == event.callId) inv.copy(isExecuting = false) else inv
+                            }.toMutableList()
+                            inFlightCallId = null
+                            _messages.value = _messages.value.map { msg ->
+                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
+                            }
                         }
                         is ConversationEvent.ContextCompacted -> {
                             android.util.Log.i("ChatViewModel", "Context compacted: ${event.message}")

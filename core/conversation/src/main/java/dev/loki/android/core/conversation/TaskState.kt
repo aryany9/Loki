@@ -5,6 +5,21 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
+ * Describes what type of user response the model is currently expecting.
+ * Derived from [TaskState] without changing any existing constructor signatures.
+ */
+enum class ExpectedResponseSemantics {
+    /** Model is waiting for the user to select among multiple candidates. */
+    SELECTION,
+    /** Model is waiting for the user to confirm or deny a proposed action. */
+    CONFIRMATION,
+    /** Model needs a specific missing piece of information from the user. */
+    MISSING_SLOT,
+    /** Model accepts any free-form user utterance. */
+    FREE_TEXT,
+}
+
+/**
  * Sealed interface representing application-owned task state for multi-turn tool flows.
  *
  * The advancing tool and resolved state are derived directly from the state's own fields
@@ -16,6 +31,9 @@ sealed interface TaskState {
 
     /** Whether the state is resolved and no longer blocks capability switching. */
     val resolved: Boolean
+
+    val expectedSemantics: ExpectedResponseSemantics
+        get() = ExpectedResponseSemantics.FREE_TEXT
 }
 
 /**
@@ -58,6 +76,13 @@ data class ContactResolution(
             selectedId == null && candidates.isNotEmpty() -> "select_contact"
             selectedId != null && !confirmed -> "call_contact"
             else -> null
+        }
+
+    override val expectedSemantics: ExpectedResponseSemantics
+        get() = when {
+            selectedId == null && candidates.isNotEmpty() && !confirmed -> ExpectedResponseSemantics.SELECTION
+            selectedId != null && !confirmed -> ExpectedResponseSemantics.CONFIRMATION
+            else -> ExpectedResponseSemantics.FREE_TEXT
         }
 
     /**

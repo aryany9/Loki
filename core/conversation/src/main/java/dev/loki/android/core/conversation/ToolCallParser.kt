@@ -29,48 +29,22 @@ object ToolCallParser {
             try {
                 val element = json.parseToJsonElement(jsonText) as? JsonObject
                 if (element != null) {
-                    if (element.containsKey("tool")) {
-                        val toolName = element["tool"]?.jsonPrimitive?.content ?: ""
-                        val argsMap = mutableMapOf<String, Any?>()
-                        val argsElement = element["arguments"]
-                        if (argsElement is JsonObject) {
-                            argsElement.forEach { (key, value) ->
-                                argsMap[key] = value.jsonPrimitive.content
-                            }
-                        } else if (toolName == "ask_user" && argsElement != null) {
-                            val textContent = try {
-                                argsElement.jsonPrimitive.content
-                            } catch (_: Throwable) {
-                                argsElement.toString()
-                            }
-                            argsMap["text"] = textContent
-                            try {
-                                android.util.Log.i("ToolCallParser", "[ToolCallParser] ask_user arguments-as-string repair applied")
-                            } catch (_: Throwable) {}
-                        }
-
-                        if (toolName == "ask_user" && !argsMap.containsKey("text") && element.containsKey("text")) {
-                            val topLevelText = element["text"]?.jsonPrimitive?.content ?: ""
-                            argsMap["text"] = topLevelText
-                            try {
-                                android.util.Log.i("ToolCallParser", "[ToolCallParser] ask_user arguments-as-string repair applied")
-                            } catch (_: Throwable) {}
-                        }
-
-                        return ParsedLlmResponse.ToolCall(toolName, argsMap)
-                    } else if (element.containsKey("response")) {
-                        val resp = element["response"]?.jsonPrimitive?.content ?: ""
-                        return ParsedLlmResponse.DirectResponse(resp)
-                    }
+                    val parsed = parseJsonObject(element)
+                    if (parsed != null) return parsed
                 }
             } catch (_: Exception) {
                 // Try fallback recovery below
             }
         }
 
-        // If text contains markdown code blocks with extra text outside, reject as malformed
-        if (trimmed.contains("```") && (!trimmed.startsWith("```") || !trimmed.endsWith("```"))) {
+        // If text contains markdown code blocks with extra text outside, reject as malformed ONLY if it contains a tool call
+        if (trimmed.contains("```") && trimmed.contains("\"tool\":") && (!trimmed.startsWith("```") || !trimmed.endsWith("```"))) {
             return ParsedLlmResponse.Malformed(raw, "Expected one JSON object")
+        }
+
+        // If text contains markdown code blocks without any tool markers, treat as a direct prose/markdown response
+        if (trimmed.contains("```") && !trimmed.contains("\"tool\":")) {
+            return ParsedLlmResponse.DirectResponse(trimmed)
         }
 
         // Fallback 1: Truncated JSON response string {"response": "..."
@@ -96,6 +70,12 @@ object ToolCallParser {
             return askUserRepair
         }
 
+        // Fallback 2.5: Embedded JSON block in natural language (e.g. conversational response with trailing tool call)
+        val embeddedResult = tryParseEmbeddedJson(trimmed)
+        if (embeddedResult != null) {
+            return embeddedResult
+        }
+
         // Fallback 3: Natural language response (not JSON format or code block)
         if (!trimmed.startsWith("{") && !trimmed.startsWith("```") && !trimmed.contains("\"tool\":") && !trimmed.contains("\"response\":")) {
             var unquoted = trimmed
@@ -109,6 +89,139 @@ object ToolCallParser {
         }
 
         return ParsedLlmResponse.Malformed(raw, "Expected one JSON object")
+    }
+
+    internal fun parseJsonObject(element: JsonObject): ParsedLlmResponse? {
+        if (element.containsKey("tool")) {
+            val toolName = element["tool"]?.jsonPrimitive?.content ?: ""
+            val argsMap = mutableMapOf<String, Any?>()
+            val argsElement = element["arguments"]
+            if (argsElement is JsonObject) {
+                argsElement.forEach { (key, value) ->
+                    argsMap[key] = value.jsonPrimitive.content
+                }
+            } else if (toolName == "ask_user" && argsElement != null) {
+                val textContent = try {
+                    argsElement.jsonPrimitive.content
+                } catch (_: Throwable) {
+                    argsElement.toString()
+                }
+                argsMap["text"] = textContent
+                try {
+                    android.util.Log.i("ToolCallParser", "[ToolCallParser] ask_user arguments-as-string repair applied")
+                } catch (_: Throwable) {}
+            }
+
+            if (toolName == "ask_user" && !argsMap.containsKey("text") && element.containsKey("text")) {
+                val topLevelText = element["text"]?.jsonPrimitive?.content ?: ""
+                argsMap["text"] = topLevelText
+                try {
+                    android.util.Log.i("ToolCallParser", "[ToolCallParser] ask_user arguments-as-string repair applied")
+                } catch (_: Throwable) {}
+            }
+
+            return ParsedLlmResponse.ToolCall(toolName, argsMap)
+        } else if (element.containsKey("response")) {
+            val resp = element["response"]?.jsonPrimitive?.content ?: ""
+            return ParsedLlmResponse.DirectResponse(resp)
+        }
+        return null
+    }
+
+    private val JSON_MARKER_REGEX = Regex("""\{\s*"((?:tool)|(?:response))"\s*:""")
+
+    internal fun tryParseEmbeddedJson(trimmed: String): ParsedLlmResponse? {
+        val match = JSON_MARKER_REGEX.find(trimmed) ?: return null
+        val braceStart = match.range.first
+        val textBefore = trimmed.substring(0, braceStart).trim()
+
+        var depth = 0
+        var inString = false
+        var escape = false
+        var braceEnd = -1
+        for (i in braceStart until trimmed.length) {
+            val c = trimmed[i]
+            if (escape) {
+                escape = false
+                continue
+            }
+            if (c == '\\') {
+                escape = true
+                continue
+            }
+            if (c == '"') {
+                inString = !inString
+                continue
+            }
+            if (!inString) {
+                if (c == '{') depth++
+                else if (c == '}') {
+                    depth--
+                    if (depth == 0) {
+                        braceEnd = i
+                        break
+                    }
+                }
+            }
+        }
+
+        if (braceEnd <= braceStart) {
+            braceEnd = trimmed.lastIndexOf('}')
+        }
+
+        if (braceEnd > braceStart) {
+            val jsonCandidate = trimmed.substring(braceStart, braceEnd + 1)
+            try {
+                val element = json.parseToJsonElement(jsonCandidate) as? JsonObject
+                if (element != null) {
+                    val parsed = parseJsonObject(element)
+                    if (parsed != null) {
+                        try {
+                            android.util.Log.i("ToolCallParser", "ToolCallParser fallback 2.5 fired (embedded JSON): rawLength=${trimmed.length}, textBeforeLength=${textBefore.length}")
+                        } catch (_: Throwable) {}
+                        return when (parsed) {
+                            is ParsedLlmResponse.ToolCall -> {
+                                if (parsed.tool == "ask_user") {
+                                    val question = parsed.arguments["text"]?.toString()?.trim() ?: ""
+                                    val combinedText = when {
+                                        textBefore.isBlank() -> question
+                                        question.isBlank() -> textBefore
+                                        textBefore.endsWith(question, ignoreCase = true) -> textBefore
+                                        else -> "$textBefore\n\n$question"
+                                    }
+                                    ParsedLlmResponse.ToolCall("ask_user", mapOf("text" to combinedText))
+                                } else {
+                                    parsed
+                                }
+                            }
+                            is ParsedLlmResponse.DirectResponse -> {
+                                val resp = parsed.text.trim()
+                                val combinedText = when {
+                                    textBefore.isBlank() -> resp
+                                    resp.isBlank() -> textBefore
+                                    resp.startsWith(textBefore, ignoreCase = true) -> resp
+                                    textBefore.endsWith(resp, ignoreCase = true) -> textBefore
+                                    else -> "$textBefore\n\n$resp"
+                                }
+                                ParsedLlmResponse.DirectResponse(combinedText)
+                            }
+                            is ParsedLlmResponse.Malformed -> null
+                        }
+                    }
+                }
+            } catch (_: Throwable) {
+                // Ignore and fall through to textBefore check below
+            }
+        }
+
+        if (textBefore.isNotBlank()) {
+            try {
+                android.util.Log.i("ToolCallParser", "ToolCallParser fallback 2.5 fired (recovering pre-JSON text): textLength=${textBefore.length}")
+            } catch (_: Throwable) {}
+            return ParsedLlmResponse.DirectResponse(textBefore)
+        }
+
+        return null
     }
 
     internal fun tryRepairAskUser(trimmed: String): ParsedLlmResponse.ToolCall? {

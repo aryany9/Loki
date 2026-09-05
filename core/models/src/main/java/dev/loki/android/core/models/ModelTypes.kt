@@ -143,7 +143,9 @@ data class AgentConfig(
     val systemInstruction: String = DEFAULT_SYSTEM_PROMPT,
     val generationConfig: GenerationConfig = GenerationConfig(),
     val runtimeConfig: RuntimeConfig = RuntimeConfig(),
-    val conversationLanguage: String = "auto"
+    val conversationLanguage: String = "auto",
+    val voiceInstruction: String = "",
+    val chatInstruction: String = ""
 ) {
     companion object {
         const val DEFAULT_SYSTEM_PROMPT = "You are Loki, a private offline Android assistant running on the user's device."
@@ -157,3 +159,9 @@ data class ModelCapabilities(
     val supportsAudioInput: Boolean = false,
     val supportsVisionInput: Boolean = false
 )
+
+@Serializable
+enum class ConversationMode {
+    VOICE,
+    CHAT
+}
