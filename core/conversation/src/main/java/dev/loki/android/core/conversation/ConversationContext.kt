@@ -7,8 +7,8 @@ import dev.loki.android.core.tools.ToolResult
  * Manages the multi-turn history and token budget for on-device LLM reasoning.
  */
 class ConversationContext(
-    private val maxTurns: Int = 10,
-    private val maxTokenBudget: Int = 1500
+    val maxTurns: Int = 10,
+    val maxTokenBudget: Int = 1500
 ) {
     private val turns = mutableListOf<ConversationTurn>()
 

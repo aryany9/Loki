@@ -48,6 +48,10 @@
             android:name="libOpenCL.so"
             android:required="false" />
 
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+
         <!-- Main settings / launcher activity -->
         <activity
             android:name=".ui.MainActivity"

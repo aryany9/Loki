@@ -885,7 +885,7 @@ fun ModelStatusBadge(
                 )
 
                 val modelName = when (modelState) {
-                    is LlmModelState.Ready -> (modelState as LlmModelState.Ready).modelName
+                    is LlmModelState.Ready -> "${(modelState as LlmModelState.Ready).modelName} · ${(modelState as LlmModelState.Ready).activeBackend}"
                     is LlmModelState.Loading -> "Qwen 2.5 / LiteRT"
                     is LlmModelState.Error -> "Model Error"
                     is LlmModelState.NotLoaded -> "None Loaded"

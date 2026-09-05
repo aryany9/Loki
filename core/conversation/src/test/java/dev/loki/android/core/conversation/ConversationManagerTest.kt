@@ -144,11 +144,14 @@ class ConversationManagerTest {
     }
 
     @Test
-    fun `VoiceSession starts fresh without leaking previous turns`() = runTest {
+    fun `VoiceSession is stateless and returns fresh empty context across voice activations`() = runTest {
         val toolRegistry = ToolRegistry()
         toolRegistry.register(TestTimeTool())
 
-        val mockLlm = MockLlmEngine(listOf("""{"tool": "get_current_time", "arguments": {}}"""))
+        val mockLlm = MockLlmEngine(listOf(
+            """{"tool": "get_current_time", "arguments": {}}""",
+            """{"response": "It is 3:00 PM"}"""
+        ))
         val dummyContext = object : android.content.ContextWrapper(null) {}
         val manager = ConversationManager(dummyContext, mockLlm, toolRegistry, ttsEngine = null)
 
@@ -156,7 +159,8 @@ class ConversationManagerTest {
         voiceSession1.processUtterance("Turn 1", enableTts = false).toList()
 
         val voiceSession2 = manager.newVoiceSession()
-        assertEquals(0, voiceSession2.conversationContext.getTurns().size)
+        assertTrue("voiceSession2 must start with empty context on new activation", voiceSession2.conversationContext.getTurns().isEmpty())
+        assertEquals(1, voiceSession2.conversationContext.maxTurns)
     }
 
     class TrackingLlmEngine : LlmEngine {
@@ -657,6 +661,34 @@ class ConversationManagerTest {
         val prompt = mockLlm.lastStartedConfig?.systemInstruction
         org.junit.Assert.assertNotNull(prompt)
         assertTrue(prompt!!.contains("Additional Instructions:\nYou are a friendly companion.\n\nAlways respond in Hindi."))
+    }
+
+    @Test
+    fun `voice activations use independent fresh sessions without cross-turn history`() = runTest {
+        val mockLlm = MockLlmEngine(
+            listOf(
+                """{"response": "Mom's number is 1234567890."}""",
+                """{"response": "Placing the call to Mom."}"""
+            )
+        )
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = mockLlm,
+            toolRegistry = ToolRegistry()
+        )
+
+        // Activation 1
+        val session1 = manager.newVoiceSession()
+        session1.processUtterance("who is mom", enableTts = false, source = "DIRECT_AUDIO").toList()
+
+        // Activation 2 (fresh voice session)
+        val session2 = manager.newVoiceSession()
+        assertEquals(0, session2.conversationContext.getTurns().size)
+        session2.processUtterance("call her", enableTts = false, source = "DIRECT_AUDIO").toList()
+
+        // Session 2 should only contain its own turns (user + assistant, maxTurns=1)
+        assertEquals(2, session2.conversationContext.getTurns().size)
     }
 }
 

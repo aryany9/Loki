@@ -38,21 +38,29 @@ object LitertLmContainerInspector {
         "tf_lite_vision_adapter"
     )
 
+    private val QUALCOMM_SOC_PATTERNS = listOf(
+        "SM8850", "SM8750", "SM8650", "SM8550", "SM8475", "SM8450", "SM7675", "SM7550", "SM7475"
+    )
+
     /** Structural facts about a `.litertlm` container. */
     data class Info(
         val isLitertLmContainer: Boolean,
         val supportsAudioInput: Boolean,
-        val supportsVisionInput: Boolean
+        val supportsVisionInput: Boolean,
+        val isNpuTargeted: Boolean = false,
+        val npuTargetSoc: String? = null
     )
 
     fun unknown() = Info(
         isLitertLmContainer = false,
         supportsAudioInput = false,
-        supportsVisionInput = false
+        supportsVisionInput = false,
+        isNpuTargeted = false,
+        npuTargetSoc = null
     )
 
     /**
-     * Inspects [file] and reports which modalities the container declares.
+     * Inspects [file] and reports which modalities and backend targets the container declares.
      * Reads at most [HEADER_SCAN_BYTES] from the start of the file.
      */
     fun inspect(file: File): Info {
@@ -63,7 +71,7 @@ object LitertLmContainerInspector {
 
                 val buf = ByteArray(scanLength)
                 raf.readFully(buf, 0, scanLength)
-                inspectBytes(buf)
+                inspectBytes(buf, file.name)
             }
         } catch (e: IOException) {
             unknown()
@@ -71,15 +79,43 @@ object LitertLmContainerInspector {
     }
 
     /** Pure-bytes variant used by unit tests. */
-    fun inspectBytes(bytes: ByteArray): Info {
+    fun inspectBytes(bytes: ByteArray, fileName: String? = null): Info {
         if (bytes.size < MAGIC.length || !bytes.startsWith(MAGIC.toByteArray(Charsets.US_ASCII))) {
             return unknown()
         }
         val header = bytes.toString(Charsets.US_ASCII)
+        val headerUpper = header.uppercase()
+
+        var detectedSoc: String? = null
+        for (soc in QUALCOMM_SOC_PATTERNS) {
+            if (headerUpper.contains(soc)) {
+                detectedSoc = soc
+                break
+            }
+        }
+
+        if (detectedSoc == null && fileName != null) {
+            val fileUpper = fileName.uppercase()
+            for (soc in QUALCOMM_SOC_PATTERNS) {
+                if (fileUpper.contains(soc)) {
+                    detectedSoc = soc
+                    break
+                }
+            }
+        }
+
+        val isNpu = detectedSoc != null ||
+                headerUpper.contains("QUALCOMM") ||
+                headerUpper.contains("QNN") ||
+                headerUpper.contains("HTP") ||
+                (fileName?.lowercase()?.contains("qualcomm") == true)
+
         return Info(
             isLitertLmContainer = true,
             supportsAudioInput = AUDIO_SECTION_MARKERS.any { header.contains(it) },
-            supportsVisionInput = VISION_SECTION_MARKERS.any { header.contains(it) }
+            supportsVisionInput = VISION_SECTION_MARKERS.any { header.contains(it) },
+            isNpuTargeted = isNpu,
+            npuTargetSoc = detectedSoc
         )
     }
 

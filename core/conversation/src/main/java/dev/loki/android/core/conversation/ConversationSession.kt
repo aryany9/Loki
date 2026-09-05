@@ -58,8 +58,22 @@ open class ConversationSession(
     var taskState: TaskState? = null
         internal set
 
+    var needsSchemaInjection: Boolean = true
+        internal set
+
+    private val lastContactCandidates = mutableMapOf<String, ContactCandidate>()
+
     @Volatile
     private var pendingConfirmation: PendingConfirmation? = null
+
+    private fun isValidPhoneNumber(phone: String?): Boolean {
+        if (phone.isNullOrBlank()) return false
+        val trimmed = phone.trim()
+        if (trimmed.equals("null", ignoreCase = true) || trimmed.equals("N/A", ignoreCase = true)) return false
+        if (trimmed.contains("...") || trimmed.contains("…")) return false
+        val digitCount = trimmed.count { it.isDigit() }
+        return digitCount >= 5
+    }
 
     /**
      * Resolves the currently pending confirmation gate with the given [accepted] verdict.
@@ -120,10 +134,20 @@ open class ConversationSession(
 
         // Initialize persistent native conversation with KV-prefilled CORE prompt ONCE per logical conversation session
         if (conversationContext.getTurns().size <= 1) {
-            val corePrompt = buildCoreSystemPrompt()
+            needsSchemaInjection = true
+            val activeBackend = when (val state = llmEngine.modelState.value) {
+                is dev.loki.android.core.llm.LlmModelState.Ready -> state.activeBackend
+                else -> null
+            }
+            val corePrompt = buildCoreSystemPrompt(isCompact = (activeBackend == dev.loki.android.core.models.ExecutionBackend.NPU))
             val effectiveConfig = agentConfig.copy(systemInstruction = corePrompt)
             val started = llmEngine.startConversation(effectiveConfig)
             TurnLogger.logTurnStart(turnId, "STATEFUL_INIT (success=$started)")
+        }
+
+        llmEngine.onContextCompacted = { message ->
+            needsSchemaInjection = true
+            trySend(ConversationEvent.ContextCompacted(message))
         }
 
         try {
@@ -146,13 +170,24 @@ open class ConversationSession(
                 )
                 TurnLogger.logTools(turnId, currentAvailableTools.size, currentDisabledTools.size)
 
+                val activeBackend = when (val state = llmEngine.modelState.value) {
+                    is dev.loki.android.core.llm.LlmModelState.Ready -> state.activeBackend
+                    else -> null
+                }
+                val isCompactSchemas = (activeBackend == dev.loki.android.core.models.ExecutionBackend.NPU)
+                val shouldInjectSchemas = needsSchemaInjection || (conversationContext.getTurns().size <= 1 && iterations == 1)
                 val perTurnPrompt = buildPerTurnPrompt(
                     availableTools = currentAvailableTools,
                     disabledTools = currentDisabledTools,
                     activeCapability = activeCapability,
                     taskState = taskState,
-                    isActivationTurn = isActivationTurn
+                    isActivationTurn = isActivationTurn,
+                    includeToolSchemas = shouldInjectSchemas,
+                    compactToolSchemas = isCompactSchemas
                 )
+                if (shouldInjectSchemas) {
+                    needsSchemaInjection = false
+                }
                 isActivationTurn = false
 
                 val content = if (iterations == 1) userInput else currentTurnPrompt
@@ -180,7 +215,8 @@ open class ConversationSession(
 
                 TurnLogger.logPrompt(turnId, promptToSend)
 
-                val maxTokens = agentConfig.generationConfig.maxOutputTokens ?: 256
+                val defaultBudget = if (activeBackend == dev.loki.android.core.models.ExecutionBackend.NPU) 256 else 512
+                val maxTokens = agentConfig.generationConfig.maxOutputTokens ?: defaultBudget
                 val cumulativePartial = StringBuilder()
                 val scopedGrammar = GrammarBuilder.buildFrom(currentAvailableTools)
                 val llmResult = llmEngine.generate(
@@ -245,6 +281,8 @@ open class ConversationSession(
 
                             // Advance state
                             taskState = resolution.copy(selectedId = matchedCandidate.id)
+                            lastContactCandidates[matchedCandidate.id.lowercase()] = matchedCandidate
+                            lastContactCandidates[matchedCandidate.name.lowercase()] = matchedCandidate
                             val successResult = ToolResult.success(
                                 mapOf(
                                     "candidate_id" to matchedCandidate.id,
@@ -301,20 +339,87 @@ open class ConversationSession(
                         val resolvedArguments = parsed.arguments.toMutableMap()
                         if (parsed.tool == "call_contact") {
                             val candId = parsed.arguments["candidate_id"]?.toString()?.trim()
+                            val nameArg = parsed.arguments["name"]?.toString()?.trim()
+                            val phoneArg = parsed.arguments["phone_number"]?.toString()?.trim()
+                            val hasValidPhone = isValidPhoneNumber(phoneArg)
+
+                            // Candidate resolution order: 1) taskState candidates, 2) lastContactCandidates registry, 3) name/search re-query
+                            var cand: ContactCandidate? = null
                             val resolution = taskState as? ContactResolution
                             if (resolution != null) {
-                                val cand = if (!candId.isNullOrBlank()) {
+                                cand = if (!candId.isNullOrBlank()) {
                                     resolution.candidates.firstOrNull { it.id.equals(candId, ignoreCase = true) }
                                 } else if (resolution.selectedId != null) {
                                     resolution.candidates.firstOrNull { it.id == resolution.selectedId }
                                 } else if (resolution.candidates.size == 1) {
                                     resolution.candidates[0]
                                 } else null
+                            }
 
-                                if (cand != null) {
-                                    resolvedArguments["phone_number"] = cand.phoneNumber
-                                    resolvedArguments["name"] = cand.name
-                                    resolvedArguments["candidate_id"] = cand.id
+                            if (cand == null && !candId.isNullOrBlank()) {
+                                cand = lastContactCandidates[candId.lowercase()]
+                            }
+
+                            if (cand != null) {
+                                resolvedArguments["phone_number"] = cand.phoneNumber
+                                resolvedArguments["name"] = cand.name
+                                resolvedArguments["candidate_id"] = cand.id
+                                taskState = (resolution ?: ContactResolution(candidates = listOf(cand))).copy(selectedId = cand.id)
+                                lastContactCandidates[cand.id.lowercase()] = cand
+                                lastContactCandidates[cand.name.lowercase()] = cand
+                            } else if (!hasValidPhone) {
+                                val searchQuery = nameArg?.takeIf { it.isNotBlank() && !it.equals("N/A", ignoreCase = true) }
+                                    ?: candId?.takeIf { it.isNotBlank() && !it.equals("N/A", ignoreCase = true) }
+
+                                if (!searchQuery.isNullOrBlank()) {
+                                    val lookupExec = toolRegistry.executeDetailed(
+                                        context = context,
+                                        name = "lookup_contact",
+                                        arguments = mapOf("query" to searchQuery),
+                                        permissionManager = permissionManager
+                                    )
+                                    if (lookupExec is ToolExecutionResult.Success) {
+                                        val contactsJson = lookupExec.toolResult.data?.get("contacts")
+                                            ?: lookupExec.toolResult.data?.get("matches")
+                                        val candidates = if (!contactsJson.isNullOrBlank()) {
+                                            try {
+                                                Json.decodeFromString<List<ContactCandidate>>(contactsJson)
+                                            } catch (_: Throwable) {
+                                                emptyList<ContactCandidate>()
+                                            }
+                                        } else emptyList<ContactCandidate>()
+
+                                        for (c in candidates) {
+                                            lastContactCandidates[c.id.lowercase()] = c
+                                            lastContactCandidates[c.name.lowercase()] = c
+                                        }
+
+                                        if (candidates.size == 1) {
+                                            val resolved = candidates[0]
+                                            resolvedArguments["phone_number"] = resolved.phoneNumber
+                                            resolvedArguments["name"] = resolved.name
+                                            resolvedArguments["candidate_id"] = resolved.id
+                                            taskState = ContactResolution(candidates = candidates, selectedId = resolved.id)
+                                        } else if (candidates.size > 1) {
+                                            taskState = ContactResolution(candidates = candidates)
+                                            val candidateList = candidates.joinToString(", ") { "${it.id}: ${it.name}" }
+                                            val coachMessage = "Found multiple contacts for '$searchQuery': $candidateList. Ask the user which contact to call."
+                                            val coachedResult = ToolResult.error(coachMessage, ToolErrorCode.EXECUTION_ERROR)
+                                            lastToolResult = coachedResult
+                                            send(ConversationEvent.ToolExecuted(parsed.tool, coachedResult))
+                                            recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, coachedResult))
+                                            currentTurnPrompt = "Tool result for call_contact: $coachMessage"
+                                            continue
+                                        } else {
+                                            val errorMsg = "No contact found matching '$searchQuery'."
+                                            val errorResult = ToolResult.error(errorMsg, ToolErrorCode.EXECUTION_ERROR)
+                                            lastToolResult = errorResult
+                                            send(ConversationEvent.ToolExecuted(parsed.tool, errorResult))
+                                            recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, errorResult))
+                                            currentTurnPrompt = "Tool result for call_contact: $errorMsg"
+                                            continue
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -408,14 +513,14 @@ open class ConversationSession(
                                 if (parsed.tool == "lookup_contact") {
                                     activeCapability = "calling"
                                     isActivationTurn = true
-                                    val contactsJson = result.data?.get("contacts")
+                                    val contactsJson = result.data?.get("contacts") ?: result.data?.get("matches")
                                     val candidates = if (!contactsJson.isNullOrBlank()) {
                                         try {
                                             Json.decodeFromString<List<ContactCandidate>>(contactsJson)
                                         } catch (e: Throwable) {
-                                            emptyList()
+                                            emptyList<ContactCandidate>()
                                         }
-                                    } else emptyList()
+                                    } else emptyList<ContactCandidate>()
 
                                     taskState = ContactResolution(
                                         candidates = candidates,
@@ -487,7 +592,8 @@ open class ConversationSession(
                     is ParsedLlmResponse.DirectResponse -> {
                         finalResponseText = parsed.text
                         recordTurn(ConversationTurn.Assistant(finalResponseText))
-                        if (taskState == null || taskState?.resolved == true) {
+                        val isUnresolvedContact = (taskState as? ContactResolution)?.let { !it.resolved && it.candidates.isNotEmpty() } ?: false
+                        if (!isUnresolvedContact && (taskState == null || taskState?.resolved == true)) {
                             activeCapability = null
                             taskState = null
                         }
@@ -535,9 +641,17 @@ open class ConversationSession(
         send(ConversationEvent.Completed(finalResponseText, lastToolResult))
     }.flowOn(ioDispatcher)
 
-    internal suspend fun buildCoreSystemPrompt(): String {
+    internal suspend fun buildCoreSystemPrompt(isCompact: Boolean = false): String {
+        if (isCompact) {
+            val sb = StringBuilder()
+            sb.append("You are Loki, an on-device assistant. When the user asks to call or message someone, immediately call lookup_contact with their name — do not ask for contact information. Only ask which contact when a lookup returns multiple matches.\n")
+            sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}} or {\"response\": \"conversational answer\"}.")
+            return sb.toString()
+        }
+
         val sb = StringBuilder()
         sb.append("You are Loki, a private offline Android assistant running on the user's device. You operate entirely on-device with privacy and safety as highest priority.\n\n")
+        sb.append("When the user asks to call or message someone, immediately call lookup_contact with their name — do not ask for contact information. Only ask which contact when a lookup returns multiple matches.\n\n")
 
         val customInstruction = agentConfig.systemInstruction.trim()
         if (customInstruction.isNotBlank() && customInstruction != AgentConfig.DEFAULT_SYSTEM_PROMPT.trim()) {
@@ -582,17 +696,26 @@ open class ConversationSession(
         disabledTools: List<Pair<Tool, String>> = emptyList(),
         activeCapability: String? = null,
         taskState: TaskState? = null,
-        isActivationTurn: Boolean = false
+        isActivationTurn: Boolean = false,
+        includeToolSchemas: Boolean = true,
+        compactToolSchemas: Boolean = false
     ): String {
         val sb = StringBuilder()
 
-        if (availableTools.isNotEmpty()) {
+        if (includeToolSchemas && availableTools.isNotEmpty()) {
             sb.append("Available tools (respond with JSON {\"tool\": \"name\", \"arguments\": {...}}):\n")
             for (tool in availableTools) {
-                val params = if (tool.parameters.isNotEmpty()) {
-                    tool.parameters.entries.joinToString(prefix = "(", postfix = ")") { "${it.key}: ${it.value.type.name.lowercase()}" }
-                } else "()"
-                sb.append("- ${tool.name}$params: ${tool.description}\n")
+                if (compactToolSchemas) {
+                    val params = if (tool.parameters.isNotEmpty()) {
+                        tool.parameters.keys.joinToString(prefix = "(", postfix = ")")
+                    } else "()"
+                    sb.append("- ${tool.name}$params\n")
+                } else {
+                    val params = if (tool.parameters.isNotEmpty()) {
+                        tool.parameters.entries.joinToString(prefix = "(", postfix = ")") { "${it.key}: ${it.value.type.name.lowercase()}" }
+                    } else "()"
+                    sb.append("- ${tool.name}$params: ${tool.description}\n")
+                }
             }
             sb.append("\n")
         }
@@ -612,10 +735,10 @@ open class ConversationSession(
         }
 
         if (disabledTools.isNotEmpty()) {
-            sb.append("Disabled tools (permission not yet granted — explain to user if requested):\n")
+            sb.append("Disabled tools (permission not yet granted):\n")
             for ((tool, perm) in disabledTools) {
                 val permName = perm.substringAfterLast('.')
-                sb.append("- ${tool.name}: requires $permName permission\n")
+                sb.append("- ${tool.name}: This tool needs the $permName permission — ask the user to grant it in Settings.\n")
             }
             sb.append("\n")
         }
@@ -630,6 +753,13 @@ open class ConversationSession(
                     "Calling guidance: When looking up contacts to call: if multiple contacts match, list them by NAME only. Never speak, display, or invent phone numbers — phone numbers are unavailable to you. Ask the user which contact to call using their name or candidate ID (e.g. using select_contact). If there is a unique match or once selected, ask for verbal confirmation before placing the call."
                 } else {
                     "Calling reminder: Refer to candidates by name or candidate ID; phone numbers are unavailable to you. Do not execute call_contact until the user confirms."
+                }
+            }
+            "media" -> {
+                if (isActivationTurn) {
+                    "Media guidance: The user wants to control media playback. Identify the action (play, pause, next, previous, toggle) and invoke the media_control tool with the action parameter."
+                } else {
+                    "Media reminder: Invoke media_control with the desired action parameter."
                 }
             }
             else -> ""
@@ -672,11 +802,13 @@ open class ConversationSession(
     }
 
     private fun formatErrorResponse(toolName: String, result: ToolResult): String {
-        val err = result.error ?: "Action failed."
-        return when {
-            err.contains("permission", ignoreCase = true) ->
-                "I need permission to do that. Please grant it in the permissions setup."
-            err.contains("not found", ignoreCase = true) ->
+        val err = result.error ?: "Operation failed."
+        return when (result.errorCode) {
+            ToolErrorCode.PERMISSION_DENIED.name ->
+                "I don't have permission to do that."
+            ToolErrorCode.VALIDATION_ERROR.name ->
+                "Please provide more details."
+            ToolErrorCode.NOT_FOUND.name ->
                 "I couldn't find the requested item."
             else -> err
         }
@@ -701,6 +833,10 @@ open class ConversationSession(
 
     fun clear() {
         conversationContext.clear()
+        needsSchemaInjection = true
+        taskState = null
+        activeCapability = null
+        lastContactCandidates.clear()
     }
 
     /**

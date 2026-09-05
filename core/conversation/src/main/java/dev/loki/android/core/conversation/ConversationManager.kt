@@ -30,6 +30,7 @@ sealed interface ConversationEvent {
     ) : ConversationEvent
     data class Speaking(val text: String) : ConversationEvent
     data class Completed(val finalResponse: String, val toolResult: ToolResult? = null) : ConversationEvent
+    data class ContextCompacted(val message: String = "Context compacted") : ConversationEvent
     data class Error(val message: String) : ConversationEvent
 }
 
@@ -174,6 +175,7 @@ class ConversationManager(
         cancel()
         activeConversationId = null
         persistentChatContext.clear()
+        llmEngine.resetConversation()
     }
 
     companion object {

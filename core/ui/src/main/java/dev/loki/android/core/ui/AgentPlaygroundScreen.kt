@@ -643,6 +643,8 @@ fun AgentPlaygroundScreen(
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.SemiBold
                                     )
+                                    val context = androidx.compose.ui.platform.LocalContext.current
+                                    val probe = remember(context) { dev.loki.android.core.llm.NpuCapabilityProbe.probe(context) }
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         RadioButton(
                                             selected = state.backend == ExecutionBackend.AUTOMATIC,
@@ -650,6 +652,14 @@ fun AgentPlaygroundScreen(
                                         )
                                         Text("Auto", modifier = Modifier.clickable { viewModel.updateBackend(ExecutionBackend.AUTOMATIC) })
                                         Spacer(Modifier.width(12.dp))
+                                        if (probe.npuUsable) {
+                                            RadioButton(
+                                                selected = state.backend == ExecutionBackend.NPU,
+                                                onClick = { viewModel.updateBackend(ExecutionBackend.NPU) }
+                                            )
+                                            Text("NPU", modifier = Modifier.clickable { viewModel.updateBackend(ExecutionBackend.NPU) })
+                                            Spacer(Modifier.width(12.dp))
+                                        }
                                         RadioButton(
                                             selected = state.backend == ExecutionBackend.GPU,
                                             onClick = { viewModel.updateBackend(ExecutionBackend.GPU) }
