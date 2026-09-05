@@ -23,6 +23,21 @@ open class VoiceInputStrategyResolver {
         modelManager: ModelLibraryManager?,
         sttEngine: SttEngine? = null
     ): VoiceInputStrategyResult {
+        return resolve(modelManager, sttEngine, isRecordAudioGranted = true)
+    }
+
+    open fun resolve(
+        modelManager: ModelLibraryManager?,
+        sttEngine: SttEngine?,
+        isRecordAudioGranted: Boolean
+    ): VoiceInputStrategyResult {
+        if (!isRecordAudioGranted) {
+            return VoiceInputStrategyResult.Unavailable(
+                reason = VoiceUnavailableReason.AUDIO_PERMISSION_DENIED,
+                message = "Microphone permission required for voice interaction."
+            )
+        }
+
         val activeLlmId = modelManager?.manifest?.value?.activeModels?.get(ModelRuntime.LITERT_LM)
         val activeLlmRecord = modelManager?.manifest?.value?.models?.firstOrNull { it.id == activeLlmId }
 

@@ -1,7 +1,8 @@
 package dev.loki.android.core.assistant
 
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -18,6 +19,7 @@ class AssistantSessionTest {
 
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var tempDir: java.io.File
+    private lateinit var defaultModelManager: dev.loki.android.core.models.ModelLibraryManager
 
     @Before
     fun setUp() {
@@ -52,6 +54,7 @@ class AssistantSessionTest {
         ))
         val manager = dev.loki.android.core.models.ModelLibraryManager(storage, registry)
         manager.registerReadinessProvider(dev.loki.android.core.models.ModelRuntime.LITERT_LM) { true }
+        defaultModelManager = manager
 
         AssistantSessionProvider.instance = object : AssistantSessionProvider {
             override fun getConversationManager(): dev.loki.android.core.conversation.ConversationManager? = null
@@ -356,6 +359,9 @@ class AssistantSessionTest {
             override fun release() {}
         }
 
+        var capturedAudioBytes: ByteArray? = null
+        var capturedPrompt: String? = null
+
         val fakeConversationManager = dev.loki.android.core.conversation.ConversationManager(
             context = object : android.content.ContextWrapper(null) {},
             llmEngine = object : dev.loki.android.core.llm.LlmEngine {
@@ -363,7 +369,11 @@ class AssistantSessionTest {
                 override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
                 override fun isReady(): Boolean = true
                 override suspend fun initializeAsync(modelPath: String?): Boolean = true
-                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> = Result.success("")
+                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                    capturedPrompt = prompt
+                    capturedAudioBytes = audioBytes
+                    return Result.success("""{"response": "Done!"}""")
+                }
                 override fun cancel() {}
                 override fun release() {}
             },
@@ -371,22 +381,7 @@ class AssistantSessionTest {
             ttsEngine = fakeTts
         )
 
-        var capturedAudioBytes: ByteArray? = null
-        var capturedSource: String? = null
-        var capturedUserInput: String? = null
-
-        val testVoiceSession = object : dev.loki.android.core.conversation.ConversationSession(
-            context = object : android.content.ContextWrapper(null) {},
-            llmEngine = fakeConversationManager.llmEngine,
-            toolRegistry = dev.loki.android.core.tools.ToolRegistry()
-        ) {
-            override fun processUtterance(userInput: String, audioBytes: ByteArray?, enableTts: Boolean, source: String): kotlinx.coroutines.flow.Flow<dev.loki.android.core.conversation.ConversationEvent> = kotlinx.coroutines.flow.flow {
-                capturedAudioBytes = audioBytes
-                capturedSource = source
-                capturedUserInput = userInput
-                emit(dev.loki.android.core.conversation.ConversationEvent.Completed("Done!"))
-            }
-        }
+        val testVoiceSession = fakeConversationManager.newVoiceSession()
 
         val result = session.handleFollowUpLoop(
             conversationManager = fakeConversationManager,
@@ -398,8 +393,6 @@ class AssistantSessionTest {
         )
 
         assertFalse(sttInvoked)
-        assertEquals("VOICE_FOLLOW_UP", capturedSource)
-        assertEquals("", capturedUserInput)
         assertTrue(capturedAudioBytes != null && capturedAudioBytes!!.isNotEmpty())
         assertEquals("Done!", result)
         session.destroy()
@@ -442,6 +435,7 @@ class AssistantSessionTest {
             override fun release() {}
         }
 
+        var capturedPrompt: String? = null
         val fakeConversationManager = dev.loki.android.core.conversation.ConversationManager(
             context = object : android.content.ContextWrapper(null) {},
             llmEngine = object : dev.loki.android.core.llm.LlmEngine {
@@ -449,7 +443,10 @@ class AssistantSessionTest {
                 override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
                 override fun isReady(): Boolean = true
                 override suspend fun initializeAsync(modelPath: String?): Boolean = true
-                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> = Result.success("")
+                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                    capturedPrompt = prompt
+                    return Result.success("""{"response": "Calling Mom."}""")
+                }
                 override fun cancel() {}
                 override fun release() {}
             },
@@ -457,22 +454,7 @@ class AssistantSessionTest {
             ttsEngine = fakeTts
         )
 
-        var capturedAudioBytes: ByteArray? = null
-        var capturedSource: String? = null
-        var capturedUserInput: String? = null
-
-        val testVoiceSession = object : dev.loki.android.core.conversation.ConversationSession(
-            context = object : android.content.ContextWrapper(null) {},
-            llmEngine = fakeConversationManager.llmEngine,
-            toolRegistry = dev.loki.android.core.tools.ToolRegistry()
-        ) {
-            override fun processUtterance(userInput: String, audioBytes: ByteArray?, enableTts: Boolean, source: String): kotlinx.coroutines.flow.Flow<dev.loki.android.core.conversation.ConversationEvent> = kotlinx.coroutines.flow.flow {
-                capturedAudioBytes = audioBytes
-                capturedSource = source
-                capturedUserInput = userInput
-                emit(dev.loki.android.core.conversation.ConversationEvent.Completed("Calling Mom."))
-            }
-        }
+        val testVoiceSession = fakeConversationManager.newVoiceSession()
 
         val result = session.handleFollowUpLoop(
             conversationManager = fakeConversationManager,
@@ -484,9 +466,7 @@ class AssistantSessionTest {
         )
 
         assertTrue(sttInvoked)
-        assertEquals("VOICE_FOLLOW_UP", capturedSource)
-        assertEquals("Mom", capturedUserInput)
-        assertEquals(null, capturedAudioBytes)
+        assertTrue(capturedPrompt != null && capturedPrompt!!.contains("Mom"))
         assertEquals("Calling Mom.", result)
         session.destroy()
     }
@@ -888,7 +868,7 @@ class AssistantSessionTest {
             override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
                 promptsReceived.add(prompt)
                 return if (promptsReceived.size == 1) {
-                    Result.success("""{"response": "Rahul has two numbers. Which one should I call?"}""")
+                    Result.success("""{"tool": "ask_user", "arguments": {"text": "Rahul has two numbers. Which one should I call?"}}""")
                 } else {
                     Result.success("""{"response": "Calling Rahul mobile."}""")
                 }
@@ -969,8 +949,17 @@ class AssistantSessionTest {
             override fun getModelLibraryManager(): dev.loki.android.core.models.ModelLibraryManager = modelManager
         }
 
+        val fakeRecorder = object : dev.loki.android.core.voice.stt.AudioRecorder(
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        ) {
+            override fun arm(): Boolean = true
+            override suspend fun recordGatedUtterance(isCommitGated: () -> Boolean, onRmsUpdate: ((Float) -> Unit)?): FloatArray = FloatArray(0)
+            override fun release() {}
+        }
+
         val session = AssistantSession()
         session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { fakeRecorder }
         session.startTurn()
 
         testScheduler.advanceUntilIdle()
@@ -992,7 +981,7 @@ class AssistantSessionTest {
             override fun isReady(): Boolean = true
             override suspend fun initializeAsync(modelPath: String?): Boolean = true
             override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
-                return Result.success("""{"response": "Which contact should I call?"}""")
+                return Result.success("""{"tool": "ask_user", "arguments": {"text": "Which contact should I call?"}}""")
             }
             override fun cancel() {}
             override fun release() {}
@@ -1082,8 +1071,17 @@ class AssistantSessionTest {
             override fun getModelLibraryManager(): dev.loki.android.core.models.ModelLibraryManager = modelManager
         }
 
+        val fakeFollowUpRecorder = object : dev.loki.android.core.voice.stt.AudioRecorder(
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        ) {
+            override fun arm(): Boolean = true
+            override suspend fun recordGatedUtterance(isCommitGated: () -> Boolean, onRmsUpdate: ((Float) -> Unit)?): FloatArray = FloatArray(0)
+            override fun release() {}
+        }
+
         val session = AssistantSession()
         session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { fakeFollowUpRecorder }
         session.startTurn()
 
         testScheduler.advanceUntilIdle()
@@ -1150,6 +1148,344 @@ class AssistantSessionTest {
         )
 
         assertTrue("Recorder must be released on loop exit", recorderReleased)
+        session.destroy()
+    }
+
+    @Test
+    fun `direct audio turn handles MicUnavailableException gracefully without crashing`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val dummyEngine = object : dev.loki.android.core.llm.LlmEngine {
+            private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+            override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> = Result.success("{}")
+            override fun cancel() {}
+            override fun release() {}
+        }
+        val conversationManager = dev.loki.android.core.conversation.ConversationManager(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        )
+
+        AssistantSessionProvider.instance = object : AssistantSessionProvider {
+            override fun getConversationManager(): dev.loki.android.core.conversation.ConversationManager = conversationManager
+            override fun getSttEngine(): dev.loki.android.core.voice.stt.SttEngine? = null
+            override fun getModelLibraryManager(): dev.loki.android.core.models.ModelLibraryManager = defaultModelManager
+        }
+
+        val failingRecorder = object : dev.loki.android.core.voice.stt.AudioRecorder(
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        ) {
+            override suspend fun recordUtterance(onRmsUpdate: ((Float) -> Unit)?): FloatArray {
+                throw dev.loki.android.core.voice.stt.MicUnavailableException(
+                    dev.loki.android.core.voice.stt.MicUnavailableReason.PERMISSION_DENIED,
+                    "Permission denied"
+                )
+            }
+        }
+
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { failingRecorder }
+
+        val states = mutableListOf<AssistantState>()
+        val collectJob = kotlinx.coroutines.CoroutineScope(testDispatcher).launch {
+            session.state.collect { states.add(it) }
+        }
+
+        session.startTurn()
+        testScheduler.advanceUntilIdle()
+
+        val errorState = states.filterIsInstance<AssistantState.Error>().firstOrNull()
+        assertTrue("State should transition through Error when mic is unavailable", errorState != null)
+        assertEquals("Microphone unavailable — grant mic permission", errorState?.message)
+        assertEquals(AssistantState.Idle, session.state.value)
+        collectJob.cancel()
+        session.destroy()
+    }
+
+    @Test
+    fun `two consecutive startTurn calls use independent ConversationSessions with empty initial context`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val recordedTurnsCounts = mutableListOf<Int>()
+        val dummyEngine = object : dev.loki.android.core.llm.LlmEngine {
+            private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+            override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                return Result.success("""{"response": "Hello"}""")
+            }
+            override fun cancel() {}
+            override fun release() {}
+        }
+        val conversationManager = dev.loki.android.core.conversation.ConversationManager(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        )
+
+        AssistantSessionProvider.instance = object : AssistantSessionProvider {
+            override fun getConversationManager(): dev.loki.android.core.conversation.ConversationManager = conversationManager
+            override fun getSttEngine(): dev.loki.android.core.voice.stt.SttEngine? = null
+            override fun getModelLibraryManager(): dev.loki.android.core.models.ModelLibraryManager = defaultModelManager
+        }
+
+        val nonSilentAudio = FloatArray(16000) { 0.5f }
+        val testRecorder = object : dev.loki.android.core.voice.stt.AudioRecorder(
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        ) {
+            override suspend fun recordUtterance(onRmsUpdate: ((Float) -> Unit)?): FloatArray = nonSilentAudio
+        }
+
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { testRecorder }
+
+        // Turn 1
+        session.startTurn()
+        testScheduler.advanceUntilIdle()
+        assertTrue(session.state.value is AssistantState.Completed)
+
+        // Turn 2: Starts fresh voice session, independent of Turn 1
+        val turn2Session = conversationManager.newVoiceSession()
+        assertEquals(0, turn2Session.conversationContext.getTurns().size)
+        assertEquals(1, turn2Session.conversationContext.maxTurns)
+
+        session.startTurn()
+        testScheduler.advanceUntilIdle()
+        assertTrue(session.state.value is AssistantState.Completed)
+
+        session.destroy()
+    }
+
+    @Test
+    fun `direct audio turn skips LLM generation on empty or silent audio capture`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        var generateCalled = false
+        val dummyEngine = object : dev.loki.android.core.llm.LlmEngine {
+            private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+            override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                generateCalled = true
+                return Result.success("""{"response": "Hello"}""")
+            }
+            override fun cancel() {}
+            override fun release() {}
+        }
+        val conversationManager = dev.loki.android.core.conversation.ConversationManager(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        )
+
+        AssistantSessionProvider.instance = object : AssistantSessionProvider {
+            override fun getConversationManager(): dev.loki.android.core.conversation.ConversationManager = conversationManager
+            override fun getSttEngine(): dev.loki.android.core.voice.stt.SttEngine? = null
+            override fun getModelLibraryManager(): dev.loki.android.core.models.ModelLibraryManager = defaultModelManager
+        }
+
+        // Empty audio recorder
+        val emptyRecorder = object : dev.loki.android.core.voice.stt.AudioRecorder(
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        ) {
+            override suspend fun recordUtterance(onRmsUpdate: ((Float) -> Unit)?): FloatArray = FloatArray(0)
+        }
+
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { emptyRecorder }
+
+        session.startTurn()
+        testScheduler.advanceUntilIdle()
+
+        assertFalse("LLM generate must NOT be called when audio capture is empty", generateCalled)
+        assertEquals(AssistantState.Idle, session.state.value)
+        session.destroy()
+    }
+
+    @Test
+    fun `question prose without ask_user does NOT re-arm mic and completes turn`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val dummyEngine = object : dev.loki.android.core.llm.LlmEngine {
+            private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+            override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                // Returns question prose directly without ask_user tool
+                return Result.success("""{"response": "Are you sure you want to delete this?"}""")
+            }
+            override fun cancel() {}
+            override fun release() {}
+        }
+        var speakCalled = false
+        val fakeTts = object : dev.loki.android.core.voice.tts.TtsEngine {
+            override val isSpeaking: Boolean = false
+            override val isReady: Boolean = true
+            override fun speak(text: String, utteranceId: String, onStart: (() -> Unit)?, onDone: (() -> Unit)?, onError: ((String) -> Unit)?) {
+                speakCalled = true
+                onDone?.invoke()
+            }
+            override fun stop() {}
+            override fun release() {}
+        }
+        val conversationManager = dev.loki.android.core.conversation.ConversationManager(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ttsEngine = fakeTts,
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        )
+
+        var followUpRecorderArmed = false
+        val fakeRecorder = object : dev.loki.android.core.voice.stt.AudioRecorder(
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        ) {
+            override fun arm(): Boolean {
+                followUpRecorderArmed = true
+                return true
+            }
+            override suspend fun recordUtterance(onRmsUpdate: ((Float) -> Unit)?): FloatArray = FloatArray(16000) { 0.5f }
+            override suspend fun recordGatedUtterance(isCommitGated: () -> Boolean, onRmsUpdate: ((Float) -> Unit)?): FloatArray {
+                followUpRecorderArmed = true
+                return FloatArray(0)
+            }
+        }
+
+        AssistantSessionProvider.instance = object : AssistantSessionProvider {
+            override fun getConversationManager(): dev.loki.android.core.conversation.ConversationManager = conversationManager
+            override fun getSttEngine(): dev.loki.android.core.voice.stt.SttEngine? = null
+            override fun getModelLibraryManager(): dev.loki.android.core.models.ModelLibraryManager = defaultModelManager
+        }
+
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { fakeRecorder }
+
+        session.startTurn()
+        testScheduler.advanceUntilIdle()
+
+        assertTrue("TTS speak should be called for direct response", speakCalled)
+        assertFalse("Mic should NOT re-arm when turn did not end in ask_user", followUpRecorderArmed)
+        assertTrue("Session state should be Completed", session.state.value is AssistantState.Completed)
+        assertEquals("Are you sure you want to delete this?", (session.state.value as AssistantState.Completed).responseText)
+        session.destroy()
+    }
+
+    @Test
+    fun `mid-string question ending with ask_user re-arms mic`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val dummyEngine = object : dev.loki.android.core.llm.LlmEngine {
+            private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+            override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                return Result.success("""{"tool": "ask_user", "arguments": {"text": "Which contact would you like to call? I see Mom and Suraj's Mom."}}""")
+            }
+            override fun cancel() {}
+            override fun release() {}
+        }
+        val conversationManager = dev.loki.android.core.conversation.ConversationManager(
+            context = dummyContext,
+            llmEngine = dummyEngine,
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        )
+
+        var followUpGatedCaptureCalled = false
+        val fakeRecorder = object : dev.loki.android.core.voice.stt.AudioRecorder(
+            ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        ) {
+            override fun arm(): Boolean = true
+            override suspend fun recordUtterance(onRmsUpdate: ((Float) -> Unit)?): FloatArray = FloatArray(16000) { 0.5f }
+            override suspend fun recordGatedUtterance(isCommitGated: () -> Boolean, onRmsUpdate: ((Float) -> Unit)?): FloatArray {
+                followUpGatedCaptureCalled = true
+                return FloatArray(0)
+            }
+        }
+
+        AssistantSessionProvider.instance = object : AssistantSessionProvider {
+            override fun getConversationManager(): dev.loki.android.core.conversation.ConversationManager = conversationManager
+            override fun getSttEngine(): dev.loki.android.core.voice.stt.SttEngine? = null
+            override fun getModelLibraryManager(): dev.loki.android.core.models.ModelLibraryManager = defaultModelManager
+        }
+
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { fakeRecorder }
+
+        session.startTurn()
+        testScheduler.advanceUntilIdle()
+
+        assertTrue("Follow-up gated capture should be called when turn ended in ask_user", followUpGatedCaptureCalled)
+        session.destroy()
+    }
+
+    @Test
+    fun `follow-up loop runs beyond 3 rounds and 10-round safety cap exits with app-rendered sign-off`() = runTest {
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+
+        val fakeRecorder = object : dev.loki.android.core.voice.stt.AudioRecorder() {
+            override fun arm(): Boolean = true
+            override suspend fun recordGatedUtterance(isCommitGated: () -> Boolean, onRmsUpdate: ((Float) -> Unit)?): FloatArray {
+                return FloatArray(1600) { 0.5f }
+            }
+            override fun release() {}
+        }
+        session.audioRecorderFactory = { fakeRecorder }
+
+        val spokenTexts = mutableListOf<String>()
+        val fakeTts = object : dev.loki.android.core.voice.tts.TtsEngine {
+            override val isSpeaking: Boolean = false
+            override val isReady: Boolean = true
+            override fun speak(text: String, utteranceId: String, onStart: (() -> Unit)?, onDone: (() -> Unit)?, onError: ((String) -> Unit)?) {
+                spokenTexts.add(text)
+                onDone?.invoke()
+            }
+            override fun stop() {}
+            override fun release() {}
+        }
+
+        var followUpTurnsCount = 0
+        val fakeConversationManager = dev.loki.android.core.conversation.ConversationManager(
+            context = object : android.content.ContextWrapper(null) {},
+            llmEngine = object : dev.loki.android.core.llm.LlmEngine {
+                private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+                override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+                override fun isReady(): Boolean = true
+                override suspend fun initializeAsync(modelPath: String?): Boolean = true
+                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                    followUpTurnsCount++
+                    return Result.success("""{"tool": "ask_user", "arguments": {"text": "Round $followUpTurnsCount question?"}}""")
+                }
+                override fun cancel() {}
+                override fun release() {}
+            },
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ttsEngine = fakeTts
+        )
+
+        val result = session.handleFollowUpLoop(
+            conversationManager = fakeConversationManager,
+            voiceSession = fakeConversationManager.newVoiceSession(),
+            sttEngine = null,
+            initialResponseText = "Round 0 question?",
+            useDirectAudio = true
+        )
+
+        assertEquals("Let's stop here.", result)
+        assertEquals(10, followUpTurnsCount)
+        assertTrue(spokenTexts.contains("Let's stop here."))
         session.destroy()
     }
 }

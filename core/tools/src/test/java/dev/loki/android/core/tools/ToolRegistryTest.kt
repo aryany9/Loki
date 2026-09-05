@@ -234,4 +234,120 @@ class ToolRegistryTest {
         assertFalse(availableStart.any { it.name == "select_contact" })
         assertTrue(availableStart.any { it.name == "call_contact" })
     }
+
+    // ── Task 2.4: State-scoped TaskStateGate tests ────────────────────────────
+
+    private class MockTaskStateGate(
+        override val restrictToTool: String? = null,
+        override val hiddenTool: String? = null,
+        override val hiddenTools: Set<String> = setOfNotNull(hiddenTool)
+    ) : TaskStateGate
+
+    @Test
+    fun `getAvailableTools with DISAMBIGUATION gate restricts to select_contact and excludes ask_user and call_contact`() {
+        val registry = ToolRegistry()
+        registry.register(ScopedDummyTool("general_tool", capability = "general"))
+        registry.register(ScopedDummyTool("ask_user", capability = "general"))
+        registry.register(ScopedDummyTool("lookup_contact", capability = "calling"))
+        registry.register(ScopedDummyTool("call_contact", capability = "calling"))
+        registry.register(ScopedDummyTool("select_contact", capability = "calling", isInternal = true))
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val disambiguationGate = MockTaskStateGate(
+            restrictToTool = "select_contact",
+            hiddenTools = setOf("ask_user", "call_contact")
+        )
+
+        val available = registry.getAvailableTools(
+            context = dummyContext,
+            activeCapability = "calling",
+            advancingTool = "select_contact",
+            taskState = disambiguationGate
+        )
+
+        // select_contact and general tools (except ask_user) only
+        assertTrue("select_contact must be available", available.any { it.name == "select_contact" })
+        assertTrue("general_tool must be available", available.any { it.name == "general_tool" })
+        // ask_user, call_contact, and lookup_contact must be excluded
+        assertFalse("ask_user must NOT be available in disambiguation", available.any { it.name == "ask_user" })
+        assertFalse("call_contact must NOT be available in disambiguation", available.any { it.name == "call_contact" })
+        assertFalse("lookup_contact must NOT be available in disambiguation", available.any { it.name == "lookup_contact" })
+    }
+
+    @Test
+    fun `getAvailableTools with CONFIRMATION gate before question hides call_contact and allows ask_user`() {
+        val registry = ToolRegistry()
+        registry.register(ScopedDummyTool("general_tool", capability = "general"))
+        registry.register(ScopedDummyTool("ask_user", capability = "general"))
+        registry.register(ScopedDummyTool("call_contact", capability = "calling"))
+        registry.register(ScopedDummyTool("select_contact", capability = "calling", isInternal = true))
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val confirmationGate = MockTaskStateGate(
+            restrictToTool = null,
+            hiddenTools = setOf("call_contact")
+        )
+
+        val available = registry.getAvailableTools(
+            context = dummyContext,
+            activeCapability = "calling",
+            advancingTool = "call_contact",
+            taskState = confirmationGate
+        )
+
+        // call_contact must be excluded before question is asked
+        assertFalse("call_contact must NOT be available before question", available.any { it.name == "call_contact" })
+        // General tools and ask_user remain available
+        assertTrue("ask_user must be available to ask confirmation", available.any { it.name == "ask_user" })
+        assertTrue("general_tool must still be available", available.any { it.name == "general_tool" })
+    }
+
+    @Test
+    fun `getAvailableTools with AWAITING_CONFIRMATION gate exposes call_contact and hides ask_user`() {
+        val registry = ToolRegistry()
+        registry.register(ScopedDummyTool("general_tool", capability = "general"))
+        registry.register(ScopedDummyTool("ask_user", capability = "general"))
+        registry.register(ScopedDummyTool("call_contact", capability = "calling"))
+        registry.register(ScopedDummyTool("select_contact", capability = "calling", isInternal = true))
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val awaitingGate = MockTaskStateGate(
+            restrictToTool = null,
+            hiddenTools = setOf("ask_user")
+        )
+
+        val available = registry.getAvailableTools(
+            context = dummyContext,
+            activeCapability = "calling",
+            advancingTool = "call_contact",
+            taskState = awaitingGate
+        )
+
+        // call_contact must be available for confirmation answer
+        assertTrue("call_contact must be available in awaiting confirmation", available.any { it.name == "call_contact" })
+        // ask_user must be hidden to prevent loop
+        assertFalse("ask_user must NOT be available in awaiting confirmation", available.any { it.name == "ask_user" })
+        assertTrue("general_tool must still be available", available.any { it.name == "general_tool" })
+    }
+
+    @Test
+    fun `getAvailableTools with null gate applies no additional restrictions`() {
+        val registry = ToolRegistry()
+        registry.register(ScopedDummyTool("general_tool", capability = "general"))
+        registry.register(ScopedDummyTool("call_contact", capability = "calling"))
+        registry.register(ScopedDummyTool("lookup_contact", capability = "calling"))
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val available = registry.getAvailableTools(
+            context = dummyContext,
+            activeCapability = "calling",
+            taskState = null
+        )
+
+        // All calling + general tools available (no state restrictions)
+        assertEquals(3, available.size)
+        assertTrue(available.any { it.name == "general_tool" })
+        assertTrue(available.any { it.name == "call_contact" })
+        assertTrue(available.any { it.name == "lookup_contact" })
+    }
 }

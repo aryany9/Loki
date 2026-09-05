@@ -1,8 +1,6 @@
 ## Purpose
 Safety gating and user confirmation flow for destructive or irreversible on-device tool actions.
-
 ## Requirements
-
 ### Requirement: Tools declare destructive actions requiring confirmation
 A tool that performs a destructive or irreversible user-facing action SHALL declare `requiresConfirmation = true` and SHALL provide a natural-language `describeAction(arguments)` repeat-back string identifying the concrete target (e.g. contact name and phone number). Tools without the declaration SHALL execute immediately as before.
 
@@ -38,22 +36,44 @@ When a confirmation is required on a chat/text surface (source `TEXT`), the conv
 ---
 
 ### Requirement: Conversational confirmation on voice is model-driven
-On voice sources, destructive actions SHALL be confirmed conversationally by the LLM. The system prompt SHALL instruct the model to state the contact name and full phone number in a question before invoking a gated tool (e.g. `call_contact`) and to invoke it only after the user's verbal affirmation. The user's natural reply ("yes, you are right", "sure", "no") SHALL be carried back to the model as audio (direct-audio) or transcript (STT-transcribe), and the model SHALL decide whether the user confirmed. No keyword matcher or regex verdict parsing SHALL be used on the voice confirmation path.
 
-#### Scenario: Voice confirmation round-trip
-- **WHEN** the user asks to call a contact with an audio-capable model active and the model asks "Do you want me to call Mom at +91 79001 96495?"
-- **THEN** the user's spoken reply is routed to the model as native audio
-- **AND** when the model interprets the reply as affirmative, `call_contact` executes with the exact looked-up phone number
+On voice sources, destructive actions SHALL be confirmed conversationally by the LLM. Prior to the confirmation question being asked (`!isAsked`), the destructive execution tool (e.g. `call_contact`) SHALL NOT be exposed in the tool grammar, and the app/model SHALL ask the user a verbal confirmation question referencing the contact name and masked phone distinguisher (e.g. "the number ending in 95") in a question — via `ask_user` or conversational direct response. Once the question has been asked and the system awaits the user's answer (`isAsked == true`), `call_contact` SHALL be exposed in the grammar so that an affirmative response can invoke it and transition to `CONFIRMED`. The user's natural reply — in ANY language or phrasing ("yes, you are right", "haan karo call", "sure", "no") — SHALL be carried back to the model verbatim as audio (direct-audio) or transcript (STT-transcribe), and the model SHALL decide whether the user confirmed. No keyword matcher, regex verdict parsing, or app-side language interpretation SHALL be used anywhere on the voice path. **Full phone numbers SHALL NOT be spoken or rendered in model context; masked suffixes only.**
+
+#### Scenario: Voice confirmation transition sequencing
+- **WHEN** a contact is selected and the confirmation question is asked
+- **THEN** the state transitions to awaiting confirmation (`isAsked = true`)
+- **AND** upon affirmation, the model invokes `call_contact(candidate_id)` and transitions to `CONFIRMED`
+
+#### Scenario: Denial leaves action unexecuted
+- **WHEN** the user declines during confirmation
+- **THEN** the model produces conversational cancellation text
+- **AND** `call_contact` is never executed and task state is cleared
+
+#### Scenario: Masked distinguisher replaces full number
+
+- **WHEN** the model composes a voice confirmation question for a gated call
+- **THEN** the spoken question contains the contact name and at most a masked suffix of
+  the phone number
+- **AND** the full phone number appears in neither the spoken text nor the model context
 
 #### Scenario: Verbal denial on voice
-- **WHEN** the user replies negatively (e.g. "no") to a spoken confirmation question
+
+- **WHEN** the user replies negatively (e.g. "no", "nahi, cancel") to a spoken confirmation
+  question
 - **THEN** the model does not invoke the gated tool and responds conversationally
 
 #### Scenario: First-attempt gated call on voice is blocked
-- **WHEN** the model emits a gated tool call without having asked a confirmation question on a voice turn
+
+- **WHEN** the model emits a gated tool call without having asked a confirmation question
+  on a voice turn
 - **THEN** the call is not executed and the model is coached to ask first
 
----
+#### Scenario: No double confirmation
+
+- **WHEN** the model has already asked for confirmation and the user's reply is carried
+  back with in-activation pending-state context
+- **THEN** an affirmative reply results in immediate execution
+- **AND** the app does not inject an additional confirmation prompt
 
 ### Requirement: Unresolved confirmations time out and cancel safely
 A pending confirmation SHALL auto-cancel after a bounded timeout, producing the same denial turn as an explicit rejection. Cancelling generation SHALL also resolve any pending confirmation as denied.
@@ -67,3 +87,4 @@ A pending confirmation SHALL auto-cancel after a bounded timeout, producing the 
 - **WHEN** the user cancels generation while a confirmation is pending
 - **THEN** the pending confirmation is resolved as denied
 - **AND** no tool execution occurs afterwards
+

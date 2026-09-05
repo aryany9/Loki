@@ -11,6 +11,18 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import kotlin.math.sqrt
 
+enum class MicUnavailableReason {
+    PERMISSION_DENIED,
+    BUSY,
+    INIT_FAILED
+}
+
+class MicUnavailableException(
+    val reason: MicUnavailableReason,
+    message: String = "Microphone unavailable: $reason",
+    cause: Throwable? = null
+) : RuntimeException(message, cause)
+
 internal interface AudioSourceReader {
     fun startRecording()
     fun read(buffer: ShortArray, offset: Int, size: Int): Int
@@ -33,15 +45,46 @@ internal class AndroidAudioRecordReader(
         if (record == null) {
             val channelConfig = AudioFormat.CHANNEL_IN_MONO
             val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-            record = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                bufferSize * 2
-            )
+            try {
+                record = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    bufferSize * 2
+                )
+            } catch (e: SecurityException) {
+                release()
+                throw MicUnavailableException(MicUnavailableReason.PERMISSION_DENIED, "Microphone permission denied during construction", e)
+            } catch (e: Throwable) {
+                release()
+                throw MicUnavailableException(MicUnavailableReason.INIT_FAILED, "Failed to instantiate AudioRecord: ${e.message}", e)
+            }
         }
-        record?.startRecording()
+
+        val currentRecord = record
+        if (currentRecord == null || currentRecord.state != AudioRecord.STATE_INITIALIZED) {
+            release()
+            throw MicUnavailableException(MicUnavailableReason.INIT_FAILED, "AudioRecord is not initialized (state=${currentRecord?.state})")
+        }
+
+        try {
+            currentRecord.startRecording()
+        } catch (e: IllegalStateException) {
+            release()
+            throw MicUnavailableException(MicUnavailableReason.BUSY, "AudioRecord startRecording failed (busy or uninitialized)", e)
+        } catch (e: SecurityException) {
+            release()
+            throw MicUnavailableException(MicUnavailableReason.PERMISSION_DENIED, "Microphone permission denied on startRecording", e)
+        } catch (e: Throwable) {
+            release()
+            throw MicUnavailableException(MicUnavailableReason.INIT_FAILED, "Unexpected error starting AudioRecord: ${e.message}", e)
+        }
+
+        if (currentRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            release()
+            throw MicUnavailableException(MicUnavailableReason.BUSY, "AudioRecord failed to enter recording state")
+        }
     }
 
     override fun read(buffer: ShortArray, offset: Int, size: Int): Int {
@@ -73,7 +116,7 @@ internal class AndroidAudioRecordReader(
  */
 open class AudioRecorder(
     private val sampleRate: Int = 16000,
-    private val silenceDurationMs: Long = 700L,
+    private val silenceDurationMs: Long = 1200L,
     private val initialSilenceTimeoutMs: Long = 4500L,
     private val maxRecordingMs: Long = 30000L,
     private val lookbackMs: Long = 150L,
@@ -84,7 +127,7 @@ open class AudioRecorder(
 
     internal constructor(
         sampleRate: Int = 16000,
-        silenceDurationMs: Long = 700L,
+        silenceDurationMs: Long = 1200L,
         initialSilenceTimeoutMs: Long = 4500L,
         maxRecordingMs: Long = 30000L,
         lookbackMs: Long = 150L,
@@ -112,10 +155,21 @@ open class AudioRecorder(
         if (isArmed) return true
         val reader = customSourceReader ?: AndroidAudioRecordReader(sampleRate, bufferSize)
         sourceReader = reader
-        reader.startRecording()
+        try {
+            reader.startRecording()
+        } catch (e: MicUnavailableException) {
+            Log.e(TAG, "Mic unavailable during arm: ${e.reason} - ${e.message}")
+            release()
+            throw e
+        } catch (e: Throwable) {
+            Log.e(TAG, "Unexpected error arming AudioRecorder", e)
+            release()
+            throw MicUnavailableException(MicUnavailableReason.INIT_FAILED, e.message ?: "Failed to arm AudioRecorder", e)
+        }
         if (!reader.isInitialized && customSourceReader == null) {
             Log.e(TAG, "AudioRecord initialization failed")
-            return false
+            release()
+            throw MicUnavailableException(MicUnavailableReason.INIT_FAILED, "AudioRecord is not initialized")
         }
         isArmed = true
         isRecording = true
@@ -146,7 +200,12 @@ open class AudioRecorder(
     ): FloatArray = withContext(ioDispatcher) {
         val wasArmed = isArmed
         if (!wasArmed) {
-            if (!arm()) {
+            try {
+                if (!arm()) {
+                    return@withContext FloatArray(0)
+                }
+            } catch (e: MicUnavailableException) {
+                Log.e(TAG, "Mic unavailable in recordGatedUtterance: ${e.reason} - ${e.message}")
                 return@withContext FloatArray(0)
             }
         }
@@ -166,11 +225,17 @@ open class AudioRecorder(
         var commitWindowOpen = !isCommitGated()
         var startTime = timeProvider()
         var speechDetected = false
+        var speechStartTime = 0L
         var lastSpeechTime = startTime
         var peakRms = 0f
         var noiseFloor = 100f
         var chunksProcessed = 0
         var lastLogTime = 0L
+        var onsetStartTime = 0L
+        var onsetConsecutiveChunks = 0
+        var continuationStartTime = 0L
+        var continuationConsecutiveChunks = 0
+        val recentRmsWindow = ArrayDeque<Pair<Long, Float>>() // rolling ~2s window of (timestamp, rms)
 
         try {
             while (isActive && isRecording) {
@@ -198,10 +263,16 @@ open class AudioRecorder(
                     startTime = timeProvider()
                     lastSpeechTime = startTime
                     speechDetected = false
+                    speechStartTime = 0L
                     peakRms = 0f
                     noiseFloor = 100f
                     chunksProcessed = 0
                     lastLogTime = 0L
+                    onsetStartTime = 0L
+                    onsetConsecutiveChunks = 0
+                    continuationStartTime = 0L
+                    continuationConsecutiveChunks = 0
+                    recentRmsWindow.clear()
                 }
 
                 if (!commitWindowOpen) {
@@ -231,26 +302,71 @@ open class AudioRecorder(
 
                 val now = timeProvider()
 
-                val speechThreshold = maxOf(noiseFloor * 2.2f, 500f)
-                val silenceThreshold = maxOf(peakRms * 0.20f, noiseFloor * 1.5f, 250f)
+                // Rolling ~2s recent peak window
+                recentRmsWindow.addLast(Pair(now, rms))
+                while (recentRmsWindow.isNotEmpty() && recentRmsWindow.first().first < now - 2000L) {
+                    recentRmsWindow.removeFirst()
+                }
+                val recentPeak = recentRmsWindow.maxOfOrNull { it.second } ?: rms
+
+                // Noise-floor calibration: sample ambient RMS for first ~300ms if below speech threshold
+                val currentSpeechTh = maxOf(noiseFloor * 2.2f, 800f)
+                if ((now - startTime <= 300L || chunksProcessed <= 3) && rms <= currentSpeechTh) {
+                    noiseFloor = maxOf(noiseFloor, rms)
+                }
+
+                // Threshold calculations
+                val speechThreshold = maxOf(noiseFloor * 2.2f, 800f)
+                val silenceThreshold = maxOf(recentPeak * 0.12f, 250f)
 
                 if (!speechDetected) {
+                    // Sustained onset requirement: speech-level RMS persists ~250-300ms (or 3 chunks)
                     if (rms > speechThreshold) {
-                        speechDetected = true
-                        peakRms = rms
-                        lastSpeechTime = now
+                        if (onsetStartTime == 0L) {
+                            onsetStartTime = now
+                        }
+                        onsetConsecutiveChunks++
+                        val onsetDuration = now - onsetStartTime
+                        if (onsetDuration >= 250L || onsetConsecutiveChunks >= 3) {
+                            speechDetected = true
+                            speechStartTime = onsetStartTime
+                            peakRms = maxOf(peakRms, rms)
+                            lastSpeechTime = now
+                            continuationStartTime = now
+                            continuationConsecutiveChunks = onsetConsecutiveChunks
+                        }
+                    } else {
+                        onsetStartTime = 0L
+                        onsetConsecutiveChunks = 0
                     }
                 } else {
                     peakRms = maxOf(peakRms, rms)
-                    if (rms >= silenceThreshold) {
-                        lastSpeechTime = now
+                    // Sustained continuation requirement (Section 14.1 & 14.2):
+                    // In-band speech chunk: above rolling silence threshold AND above noise floor factor
+                    val isSpeakingChunk = rms >= silenceThreshold && rms > noiseFloor * 1.6f
+                    if (isSpeakingChunk) {
+                        if (continuationStartTime == 0L) {
+                            continuationStartTime = now
+                        }
+                        continuationConsecutiveChunks++
+                        val continuationDuration = now - continuationStartTime
+                        if (continuationDuration >= 250L || continuationConsecutiveChunks >= 3) {
+                            lastSpeechTime = now
+                        }
+                    } else {
+                        continuationStartTime = 0L
+                        continuationConsecutiveChunks = 0
                     }
                 }
 
-                if (rms < silenceThreshold || (!speechDetected && rms <= speechThreshold)) {
-                    if (chunksProcessed <= 3) {
-                        noiseFloor = maxOf(noiseFloor, rms)
-                    } else {
+                // EMA noise floor decay during quiet intervals
+                val isQuiet = if (!speechDetected) {
+                    rms <= speechThreshold
+                } else {
+                    rms < silenceThreshold || rms <= noiseFloor * 1.6f
+                }
+                if (isQuiet) {
+                    if (now - startTime > 300L && chunksProcessed > 3) {
                         noiseFloor = noiseFloor * 0.9f + rms * 0.1f
                     }
                     if (peakRms > 0f) {
@@ -266,8 +382,8 @@ open class AudioRecorder(
                         TAG,
                         String.format(
                             java.util.Locale.US,
-                            "VAD rms=%.0f floor=%.0f speechTh=%.0f silenceTh=%.0f speechDetected=%b silentFor=%dms",
-                            rms, noiseFloor, speechThreshold, silenceThreshold, speechDetected, silentFor
+                            "VAD rms=%.0f floor=%.0f speechTh=%.0f silenceTh=%.0f recentPeak=%.0f speechDetected=%b silentFor=%dms",
+                            rms, noiseFloor, speechThreshold, silenceThreshold, recentPeak, speechDetected, silentFor
                         )
                     )
                 }
@@ -294,8 +410,10 @@ open class AudioRecorder(
             Log.i(TAG, "Audio capture finished, captured ${outputStream.size()} bytes (speechDetected=$speechDetected)")
         }
 
-        if (!speechDetected) {
-            Log.i(TAG, "No speech detected during utterance recording, returning empty audio")
+        // Minimum utterance duration check: speech duration must be at least ~350ms (Section 14.5)
+        val totalSpeechDuration = if (speechDetected) (lastSpeechTime - speechStartTime + 100L) else 0L
+        if (!speechDetected || totalSpeechDuration < 350L) {
+            Log.i(TAG, "Speech not detected or too short (${totalSpeechDuration}ms < 350ms), returning empty audio")
             return@withContext FloatArray(0)
         }
 

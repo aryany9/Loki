@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -144,11 +145,14 @@ class ConversationManagerTest {
     }
 
     @Test
-    fun `VoiceSession starts fresh without leaking previous turns`() = runTest {
+    fun `VoiceSession is stateless and returns fresh empty context across voice activations`() = runTest {
         val toolRegistry = ToolRegistry()
         toolRegistry.register(TestTimeTool())
 
-        val mockLlm = MockLlmEngine(listOf("""{"tool": "get_current_time", "arguments": {}}"""))
+        val mockLlm = MockLlmEngine(listOf(
+            """{"tool": "get_current_time", "arguments": {}}""",
+            """{"response": "It is 3:00 PM"}"""
+        ))
         val dummyContext = object : android.content.ContextWrapper(null) {}
         val manager = ConversationManager(dummyContext, mockLlm, toolRegistry, ttsEngine = null)
 
@@ -156,7 +160,8 @@ class ConversationManagerTest {
         voiceSession1.processUtterance("Turn 1", enableTts = false).toList()
 
         val voiceSession2 = manager.newVoiceSession()
-        assertEquals(0, voiceSession2.conversationContext.getTurns().size)
+        assertTrue("voiceSession2 must start with empty context on new activation", voiceSession2.conversationContext.getTurns().isEmpty())
+        assertEquals(1, voiceSession2.conversationContext.maxTurns)
     }
 
     class TrackingLlmEngine : LlmEngine {
@@ -658,7 +663,175 @@ class ConversationManagerTest {
         org.junit.Assert.assertNotNull(prompt)
         assertTrue(prompt!!.contains("Additional Instructions:\nYou are a friendly companion.\n\nAlways respond in Hindi."))
     }
+
+    @Test
+    fun `voice activations use independent fresh sessions without cross-turn history`() = runTest {
+        val mockLlm = MockLlmEngine(
+            listOf(
+                """{"response": "Mom's number is 1234567890."}""",
+                """{"response": "Placing the call to Mom."}"""
+            )
+        )
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = mockLlm,
+            toolRegistry = ToolRegistry()
+        )
+
+        // Activation 1
+        val session1 = manager.newVoiceSession()
+        session1.processUtterance("who is mom", enableTts = false, source = "DIRECT_AUDIO").toList()
+
+        // Activation 2 (fresh voice session)
+        val session2 = manager.newVoiceSession()
+        assertEquals(0, session2.conversationContext.getTurns().size)
+        session2.processUtterance("call her", enableTts = false, source = "DIRECT_AUDIO").toList()
+
+        // Session 2 should only contain its own turns (user + assistant, maxTurns=1)
+        assertEquals(2, session2.conversationContext.getTurns().size)
+    }
+
+    class TestLookupTool(
+        private val contactsJson: String = "[{\"id\":\"c1\",\"name\":\"Mom\",\"number\":\"1234567890\"},{\"id\":\"c2\",\"name\":\"Mom Mobile\",\"number\":\"9876543210\"}]"
+    ) : LocalTool {
+        override val name: String = "lookup_contact"
+        override val capability: String = "calling"
+        override val description: String = "Lookup contacts"
+        override val parameters: Map<String, ToolParam> = mapOf(
+            "query" to ToolParam(ToolParamType.STRING, "name query", required = true)
+        )
+        var executedCount = 0
+        override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult {
+            executedCount++
+            return ToolResult.success(mapOf("count" to "2", "contacts" to contactsJson))
+        }
+    }
+
+    class TestDisambiguationCallTool : LocalTool {
+        override val name: String = "call_contact"
+        override val capability: String = "calling"
+        override val description: String = "Place phone call"
+        override val parameters: Map<String, ToolParam> = mapOf(
+            "phone_number" to ToolParam(ToolParamType.STRING, "phone", required = false),
+            "candidate_id" to ToolParam(ToolParamType.STRING, "candidate ID", required = false),
+            "name" to ToolParam(ToolParamType.STRING, "name", required = false)
+        )
+        override val requiresConfirmation: Boolean = true
+        override fun describeAction(arguments: Map<String, Any?>): String = "Call ${arguments["phone_number"]}?"
+        var executed = false
+        var executedArgs: Map<String, Any?>? = null
+        override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult {
+            executed = true
+            executedArgs = arguments
+            return ToolResult.success(mapOf("calling" to (arguments["name"]?.toString() ?: "Mom"), "phone_number" to (arguments["phone_number"]?.toString() ?: "")))
+        }
+    }
+
+    @Test
+    fun `shared voice candidate registry survives across two newVoiceSession turns without second lookup`() = runTest {
+        val lookupTool = TestLookupTool()
+        val callTool = TestDisambiguationCallTool()
+        val toolRegistry = ToolRegistry().apply {
+            register(lookupTool)
+            register(callTool)
+        }
+
+        val mockLlm = MockLlmEngine(
+            listOf(
+                """{"tool": "lookup_contact", "arguments": {"query": "Mom"}}""",
+                """{"response": "Found Mom and Mom Mobile. Which one?"}""",
+                """{"tool": "call_contact", "arguments": {"candidate_id": "c1", "name": "Mom"}}""",
+                """{"response": "Calling Mom now."}"""
+            )
+        )
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, mockLlm, toolRegistry, ttsEngine = null)
+
+        // Turn 1 (Voice Activation 1)
+        val session1 = manager.newVoiceSession()
+        session1.processUtterance("Call Mom", enableTts = false).toList()
+        assertEquals(1, lookupTool.executedCount)
+        assertTrue(manager.getVoiceCandidates().containsKey("c1"))
+        assertTrue(manager.getVoiceCandidates().containsKey("c2"))
+
+        // Turn 2 (Voice Activation 2 - new session instance)
+        val session2 = manager.newVoiceSession()
+        val events2 = mutableListOf<ConversationEvent>()
+        val job = launch {
+            session2.processUtterance("The first one", enableTts = false).collect { event ->
+                events2.add(event)
+                if (event is ConversationEvent.ConfirmationRequired) {
+                    session2.respondToConfirmation(true)
+                }
+            }
+        }
+        job.join()
+
+        // Lookup should NOT have executed again
+        assertEquals(1, lookupTool.executedCount)
+        assertTrue(callTool.executed)
+        assertEquals("1234567890", callTool.executedArgs?.get("phone_number"))
+        // After call execution, registry is cleared
+        assertTrue(manager.getVoiceCandidates().isEmpty())
+    }
+
+    @Test
+    fun `chat registry is isolated from voice registry`() = runTest {
+        val lookupTool = TestLookupTool()
+        val toolRegistry = ToolRegistry().apply {
+            register(lookupTool)
+        }
+        val mockLlm = MockLlmEngine(
+            listOf(
+                """{"tool": "lookup_contact", "arguments": {"query": "Mom"}}""",
+                """{"response": "Which one?"}"""
+            )
+        )
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, mockLlm, toolRegistry, ttsEngine = null)
+
+        val voiceSession = manager.newVoiceSession()
+        voiceSession.processUtterance("Call Mom", enableTts = false).toList()
+
+        // Voice registry has candidates
+        assertTrue(manager.getVoiceCandidates().isNotEmpty())
+
+        // Clearing voice candidates clears voice without crashing
+        manager.clearVoiceCandidates()
+        assertTrue(manager.getVoiceCandidates().isEmpty())
+    }
+
+    @Test
+    fun `pendingAsk survives newVoiceSession and is cleared on clearVoiceCandidates and reset`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, MockLlmEngine(emptyList()), ToolRegistry(), ttsEngine = null)
+
+        val candidates = listOf(ContactCandidate("c1", "Mom", "123"))
+        val pending = PendingAsk("Which Mom?", candidates)
+
+        manager.pendingVoiceAsk = pending
+        assertEquals(pending, manager.pendingVoiceAsk)
+
+        // New voice session gets pendingAsk
+        val session1 = manager.newVoiceSession()
+        assertEquals(pending, session1.pendingAsk)
+
+        // Clear voice candidates clears pendingAsk
+        manager.clearVoiceCandidates()
+        assertNull(manager.pendingVoiceAsk)
+
+        // New voice session has null pendingAsk
+        val session2 = manager.newVoiceSession()
+        assertNull(session2.pendingAsk)
+
+        // Reset also clears pendingAsk
+        manager.pendingVoiceAsk = pending
+        manager.reset()
+        assertNull(manager.pendingVoiceAsk)
+    }
 }
+
 
 
 

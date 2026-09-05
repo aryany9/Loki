@@ -499,10 +499,20 @@ class MainActivity : ComponentActivity() {
                 url = ""
             )
 
+            val npuConfidence = if (containerInfo.npuTargetSoc != null) {
+                MetadataConfidence.VERIFIED
+            } else {
+                MetadataConfidence.UNKNOWN
+            }
+
             val capabilities = ModelRecordCapabilities(
                 audioInput = ModelMetadataField(
                     value = isDirectAudio,
                     confidence = confidence
+                ),
+                npuTargetSoc = ModelMetadataField(
+                    value = containerInfo.npuTargetSoc,
+                    confidence = npuConfidence
                 )
             )
 

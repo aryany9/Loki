@@ -252,7 +252,7 @@ fun SettingsScreen(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             val statusText = when (modelState) {
-                                is LlmModelState.Ready -> "Ready (${(modelState as LlmModelState.Ready).modelName})"
+                                is LlmModelState.Ready -> "Ready (${(modelState as LlmModelState.Ready).modelName} · ${(modelState as LlmModelState.Ready).activeBackend})"
                                 is LlmModelState.Loading -> "Loading on-device model..."
                                 is LlmModelState.Error -> "Error: ${(modelState as LlmModelState.Error).message}"
                                 is LlmModelState.NotLoaded -> "Not Loaded"

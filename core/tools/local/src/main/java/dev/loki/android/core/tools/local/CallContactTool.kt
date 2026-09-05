@@ -13,10 +13,9 @@ import dev.loki.android.core.tools.ToolResult
 class CallContactTool : LocalTool {
     override val name: String = "call_contact"
     override val capability: String = "calling"
-    override val description: String = "Initiate a phone call to a named contact or phone number."
+    override val description: String = "Initiate a phone call using a confirmed candidate_id or contact name from a previous lookup. To call or find contacts by name, use lookup_contact first."
     override val parameters: Map<String, ToolParam> = mapOf(
         "candidate_id" to ToolParam(ToolParamType.STRING, "Candidate ID from contact lookup (e.g. 'c1')", required = false),
-        "phone_number" to ToolParam(ToolParamType.STRING, "Phone number or contact URI to call", required = false),
         "name" to ToolParam(ToolParamType.STRING, "Contact name if known", required = false)
     )
     override val requiredPermissions: List<String> = listOf(Manifest.permission.CALL_PHONE)
@@ -28,8 +27,8 @@ class CallContactTool : LocalTool {
         val rawNumber = arguments["phone_number"]?.toString()?.trim()
             ?: arguments["number"]?.toString()?.trim()
 
-        val name = if (rawName.isNullOrBlank() || rawName.equals("null", ignoreCase = true)) null else rawName
-        val number = if (rawNumber.isNullOrBlank() || rawNumber.equals("null", ignoreCase = true)) null else rawNumber
+        val name = if (rawName.isNullOrBlank() || rawName.equals("null", ignoreCase = true) || rawName.equals("N/A", ignoreCase = true)) null else rawName
+        val number = if (rawNumber.isNullOrBlank() || rawNumber.equals("null", ignoreCase = true) || rawNumber.equals("N/A", ignoreCase = true)) null else rawNumber
 
         return when {
             name != null && number != null && name != number -> "Calling $name at $number?"
@@ -40,12 +39,14 @@ class CallContactTool : LocalTool {
     }
 
     override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult {
-        val phoneNumber = arguments["phone_number"]?.toString()?.trim()
-            ?: return ToolResult.error("Missing phone_number", ToolErrorCode.VALIDATION_ERROR)
+        val rawNumber = arguments["phone_number"]?.toString()?.trim()
+        val phoneNumber = if (rawNumber.isNullOrBlank() || rawNumber.equals("null", ignoreCase = true) || rawNumber.equals("N/A", ignoreCase = true)) {
+            return ToolResult.error("Cannot place call: missing or invalid phone number", ToolErrorCode.VALIDATION_ERROR)
+        } else rawNumber
 
         val rawName = arguments["name"]?.toString()?.trim()
             ?: arguments["contact_name"]?.toString()?.trim()
-        val displayName = if (!rawName.isNullOrBlank() && !rawName.equals("null", ignoreCase = true)) {
+        val displayName = if (!rawName.isNullOrBlank() && !rawName.equals("null", ignoreCase = true) && !rawName.equals("N/A", ignoreCase = true)) {
             rawName
         } else {
             phoneNumber

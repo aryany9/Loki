@@ -310,6 +310,9 @@ class ChatViewModel(
                             }
                             refreshConversations()
                         }
+                        is ConversationEvent.ContextCompacted -> {
+                            android.util.Log.i("ChatViewModel", "Context compacted: ${event.message}")
+                        }
                         is ConversationEvent.Error -> {
                             _pendingConfirmation.value = null
                             _messages.value = _messages.value.map { msg ->

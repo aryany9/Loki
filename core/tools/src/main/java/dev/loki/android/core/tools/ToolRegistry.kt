@@ -6,6 +6,22 @@ import androidx.core.content.ContextCompat
 import java.util.concurrent.ConcurrentHashMap
 
 /**
+ * Marker interface used by ToolRegistry to apply state-scoped grammar gating.
+ * Imported via type alias to avoid a circular dependency on the conversation module.
+ */
+interface TaskStateGate {
+    /** Non-null when only this specific tool should be exposed (e.g. select_contact during disambiguation). */
+    val restrictToTool: String?
+        get() = null
+    /** Non-null when this single tool should be hidden from the grammar. */
+    val hiddenTool: String?
+        get() = null
+    /** Set of tools that should be hidden from the grammar. Defaults to setOfNotNull(hiddenTool). */
+    val hiddenTools: Set<String>
+        get() = setOfNotNull(hiddenTool)
+}
+
+/**
  * Central registry for all assistant tools.
  * Handles tool registration, discovery, permission checking, and dispatch.
  */
@@ -47,14 +63,27 @@ class ToolRegistry {
         permissionManager: PermissionManager = PermissionManager(),
         activeCapability: String? = null,
         advancingTool: String? = null,
-        offline: Boolean = false
+        offline: Boolean = false,
+        taskState: TaskStateGate? = null
     ): List<Tool> {
         return tools.values.filter { tool ->
             val envAvailable = !offline || tool !is OnlineTool
             val permissionGranted = tool.requiredPermissions.isEmpty() || permissionManager.arePermissionsGranted(context, tool.requiredPermissions)
             val capabilityMatches = activeCapability == null || tool.capability == "general" || tool.capability == activeCapability
             val internalMatches = !tool.isInternal || tool.name == advancingTool
-            envAvailable && permissionGranted && capabilityMatches && internalMatches
+
+            // State-scoped gating: CONTACT_DISAMBIGUATION restricts to select_contact + general tools only.
+            val restrictTo = taskState?.restrictToTool
+            val stateRestrictionPasses = restrictTo == null ||
+                tool.name == restrictTo ||
+                tool.capability == "general"
+
+            // State-scoped gating: hides tools specified by the task state gate.
+            val hideTools = taskState?.hiddenTools ?: setOfNotNull(taskState?.hiddenTool)
+            val stateHidePasses = tool.name !in hideTools
+
+            envAvailable && permissionGranted && capabilityMatches && internalMatches &&
+                stateRestrictionPasses && stateHidePasses
         }
     }
 

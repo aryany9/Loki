@@ -183,4 +183,12 @@ class VoiceInputStrategyResolverTest {
         val unavailable = result as VoiceInputStrategyResult.Unavailable
         assertEquals(VoiceUnavailableReason.NO_ACTIVE_MODEL, unavailable.reason)
     }
+
+    @Test
+    fun `ungranted microphone permission resolves to Unavailable AUDIO_PERMISSION_DENIED`() {
+        val result = resolver.resolve(modelManager = null, sttEngine = null, isRecordAudioGranted = false)
+        assertTrue(result is VoiceInputStrategyResult.Unavailable)
+        val unavailable = result as VoiceInputStrategyResult.Unavailable
+        assertEquals(VoiceUnavailableReason.AUDIO_PERMISSION_DENIED, unavailable.reason)
+    }
 }

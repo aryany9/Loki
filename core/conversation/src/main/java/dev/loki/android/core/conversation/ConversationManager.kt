@@ -29,9 +29,29 @@ sealed interface ConversationEvent {
         val repeatBack: String
     ) : ConversationEvent
     data class Speaking(val text: String) : ConversationEvent
+    data class AskUser(val question: String) : ConversationEvent
     data class Completed(val finalResponse: String, val toolResult: ToolResult? = null) : ConversationEvent
+    data class ContextCompacted(val message: String = "Context compacted") : ConversationEvent
     data class Error(val message: String) : ConversationEvent
 }
+
+/**
+ * Structured in-activation pending state carrying question and candidate options across turns.
+ */
+data class PendingAsk(
+    val question: String,
+    val candidates: List<ContactCandidate> = emptyList(),
+    val selectedId: String? = null
+)
+
+/**
+ * Structured in-activation pending confirmation state carrying resolved candidate, repeat-back string, and asked status.
+ */
+data class PendingVoiceConfirmation(
+    val candidate: ContactCandidate,
+    val repeatBack: String,
+    val isAsked: Boolean = false
+)
 
 /**
  * ConversationManager manages LLM & tool coordination, providing scoped ConversationSessions
@@ -51,9 +71,28 @@ class ConversationManager(
     private var persistentChatContext = ConversationContext(maxTurns = 10)
     private var activeAgentConfig: AgentConfig = AgentConfig()
     private var activeConversationId: String? = null
+    private val sharedVoiceCandidates = mutableMapOf<String, ContactCandidate>()
+    private val chatContactCandidates = mutableMapOf<String, ContactCandidate>()
+    var pendingVoiceAsk: PendingAsk? = null
+    var pendingVoiceConfirmation: PendingVoiceConfirmation? = null
 
     val currentConversationId: String?
         get() = activeConversationId
+
+    fun getVoiceCandidates(): Map<String, ContactCandidate> = sharedVoiceCandidates.toMap()
+
+    fun clearVoiceCandidates() {
+        sharedVoiceCandidates.clear()
+        pendingVoiceAsk = null
+        pendingVoiceConfirmation = null
+    }
+
+    fun clearContactCandidates() {
+        sharedVoiceCandidates.clear()
+        chatContactCandidates.clear()
+        pendingVoiceAsk = null
+        pendingVoiceConfirmation = null
+    }
 
     fun getAgentConfig(): AgentConfig = activeAgentConfig
 
@@ -83,6 +122,7 @@ class ConversationManager(
         val record = conversationStore.createConversation(title = title)
         activeConversationId = record.id
         persistentChatContext.clear()
+        chatContactCandidates.clear()
         llmEngine.startConversation(activeAgentConfig)
         return record
     }
@@ -95,6 +135,7 @@ class ConversationManager(
         val record = conversationStore.loadConversation(id) ?: return null
         activeConversationId = record.id
         persistentChatContext.clear()
+        chatContactCandidates.clear()
         for (turn in record.turns) {
             persistentChatContext.append(turn)
         }
@@ -137,7 +178,8 @@ class ConversationManager(
             conversationStore = conversationStore,
             memoryStore = memoryStore,
             conversationId = convId,
-            ioDispatcher = ioDispatcher
+            ioDispatcher = ioDispatcher,
+            contactCandidateRegistry = chatContactCandidates
         )
     }
 
@@ -154,7 +196,12 @@ class ConversationManager(
             conversationStore = null,
             memoryStore = memoryStore,
             conversationId = null,
-            ioDispatcher = ioDispatcher
+            ioDispatcher = ioDispatcher,
+            contactCandidateRegistry = sharedVoiceCandidates,
+            pendingAsk = pendingVoiceAsk,
+            onPendingAskUpdated = { updated -> pendingVoiceAsk = updated },
+            pendingVoiceConfirmation = pendingVoiceConfirmation,
+            onPendingVoiceConfirmationUpdated = { updated -> pendingVoiceConfirmation = updated }
         )
     }
 
@@ -174,6 +221,11 @@ class ConversationManager(
         cancel()
         activeConversationId = null
         persistentChatContext.clear()
+        sharedVoiceCandidates.clear()
+        chatContactCandidates.clear()
+        pendingVoiceAsk = null
+        pendingVoiceConfirmation = null
+        llmEngine.resetConversation()
     }
 
     companion object {
