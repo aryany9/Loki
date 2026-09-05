@@ -42,8 +42,7 @@ object NpuCapabilityProbe {
     ): NpuVendor {
         val combined = listOfNotNull(manufacturer, model, hardware, board)
             .joinToString(" ")
-            .lowercase()
-
+            .lowercase(java.util.Locale.ROOT)
         return when {
             combined.contains("qcom") || combined.contains("qualcomm") || combined.contains("snapdragon") || combined.contains("sm8") || combined.contains("sm7") -> NpuVendor.QUALCOMM
             combined.contains("mediatek") || combined.contains("dimensity") || combined.contains("mt6") || combined.contains("mt8") -> NpuVendor.MEDIATEK
