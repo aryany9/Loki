@@ -1260,6 +1260,7 @@ open class ConversationSession(
 
         private val TOOL_JSON_REGEX = """\{\s*"tool"\s*:""".toRegex()
         private val STANDALONE_TOOL_NAME_REGEX = """\b(ask_user|call_contact|lookup_contact|dial_number|select_contact|get_current_time|get_battery_status|open_app|set_timer|set_alarm|media_control|toggle_flashlight|open_wifi_settings|open_bluetooth_settings|get_wifi_state|get_bluetooth_state|get_ram_usage|remember_fact|search_chat_history)\b""".toRegex(RegexOption.IGNORE_CASE)
+        private val STANDALONE_TOOL_NAME_EXACT_REGEX = """^(?:`?)(ask_user|call_contact|lookup_contact|dial_number|select_contact|get_current_time|get_battery_status|open_app|set_timer|set_alarm|media_control|toggle_flashlight|open_wifi_settings|open_bluetooth_settings|get_wifi_state|get_bluetooth_state|get_ram_usage|remember_fact|search_chat_history)(?:\([^)]*\))?(?:`?)$""".toRegex(RegexOption.IGNORE_CASE)
 
         internal fun containsProtocolArtifacts(
             text: String,
@@ -1267,8 +1268,12 @@ open class ConversationSession(
         ): Boolean {
             if (text.contains("<|") || text.contains("<|tool_call")) return true
             if (TOOL_JSON_REGEX.containsMatchIn(text)) return true
-            if (mode == dev.loki.android.core.models.ConversationMode.VOICE && text.contains("```")) return true
-            if (STANDALONE_TOOL_NAME_REGEX.containsMatchIn(text)) return true
+            if (mode == dev.loki.android.core.models.ConversationMode.VOICE) {
+                if (text.contains("```")) return true
+                if (STANDALONE_TOOL_NAME_REGEX.containsMatchIn(text)) return true
+            } else {
+                if (STANDALONE_TOOL_NAME_EXACT_REGEX.matches(text.trim())) return true
+            }
             return false
         }
 

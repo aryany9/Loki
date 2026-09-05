@@ -854,6 +854,15 @@ class ConversationSessionTest {
         val javaCode = "```java\npublic class HelloWorld {\n    public static void main(String[] args) {\n        System.out.println(\"Hello!\");\n    }\n}\n```"
         assertFalse("Markdown code block must NOT be treated as artifact in CHAT mode", ConversationSession.containsProtocolArtifacts(javaCode, dev.loki.android.core.models.ConversationMode.CHAT))
         assertTrue("Markdown code block MUST be treated as artifact in VOICE mode", ConversationSession.containsProtocolArtifacts(javaCode, dev.loki.android.core.models.ConversationMode.VOICE))
+
+        val capabilitiesOverview = """
+            Here is what I can do:
+            - Call Contact: Use `call_contact(name)` to place a call.
+            - Lookup Contact: Use `lookup_contact(query)` to find a contact.
+            - Flashlight: Use `toggle_flashlight(enabled)` to toggle the flashlight.
+        """.trimIndent()
+        assertFalse("Capabilities overview in CHAT mode must NOT be sanitized", ConversationSession.containsProtocolArtifacts(capabilitiesOverview, dev.loki.android.core.models.ConversationMode.CHAT))
+        assertTrue("Bare tool name in CHAT mode MUST be sanitized", ConversationSession.containsProtocolArtifacts("call_contact", dev.loki.android.core.models.ConversationMode.CHAT))
     }
 
     @Test
