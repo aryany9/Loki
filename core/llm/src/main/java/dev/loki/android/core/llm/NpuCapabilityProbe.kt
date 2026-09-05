@@ -3,6 +3,7 @@ package dev.loki.android.core.llm
 import android.content.Context
 import android.os.Build
 import java.io.File
+import java.util.Locale
 
 enum class NpuVendor {
     QUALCOMM,
@@ -42,7 +43,8 @@ object NpuCapabilityProbe {
     ): NpuVendor {
         val combined = listOfNotNull(manufacturer, model, hardware, board)
             .joinToString(" ")
-            .lowercase(java.util.Locale.ROOT)
+            .lowercase(Locale.ROOT)
+
         return when {
             combined.contains("qcom") || combined.contains("qualcomm") || combined.contains("snapdragon") || combined.contains("sm8") || combined.contains("sm7") -> NpuVendor.QUALCOMM
             combined.contains("mediatek") || combined.contains("dimensity") || combined.contains("mt6") || combined.contains("mt8") -> NpuVendor.MEDIATEK
