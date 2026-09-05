@@ -158,8 +158,11 @@ fun ModelLibraryScreen(
                     val socModel = probe.socModel
                     val htpGen = probe.htpGeneration
                     val isSocCompatible = if (model.capabilities.isNpuTargeted && !targetSoc.isNullOrBlank()) {
-                        (socModel != null && socModel.contains(targetSoc, ignoreCase = true)) ||
-                        (htpGen != null && htpGen.equals(dev.loki.android.core.llm.NpuCapabilityProbe.lookupHtpGeneration(targetSoc), ignoreCase = true))
+                        if (socModel != null && socModel.contains("SM", ignoreCase = true)) {
+                            socModel.contains(targetSoc, ignoreCase = true)
+                        } else {
+                            htpGen != null && htpGen.equals(dev.loki.android.core.llm.NpuCapabilityProbe.lookupHtpGeneration(targetSoc), ignoreCase = true)
+                        }
                     } else true
 
                     Row(modifier = Modifier.fillMaxWidth()) {
