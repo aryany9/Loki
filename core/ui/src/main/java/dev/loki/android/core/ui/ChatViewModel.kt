@@ -14,6 +14,7 @@ import dev.loki.android.core.conversation.ConversationRecord
 import dev.loki.android.core.conversation.ConversationSession
 import dev.loki.android.core.conversation.ConversationTurn
 import dev.loki.android.core.conversation.PendingConfirmation
+import dev.loki.android.core.conversation.ToolCallParser
 import dev.loki.android.core.llm.LlmModelState
 import dev.loki.android.core.assistant.VoiceUnavailableReason
 import dev.loki.android.core.models.DownloadResult
@@ -256,7 +257,10 @@ class ChatViewModel(
                             currentToolInvocations = (currentToolInvocations + newInvocation).toMutableList()
                             inFlightCallId = callId
                             _messages.value = _messages.value.map { msg ->
-                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
+                                if (msg.id == inFlightMessageId) msg.copy(
+                                    text = "",
+                                    toolInvocations = currentToolInvocations.toList()
+                                ) else msg
                             }
                         }
                         is ConversationEvent.ConfirmationRequired -> {
@@ -281,13 +285,22 @@ class ChatViewModel(
                             val now = System.currentTimeMillis()
                             if (now - lastUpdateTime >= 50L) {
                                 lastUpdateTime = now
+                                val cleaned = ToolCallParser.cleanStreamingPartial(event.partial)
                                 _messages.value = _messages.value.map { msg ->
                                     if (msg.id == inFlightMessageId) {
-                                        msg.copy(
-                                            text = event.partial,
-                                            isThinking = false,
-                                            isStreaming = true
-                                        )
+                                        if (cleaned != null) {
+                                            msg.copy(
+                                                text = cleaned,
+                                                isThinking = false,
+                                                isStreaming = true
+                                            )
+                                        } else {
+                                            msg.copy(
+                                                text = "",
+                                                isThinking = true,
+                                                isStreaming = false
+                                            )
+                                        }
                                     } else msg
                                 }
                             }
@@ -315,7 +328,10 @@ class ChatViewModel(
                             currentToolInvocations = (currentToolInvocations + newInvocation).toMutableList()
                             inFlightCallId = event.callId
                             _messages.value = _messages.value.map { msg ->
-                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
+                                if (msg.id == inFlightMessageId) msg.copy(
+                                    text = "",
+                                    toolInvocations = currentToolInvocations.toList()
+                                ) else msg
                             }
                         }
                         is ConversationEvent.ToolCallCompleted -> {

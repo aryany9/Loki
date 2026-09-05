@@ -246,4 +246,38 @@ object ToolCallParser {
         } catch (_: Throwable) {}
         return ParsedLlmResponse.ToolCall("ask_user", mapOf("text" to question))
     }
+
+    /**
+     * Cleans streaming text tokens for real-time UI display.
+     * - Returns null if the partial string represents a tool call (starts with tool JSON),
+     *   so raw JSON does not leak into the conversational text bubble while streaming.
+     * - Unwraps {"response": "..."} JSON envelopes on-the-fly to stream natural text
+     *   without flashing raw JSON or spurious Markdown code fences.
+     * - Preserves genuine Markdown responses and code blocks unmodified.
+     */
+    fun cleanStreamingPartial(raw: String): String? {
+        val trimmed = raw.trimStart()
+        // 1. Tool calls -> hide raw JSON from message text
+        if (trimmed.startsWith("{\"tool\"") ||
+            trimmed.startsWith("{\n  \"tool\"") ||
+            trimmed.startsWith("```json\n{\"tool\"") ||
+            trimmed.startsWith("```json\n{\n  \"tool\"")
+        ) {
+            return null
+        }
+
+        // 2. Embedded {"response": "..."} JSON envelope -> unwrap for streaming
+        val responsePrefixRegex = Regex("""^(?:```json\s*)?\{\s*"response"\s*:\s*"""")
+        val match = responsePrefixRegex.find(trimmed)
+        if (match != null) {
+            var content = trimmed.substring(match.range.last + 1)
+            // Clean trailing JSON closing tokens if present at the end of streaming
+            if (content.endsWith("```")) content = content.removeSuffix("```").trimEnd()
+            if (content.endsWith("}")) content = content.removeSuffix("}").trimEnd()
+            if (content.endsWith("\"")) content = content.removeSuffix("\"")
+            return content.replace("\\n", "\n").replace("\\\"", "\"")
+        }
+
+        return raw
+    }
 }

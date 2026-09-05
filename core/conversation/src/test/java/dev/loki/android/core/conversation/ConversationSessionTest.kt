@@ -138,7 +138,7 @@ class ConversationSessionTest {
 
         val core = session.buildCoreSystemPrompt()
         assertTrue(core.contains("You are Loki"))
-        assertTrue(core.contains("Always output JSON"))
+        assertTrue(core.contains("output JSON"))
         assertFalse(core.contains("Available tools"))
         assertFalse(core.contains("Lookup contacts"))
     }
@@ -1937,7 +1937,7 @@ class ConversationSessionTest {
         )
         val prompt = session.buildCoreSystemPrompt()
         val customIdx = prompt.indexOf("Custom Chat Instruction!")
-        val toolIdx = prompt.indexOf("Always output JSON")
+        val toolIdx = prompt.indexOf("output JSON")
         val turnIdx = prompt.indexOf("Do NOT invoke ask_user")
         
         assertTrue(customIdx > -1)
@@ -1945,6 +1945,29 @@ class ConversationSessionTest {
         assertTrue(turnIdx > -1)
         assertTrue(toolIdx > customIdx)
         assertTrue(turnIdx > customIdx)
+    }
+
+    @Test
+    fun `Chat mode excludes ask_user from prompt tools during processUtterance`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val registry = ToolRegistry()
+        registry.register(MockScopedTool("ask_user", "general"))
+        registry.register(DummyLookupTool())
+
+        val engine = SequentialLlmEngine(listOf("Hello from chat!"))
+        val chatSession = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry,
+            mode = dev.loki.android.core.models.ConversationMode.CHAT
+        )
+
+        chatSession.processUtterance("test chat").toList()
+
+        val capturedPrompt = engine.prompts.firstOrNull()
+        assertNotNull(capturedPrompt)
+        assertTrue(capturedPrompt!!.contains("lookup_contact"))
+        assertFalse(capturedPrompt!!.contains("ask_user"))
     }
 }
 

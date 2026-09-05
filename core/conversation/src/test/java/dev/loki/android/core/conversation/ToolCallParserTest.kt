@@ -2,6 +2,7 @@ package dev.loki.android.core.conversation
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -261,5 +262,33 @@ class ToolCallParserTest {
         val direct = parsed as ParsedLlmResponse.DirectResponse
         assertTrue("Response must contain capability list text", direct.text.contains("lookup_contact"))
         assertTrue("Response must contain closing question", direct.text.contains("What would you like to do?"))
+    }
+
+    @Test
+    fun testCleanStreamingPartialHidesToolCalls() {
+        val toolCall1 = """{"tool": "call_contact""""
+        val toolCall2 = "```json\n{\"tool\": \"call_contact\""
+        val toolCall3 = "{\n  \"tool\": \"toggle_flashlight\""
+
+        assertNull(ToolCallParser.cleanStreamingPartial(toolCall1))
+        assertNull(ToolCallParser.cleanStreamingPartial(toolCall2))
+        assertNull(ToolCallParser.cleanStreamingPartial(toolCall3))
+    }
+
+    @Test
+    fun testCleanStreamingPartialUnwrapsResponseEnvelope() {
+        val jsonEnvelope = "```json\n{\n  \"response\": \"Hello world!\"\n}\n```"
+        val partial = "```json\n{\n  \"response\": \"Hello world"
+        val bareJson = "{\"response\": \"Hi there\"}"
+
+        assertEquals("Hello world!", ToolCallParser.cleanStreamingPartial(jsonEnvelope))
+        assertEquals("Hello world", ToolCallParser.cleanStreamingPartial(partial))
+        assertEquals("Hi there", ToolCallParser.cleanStreamingPartial(bareJson))
+    }
+
+    @Test
+    fun testCleanStreamingPartialPreservesRealMarkdown() {
+        val codeBlock = "Here is the code:\n```java\nclass Hello {}\n```"
+        assertEquals(codeBlock, ToolCallParser.cleanStreamingPartial(codeBlock))
     }
 }

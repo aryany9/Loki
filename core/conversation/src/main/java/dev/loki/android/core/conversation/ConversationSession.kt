@@ -218,19 +218,24 @@ open class ConversationSession(
             while (iterations < maxIterations) {
                 iterations++
 
+                val modePolicy = when (mode) {
+                    dev.loki.android.core.models.ConversationMode.CHAT -> ChatToolPolicy
+                    dev.loki.android.core.models.ConversationMode.VOICE -> VoiceToolPolicy
+                }
                 val currentAvailableTools = toolRegistry.getAvailableTools(
                     context = context,
                     permissionManager = permissionManager,
                     activeCapability = activeCapability,
                     advancingTool = taskState?.advancingTool,
-                    taskState = taskState as? dev.loki.android.core.tools.TaskStateGate
+                    taskState = taskState as? dev.loki.android.core.tools.TaskStateGate,
+                    policy = modePolicy
                 )
                 val currentDisabledTools = toolRegistry.getDisabledTools(
                     context = context,
                     permissionManager = permissionManager,
                     activeCapability = activeCapability,
                     advancingTool = taskState?.advancingTool
-                )
+                ).filter { (tool, _) -> modePolicy.isAllowed(tool) }
                 TurnLogger.logTools(turnId, currentAvailableTools.size, currentDisabledTools.size)
 
                 val activeBackend = when (val state = llmEngine.modelState.value) {
@@ -1027,7 +1032,7 @@ open class ConversationSession(
         appendScopedMemories(sb, dev.loki.android.core.models.ConversationMode.CHAT)
 
         // TOOL_PROTOCOL (Recency anchor — pinned last)
-        sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}} or {\"response\": \"conversational answer\"}.\n\n")
+        sb.append("To use a tool, output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}}. If no tool is needed, respond directly in Markdown — do not wrap conversational responses in JSON.\n\n")
 
         // TURN_PROTOCOL (Recency anchor — pinned last, Chat-specific: no ask_user)
         sb.append("If you need information from the user, ask directly in Markdown. Do NOT invoke ask_user — it is not available in this context and will cause an error.")
