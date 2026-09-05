@@ -92,7 +92,8 @@ class AndroidTtsEngine(
             }
         })
 
-        if (text.any { it in '\u0900'..'\u097F' }) {
+        val isAutoLanguage = pendingLanguageTag == null || pendingLanguageTag == "auto"
+        if (isAutoLanguage && text.any { it in '\u0900'..'\u097F' }) {
             try {
                 tts?.setLanguage(Locale("hi", "IN"))
             } catch (e: Throwable) {
@@ -103,7 +104,7 @@ class AndroidTtsEngine(
             try {
                 tts?.setLanguage(targetLocale)
             } catch (e: Throwable) {
-                Log.w(TAG, "Failed to restore locale $targetLocale", e)
+                Log.w(TAG, "Failed to set locale $targetLocale", e)
             }
         }
 
