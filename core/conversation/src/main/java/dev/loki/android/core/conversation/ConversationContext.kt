@@ -7,8 +7,8 @@ import dev.loki.android.core.tools.ToolResult
  * Manages the multi-turn history and token budget for on-device LLM reasoning.
  */
 class ConversationContext(
-    private val maxTurns: Int = 10,
-    private val maxTokenBudget: Int = 1500
+    val maxTurns: Int = 10,
+    val maxTokenBudget: Int = 1500
 ) {
     private val turns = mutableListOf<ConversationTurn>()
 
@@ -70,7 +70,8 @@ class ConversationContext(
                 is ConversationTurn.ToolExecutionResult -> {
                     sb.append("<|im_start|>user\n")
                     sb.append("Tool result for ").append(turn.tool).append(": ")
-                    sb.append(if (turn.result.success) turn.result.data.toString() else turn.result.error)
+                    val content = if (turn.result.success) turn.result.data.toString() else (turn.result.error ?: "")
+                    sb.append(ConversationSession.maskNumbersInString(content))
                     sb.append("<|im_end|>\n")
                 }
                 is ConversationTurn.Assistant -> {
@@ -108,8 +109,9 @@ class ConversationContext(
                 is ConversationTurn.ToolExecutionResult -> {
                     sb.append("<start_of_turn>user\nTool result for ")
                         .append(turn.tool).append(": ")
-                        .append(if (turn.result.success) turn.result.data.toString() else turn.result.error)
-                        .append("<end_of_turn>\n")
+                    val content = if (turn.result.success) turn.result.data.toString() else (turn.result.error ?: "")
+                    sb.append(ConversationSession.maskNumbersInString(content))
+                    sb.append("<end_of_turn>\n")
                 }
             }
         }

@@ -11,6 +11,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class SetTimerTool : LocalTool {
     override val name: String = "set_timer"
+    override val capability: String = "clock"
     override val description: String = "Set a countdown timer on the device."
     override val parameters: Map<String, ToolParam> = mapOf(
         "seconds" to ToolParam(ToolParamType.NUMBER, "Length of the timer in seconds", required = true),

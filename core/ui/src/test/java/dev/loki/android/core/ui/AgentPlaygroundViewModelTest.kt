@@ -235,4 +235,26 @@ class AgentPlaygroundViewModelTest {
         assertTrue(viewModel.uiState.value.testPromptOutput?.contains("What is the capital of France?") == true)
         assertTrue(fakeLlm.lastGeneratedPrompt?.contains("What is the capital of France?") == true)
     }
+
+    @Test
+    fun `AgentPlaygroundViewModel updates and persists conversationLanguage`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val fakeLlm = FakeLlmEngine()
+        val manager = ConversationManager(dummyContext, fakeLlm, ToolRegistry(), ttsEngine = null)
+        val fakeRepo = FakeAgentConfigRepository(AgentConfig(conversationLanguage = "auto"))
+
+        val viewModel = AgentPlaygroundViewModel(dummyContext, manager, fakeRepo)
+        advanceUntilIdle()
+
+        assertEquals("auto", viewModel.uiState.value.conversationLanguage)
+
+        viewModel.updateConversationLanguage("es")
+        assertEquals("es", viewModel.uiState.value.conversationLanguage)
+
+        viewModel.directSave()
+        advanceUntilIdle()
+
+        assertEquals("es", fakeRepo.currentConfig.conversationLanguage)
+        assertEquals("es", manager.getAgentConfig().conversationLanguage)
+    }
 }

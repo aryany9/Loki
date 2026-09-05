@@ -1,29 +1,45 @@
 package dev.loki.android.core.assistant
 
+import android.content.Context
+import android.content.Intent
 import android.util.Log
 import dev.loki.android.core.conversation.ConversationEvent
 import dev.loki.android.core.models.ModelRuntime
+import dev.loki.android.core.tools.ToolErrorCode
 import dev.loki.android.core.voice.stt.SttEvent
+import dev.loki.android.core.voice.tts.TtsEngine
+import dev.loki.android.core.voice.tts.speakAndAwait
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * AssistantSession coordinates the Android VoiceInteractionSession lifecycle,
- * LiteRtWhisperEngine STT transcription, ConversationManager single-turn execution,
- * and AndroidTtsEngine playback with multi-stage cancellation and error-to-Idle recovery.
+ * LiteRtWhisperEngine STT transcription, ConversationManager multi-turn / continuous listening,
+ * verbal confirmation state machine, and AndroidTtsEngine playback with multi-stage cancellation.
  */
 class AssistantSession(
+    val context: Context? = null,
     private val onDismissCallback: (() -> Unit)? = null
 ) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var activeTurnJob: Job? = null
+    private var activeVoiceSession: dev.loki.android.core.conversation.ConversationSession? = null
+    internal var ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
+    internal var audioRecorderFactory: () -> dev.loki.android.core.voice.stt.AudioRecorder = {
+        dev.loki.android.core.voice.stt.AudioRecorder(ioDispatcher = ioDispatcher)
+    }
 
     private val _state = MutableStateFlow<AssistantState>(AssistantState.Idle)
     val state: StateFlow<AssistantState> = _state.asStateFlow()
@@ -35,6 +51,13 @@ class AssistantSession(
     private var smoothedAmplitude = 0f
     @Volatile
     private var lastAmplitudeUpdateTimeMs = 0L
+
+    internal enum class TurnOutcome {
+        SUCCESS,
+        EMPTY_SPEECH,
+        ERROR,
+        PERMISSION_OPENED
+    }
 
     @Synchronized
     internal fun processRawRms(rawRms: Float) {
@@ -63,8 +86,17 @@ class AssistantSession(
         val sttEngine = provider?.getSttEngine()
         val conversationManager = provider?.getConversationManager()
 
+        val isMicGranted = if (context != null) {
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.RECORD_AUDIO
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+
         val resolver = VoiceInputStrategyResolver()
-        val resolution = resolver.resolve(modelManager, sttEngine)
+        val resolution = resolver.resolve(modelManager, sttEngine, isRecordAudioGranted = isMicGranted)
 
         when (resolution) {
             is VoiceInputStrategyResult.DirectAudio -> {
@@ -74,17 +106,51 @@ class AssistantSession(
                 if (conversationManager == null) return
 
                 activeTurnJob = scope.launch {
+                    var outcome: TurnOutcome? = null
                     try {
-                        executeDirectAudioTurn(conversationManager, sttEngine, modelManager)
+                        outcome = executeDirectAudioTurn(conversationManager, sttEngine, modelManager)
+                        when (outcome) {
+                            TurnOutcome.SUCCESS -> {
+                                Log.i(TAG, "Turn completed successfully")
+                            }
+                            TurnOutcome.EMPTY_SPEECH -> {
+                                Log.i(TAG, "No speech detected, returning to Idle silently")
+                            }
+                            TurnOutcome.PERMISSION_OPENED -> {
+                                Log.i(TAG, "Permission screen opened, returning to Idle")
+                            }
+                            TurnOutcome.ERROR -> {
+                                Log.w(TAG, "Turn ended with error, returning to Idle")
+                            }
+                        }
                     } catch (e: CancellationException) {
-                        Log.i(TAG, "Turn cancelled across active stages")
+                        Log.i(TAG, "Turn cancelled")
                         resetAmplitude()
-                        _state.value = AssistantState.Idle
                         throw e
                     } catch (e: Throwable) {
                         Log.e(TAG, "Turn failed with unhandled exception", e)
                         resetAmplitude()
                         _state.value = AssistantState.Error(e.message ?: "Error processing request")
+                    } finally {
+                        when {
+                            _state.value is AssistantState.Error -> {
+                                delay(1500)
+                                _state.value = AssistantState.Idle
+                            }
+                            outcome == TurnOutcome.SUCCESS -> {
+                                val currentSpeakingText = (_state.value as? AssistantState.Speaking)?.responseText
+                                    ?: (_state.value as? AssistantState.AwaitingFollowUp)?.responseText
+                                    ?: (_state.value as? AssistantState.Completed)?.responseText
+                                if (!currentSpeakingText.isNullOrBlank()) {
+                                    _state.value = AssistantState.Completed(currentSpeakingText)
+                                } else {
+                                    _state.value = AssistantState.Idle
+                                }
+                            }
+                            else -> {
+                                _state.value = AssistantState.Idle
+                            }
+                        }
                     }
                 }
             }
@@ -95,23 +161,60 @@ class AssistantSession(
                 if (sttEngine == null || conversationManager == null) return
 
                 activeTurnJob = scope.launch {
+                    var outcome: TurnOutcome? = null
                     try {
-                        executeSttTurn(conversationManager, sttEngine)
+                        outcome = executeSttTurn(conversationManager, sttEngine)
+                        when (outcome) {
+                            TurnOutcome.SUCCESS -> {
+                                Log.i(TAG, "Turn completed successfully")
+                            }
+                            TurnOutcome.EMPTY_SPEECH -> {
+                                Log.i(TAG, "No speech detected, returning to Idle silently")
+                            }
+                            TurnOutcome.PERMISSION_OPENED -> {
+                                Log.i(TAG, "Permission screen opened, returning to Idle")
+                            }
+                            TurnOutcome.ERROR -> {
+                                Log.w(TAG, "Turn ended with error, returning to Idle")
+                            }
+                        }
                     } catch (e: CancellationException) {
-                        Log.i(TAG, "Turn cancelled across active stages")
+                        Log.i(TAG, "Turn cancelled")
                         resetAmplitude()
-                        _state.value = AssistantState.Idle
                         throw e
                     } catch (e: Throwable) {
                         Log.e(TAG, "Turn failed with unhandled exception", e)
                         resetAmplitude()
                         _state.value = AssistantState.Error(e.message ?: "Error processing request")
+                    } finally {
+                        when {
+                            _state.value is AssistantState.Error -> {
+                                delay(1500)
+                                _state.value = AssistantState.Idle
+                            }
+                            outcome == TurnOutcome.SUCCESS -> {
+                                val currentSpeakingText = (_state.value as? AssistantState.Speaking)?.responseText
+                                    ?: (_state.value as? AssistantState.AwaitingFollowUp)?.responseText
+                                    ?: (_state.value as? AssistantState.Completed)?.responseText
+                                if (!currentSpeakingText.isNullOrBlank()) {
+                                    _state.value = AssistantState.Completed(currentSpeakingText)
+                                } else {
+                                    _state.value = AssistantState.Idle
+                                }
+                            }
+                            else -> {
+                                _state.value = AssistantState.Idle
+                            }
+                        }
                     }
                 }
             }
             is VoiceInputStrategyResult.Unavailable -> {
                 Log.w(TAG, resolution.message)
                 _state.value = AssistantState.Error(resolution.message)
+                if (resolution.reason == VoiceUnavailableReason.AUDIO_PERMISSION_DENIED) {
+                    openPermissionsScreen(context)
+                }
                 return
             }
         }
@@ -121,40 +224,72 @@ class AssistantSession(
         conversationManager: dev.loki.android.core.conversation.ConversationManager,
         sttEngine: dev.loki.android.core.voice.stt.SttEngine?,
         modelManager: dev.loki.android.core.models.ModelLibraryManager?
-    ) {
-        val recorder = dev.loki.android.core.voice.stt.AudioRecorder()
-        val recordStart = System.currentTimeMillis()
-        val audioFloats = recorder.recordUtterance(
-            onRmsUpdate = { rms ->
-                processRawRms(rms)
+    ): TurnOutcome {
+        val recorder = audioRecorderFactory()
+        val audioFloats = try {
+            recorder.recordUtterance(
+                onRmsUpdate = { rms ->
+                    processRawRms(rms)
+                }
+            )
+        } catch (e: dev.loki.android.core.voice.stt.MicUnavailableException) {
+            Log.e(TAG, "Microphone unavailable during direct audio capture: ${e.reason} - ${e.message}")
+            _state.value = AssistantState.Error("Microphone unavailable — grant mic permission")
+            if (e.reason == dev.loki.android.core.voice.stt.MicUnavailableReason.PERMISSION_DENIED) {
+                openPermissionsScreen(context)
+                return TurnOutcome.PERMISSION_OPENED
+            } else {
+                return TurnOutcome.ERROR
             }
-        )
-        val recordDuration = System.currentTimeMillis() - recordStart
+        }
         resetAmplitude()
 
-        if (audioFloats.isEmpty()) {
-            Log.i(TAG, "No audio recorded in direct-audio turn, returning to Idle")
-            _state.value = AssistantState.Idle
-            return
+        if (audioFloats.isEmpty() || isSilentBuffer(audioFloats)) {
+            Log.i(TAG, "Direct audio capture is empty or silent, skipping turn")
+            return TurnOutcome.EMPTY_SPEECH
         }
 
         _state.value = AssistantState.Processing(query = "")
         val wavBytes = dev.loki.android.core.voice.stt.WavEncoder.pcmFloatsToWav(audioFloats)
 
         var turnError: String? = null
+        var turnOutcome = TurnOutcome.SUCCESS
+        var finalResponseText = ""
+        var turnEndedInAskUser = false
+        val language = conversationManager.getAgentConfig().conversationLanguage
+
         val voiceSession = conversationManager.newVoiceSession()
+        activeVoiceSession = voiceSession
 
         voiceSession.processUtterance(
             userInput = "",
             audioBytes = wavBytes,
-            enableTts = true,
+            enableTts = false,
             source = "DIRECT_AUDIO"
         ).collect { event ->
             when (event) {
+                is ConversationEvent.ToolExecuted -> {
+                    if (event.result.errorCode == ToolErrorCode.PERMISSION_DENIED.name) {
+                        val permRaw = event.result.error?.substringAfter("Missing permission: ")?.trim() ?: "required"
+                        val permName = permRaw.substringAfterLast('.')
+                        val permMsg = "To do that, I need the $permName permission. Opening permissions."
+                        speakAndAwait(conversationManager.ttsEngine, permMsg)
+                        openPermissionsScreen(null)
+                        turnOutcome = TurnOutcome.PERMISSION_OPENED
+                    }
+                }
+                is ConversationEvent.AskUser -> {
+                    turnEndedInAskUser = true
+                    finalResponseText = event.question
+                    _state.value = AssistantState.Speaking(responseText = event.question)
+                }
                 is ConversationEvent.Speaking -> {
                     _state.value = AssistantState.Speaking(responseText = event.text)
                 }
                 is ConversationEvent.Completed -> {
+                    if (finalResponseText.isEmpty()) {
+                        finalResponseText = event.finalResponse
+                    }
                     _state.value = AssistantState.Speaking(responseText = event.finalResponse)
                 }
                 is ConversationEvent.Error -> {
@@ -170,49 +305,89 @@ class AssistantSession(
                 Log.w(TAG, "Direct-audio turn failed ($turnError); attempting auto-demotion to STT fallback")
                 _state.value = AssistantState.Processing(query = "Transcribing with STT fallback...", isDemoted = true)
 
-                val transcript = sttEngine!!.transcribeAudio(audioFloats)
+                val transcript = sttEngine!!.transcribeAudio(audioFloats, language)
                 if (transcript.isBlank()) {
-                    Log.i(TAG, "STT fallback produced empty transcript, returning to Idle")
-                    _state.value = AssistantState.Idle
-                    return
+                    return TurnOutcome.EMPTY_SPEECH
                 }
 
                 _state.value = AssistantState.Processing(query = transcript, isDemoted = true)
                 val fallbackSession = conversationManager.newVoiceSession()
+                activeVoiceSession = fallbackSession
                 fallbackSession.processUtterance(
                     userInput = transcript,
-                    enableTts = true,
+                    enableTts = false,
                     source = "VOICE"
                 ).collect { event ->
                     when (event) {
+                        is ConversationEvent.ToolExecuted -> {
+                            if (event.result.errorCode == ToolErrorCode.PERMISSION_DENIED.name) {
+                                val permRaw = event.result.error?.substringAfter("Missing permission: ")?.trim() ?: "required"
+                                val permName = permRaw.substringAfterLast('.')
+                                val permMsg = "To do that, I need the $permName permission. Opening permissions."
+                                speakAndAwait(conversationManager.ttsEngine, permMsg)
+                                openPermissionsScreen(null)
+                                turnOutcome = TurnOutcome.PERMISSION_OPENED
+                            }
+                        }
+                        is ConversationEvent.AskUser -> {
+                            turnEndedInAskUser = true
+                            finalResponseText = event.question
+                            _state.value = AssistantState.Speaking(responseText = event.question)
+                        }
                         is ConversationEvent.Speaking -> {
                             _state.value = AssistantState.Speaking(responseText = event.text)
                         }
                         is ConversationEvent.Completed -> {
+                            if (finalResponseText.isEmpty()) {
+                                finalResponseText = event.finalResponse
+                            }
                             _state.value = AssistantState.Speaking(responseText = event.finalResponse)
                         }
                         is ConversationEvent.Error -> {
                             _state.value = AssistantState.Error(message = event.message)
+                            turnOutcome = TurnOutcome.ERROR
                         }
                         else -> {}
                     }
                 }
             } else {
                 Log.e(TAG, "Direct-audio turn failed and STT engine is not available for fallback")
-                _state.value = AssistantState.Error(message = turnError!!)
+                _state.value = AssistantState.Error(message = turnError)
+                return TurnOutcome.ERROR
             }
         }
+
+        if (turnOutcome == TurnOutcome.SUCCESS && finalResponseText.isNotEmpty()) {
+            if (turnEndedInAskUser) {
+                finalResponseText = handleFollowUpLoop(
+                    conversationManager = conversationManager,
+                    voiceSession = activeVoiceSession ?: voiceSession,
+                    sttEngine = sttEngine,
+                    initialResponseText = finalResponseText,
+                    language = language,
+                    useDirectAudio = true
+                )
+            } else {
+                if (finalResponseText.contains("?")) {
+                    Log.d("LokiTurn", "[LokiTurn] turn ended with question prose but no ask_user — mic stays off")
+                }
+                speakAndAwait(conversationManager.ttsEngine, finalResponseText)
+            }
+        }
+
+        return turnOutcome
     }
 
     private suspend fun executeSttTurn(
         conversationManager: dev.loki.android.core.conversation.ConversationManager,
         sttEngine: dev.loki.android.core.voice.stt.SttEngine
-    ) {
+    ): TurnOutcome {
         var finalTranscript = ""
         var sttFailed = false
         var sttErrorMessage = ""
 
-        sttEngine.startListening().collect { event ->
+        val language = conversationManager.getAgentConfig().conversationLanguage
+        sttEngine.startListening(language).collect { event ->
             when (event) {
                 is SttEvent.Amplitude -> {
                     processRawRms(event.rms)
@@ -244,32 +419,358 @@ class AssistantSession(
 
         if (sttFailed) {
             Log.w(TAG, "Voice turn aborted due to STT failure: $sttErrorMessage")
-            return
+            return TurnOutcome.ERROR
         }
 
         if (finalTranscript.isBlank()) {
-            Log.i(TAG, "No speech detected in turn, returning to Idle")
-            _state.value = AssistantState.Idle
-            return
+            return TurnOutcome.EMPTY_SPEECH
         }
 
         _state.value = AssistantState.Processing(query = finalTranscript)
 
+        var turnOutcome = TurnOutcome.SUCCESS
+        var finalResponseText = ""
+        var turnEndedInAskUser = false
+
         val voiceSession = conversationManager.newVoiceSession()
-        voiceSession.processUtterance(finalTranscript, enableTts = true, source = "VOICE").collect { event ->
+        activeVoiceSession = voiceSession
+        voiceSession.processUtterance(finalTranscript, enableTts = false, source = "VOICE").collect { event ->
             when (event) {
+                is ConversationEvent.ToolExecuted -> {
+                    if (event.result.errorCode == ToolErrorCode.PERMISSION_DENIED.name) {
+                        val permRaw = event.result.error?.substringAfter("Missing permission: ")?.trim() ?: "required"
+                        val permName = permRaw.substringAfterLast('.')
+                        val permMsg = "To do that, I need the $permName permission. Opening permissions."
+                        speakAndAwait(conversationManager.ttsEngine, permMsg)
+                        openPermissionsScreen(null)
+                        turnOutcome = TurnOutcome.PERMISSION_OPENED
+                    }
+                }
+                is ConversationEvent.AskUser -> {
+                    turnEndedInAskUser = true
+                    finalResponseText = event.question
+                    _state.value = AssistantState.Speaking(responseText = event.question)
+                }
                 is ConversationEvent.Speaking -> {
                     _state.value = AssistantState.Speaking(responseText = event.text)
                 }
                 is ConversationEvent.Completed -> {
+                    if (finalResponseText.isEmpty()) {
+                        finalResponseText = event.finalResponse
+                    }
                     _state.value = AssistantState.Speaking(responseText = event.finalResponse)
                 }
                 is ConversationEvent.Error -> {
                     Log.e(TAG, "Conversation execution error: ${event.message}")
                     _state.value = AssistantState.Error(message = event.message)
+                    turnOutcome = TurnOutcome.ERROR
                 }
                 else -> {}
             }
+        }
+
+        if (turnOutcome == TurnOutcome.SUCCESS && finalResponseText.isNotEmpty()) {
+            if (turnEndedInAskUser) {
+                finalResponseText = handleFollowUpLoop(
+                    conversationManager = conversationManager,
+                    voiceSession = activeVoiceSession ?: voiceSession,
+                    sttEngine = sttEngine,
+                    initialResponseText = finalResponseText,
+                    language = language,
+                    useDirectAudio = false
+                )
+            } else {
+                if (finalResponseText.contains("?")) {
+                    Log.d("LokiTurn", "[LokiTurn] turn ended with question prose but no ask_user — mic stays off")
+                }
+                speakAndAwait(conversationManager.ttsEngine, finalResponseText)
+            }
+        }
+
+        return turnOutcome
+    }
+
+    private suspend fun transcribeVerdict(
+        sttEngine: dev.loki.android.core.voice.stt.SttEngine?,
+        audioFloats: FloatArray,
+        language: String
+    ): String {
+        if (sttEngine == null) return ""
+        if (audioFloats.isNotEmpty()) {
+            val transcript = sttEngine.transcribeAudio(audioFloats, language).trim()
+            if (transcript.isNotEmpty()) {
+                return transcript
+            }
+        }
+        var transcript = ""
+        try {
+            sttEngine.startListening(language).collect { event ->
+                if (event is dev.loki.android.core.voice.stt.SttEvent.FinalResult) {
+                    transcript = event.text.trim()
+                }
+            }
+        } catch (_: Throwable) {}
+        return transcript
+    }
+
+    internal suspend fun handleFollowUpLoop(
+        conversationManager: dev.loki.android.core.conversation.ConversationManager,
+        voiceSession: dev.loki.android.core.conversation.ConversationSession,
+        sttEngine: dev.loki.android.core.voice.stt.SttEngine?,
+        initialResponseText: String,
+        language: String = "auto",
+        useDirectAudio: Boolean = false
+    ): String {
+        val ttsEngine = conversationManager.ttsEngine
+        if (!useDirectAudio && sttEngine == null) {
+            speakAndAwait(ttsEngine, initialResponseText)
+            return initialResponseText
+        }
+
+        val recorder = audioRecorderFactory()
+        try {
+            recorder.arm()
+        } catch (e: dev.loki.android.core.voice.stt.MicUnavailableException) {
+            Log.e(TAG, "Microphone unavailable in follow-up loop: ${e.reason} - ${e.message}")
+            _state.value = AssistantState.Error("Microphone unavailable — grant mic permission")
+            speakAndAwait(ttsEngine, initialResponseText)
+            return initialResponseText
+        }
+
+        var currentResponse = initialResponseText
+        var currentTurnEndedInAskUser = true
+        var lastSpokenResponse: String? = null
+
+        try {
+            var rounds = 0
+            while (rounds < 10 && currentTurnEndedInAskUser) {
+                rounds++
+
+                // Attempt capture for this follow-up round with 20s timeout
+                var transcript: String? = null
+                var audioPcmBytes: ByteArray? = null
+
+                val roundHandled = withTimeoutOrNull(
+                    dev.loki.android.core.conversation.ConversationSession.CONFIRMATION_TIMEOUT_MS
+                ) {
+                    coroutineScope {
+                        _state.value = AssistantState.Speaking(responseText = currentResponse)
+                        val ttsDone = java.util.concurrent.atomic.AtomicBoolean(false)
+                        val capture = async(ioDispatcher) {
+                            try {
+                                recorder.recordGatedUtterance(
+                                    isCommitGated = { !ttsDone.get() || ttsEngine?.isSpeaking == true },
+                                    onRmsUpdate = { processRawRms(it) }
+                                )
+                            } catch (e: dev.loki.android.core.voice.stt.MicUnavailableException) {
+                                Log.e(TAG, "Microphone unavailable during follow-up capture: ${e.reason} - ${e.message}")
+                                FloatArray(0)
+                            }
+                        }
+
+                        if (ttsEngine != null && ttsEngine.isReady && currentResponse.isNotBlank()) {
+                            lastSpokenResponse = currentResponse
+                            ttsEngine.speak(
+                                text = currentResponse,
+                                onDone = {
+                                    ttsDone.set(true)
+                                    _state.value = AssistantState.AwaitingFollowUp(responseText = currentResponse)
+                                },
+                                onError = {
+                                    ttsDone.set(true)
+                                    _state.value = AssistantState.AwaitingFollowUp(responseText = currentResponse)
+                                }
+                            )
+                        } else {
+                            ttsDone.set(true)
+                            _state.value = AssistantState.AwaitingFollowUp(responseText = currentResponse)
+                        }
+
+                        val audioFloats = capture.await()
+                        resetAmplitude()
+
+                        if (useDirectAudio) {
+                            if (audioFloats.isNotEmpty() && !isSilentBuffer(audioFloats)) {
+                                audioPcmBytes = dev.loki.android.core.voice.stt.WavEncoder.pcmFloatsToWav(audioFloats)
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            val text = if (sttEngine != null) transcribeVerdict(sttEngine, audioFloats, language) else ""
+                            transcript = text.trim().ifEmpty { null }
+                            transcript != null
+                        }
+                    }
+                }
+
+                var speechCaptured = roundHandled == true
+
+                // Retry once on timeout or silence
+                if (!speechCaptured) {
+                    val retryPrompt = "I didn't catch that"
+                    val retryHandled = withTimeoutOrNull(
+                        dev.loki.android.core.conversation.ConversationSession.CONFIRMATION_TIMEOUT_MS
+                    ) {
+                        coroutineScope {
+                            _state.value = AssistantState.Speaking(responseText = retryPrompt)
+                            val ttsDoneRetry = java.util.concurrent.atomic.AtomicBoolean(false)
+                            val captureRetry = async(ioDispatcher) {
+                                try {
+                                    recorder.recordGatedUtterance(
+                                        isCommitGated = { !ttsDoneRetry.get() || ttsEngine?.isSpeaking == true },
+                                        onRmsUpdate = { processRawRms(it) }
+                                    )
+                                } catch (e: dev.loki.android.core.voice.stt.MicUnavailableException) {
+                                    Log.e(TAG, "Microphone unavailable during retry capture: ${e.reason} - ${e.message}")
+                                    FloatArray(0)
+                                }
+                            }
+
+                            if (ttsEngine != null && ttsEngine.isReady) {
+                                ttsEngine.speak(
+                                    text = retryPrompt,
+                                    onDone = {
+                                        ttsDoneRetry.set(true)
+                                        _state.value = AssistantState.AwaitingFollowUp(responseText = currentResponse)
+                                    },
+                                    onError = {
+                                        ttsDoneRetry.set(true)
+                                        _state.value = AssistantState.AwaitingFollowUp(responseText = currentResponse)
+                                    }
+                                )
+                            } else {
+                                ttsDoneRetry.set(true)
+                                _state.value = AssistantState.AwaitingFollowUp(responseText = currentResponse)
+                            }
+
+                            val audioFloatsRetry = captureRetry.await()
+                            resetAmplitude()
+
+                            if (useDirectAudio) {
+                                if (audioFloatsRetry.isNotEmpty() && !isSilentBuffer(audioFloatsRetry)) {
+                                    audioPcmBytes = dev.loki.android.core.voice.stt.WavEncoder.pcmFloatsToWav(audioFloatsRetry)
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                val textRetry = if (sttEngine != null) transcribeVerdict(sttEngine, audioFloatsRetry, language) else ""
+                                transcript = textRetry.trim().ifEmpty { null }
+                                transcript != null
+                            }
+                        }
+                    }
+                    speechCaptured = retryHandled == true
+                }
+
+                if (!speechCaptured) {
+                    Log.i(TAG, "Follow-up missed after retry; exiting follow-up loop")
+                    conversationManager.pendingVoiceAsk = null
+                    break
+                }
+
+                // Fresh voice session per turn (D2)
+                val followUpSession = conversationManager.newVoiceSession()
+                activeVoiceSession = followUpSession
+
+                val promptText = transcript ?: ""
+                _state.value = AssistantState.Processing(query = promptText)
+                var nextResponseText = ""
+                var followUpError = false
+                var nextTurnEndedInAskUser = false
+
+                followUpSession.processUtterance(
+                    userInput = promptText,
+                    audioBytes = audioPcmBytes,
+                    enableTts = false,
+                    source = "VOICE_FOLLOW_UP"
+                ).collect { event ->
+                    when (event) {
+                        is ConversationEvent.ToolExecuted -> {
+                            if (event.result.errorCode == ToolErrorCode.PERMISSION_DENIED.name) {
+                                val permRaw = event.result.error?.substringAfter("Missing permission: ")?.trim() ?: "required"
+                                val permName = permRaw.substringAfterLast('.')
+                                val permMsg = "To do that, I need the $permName permission. Opening permissions."
+                                speakAndAwait(ttsEngine, permMsg)
+                                openPermissionsScreen(null)
+                            }
+                        }
+                        is ConversationEvent.AskUser -> {
+                            nextTurnEndedInAskUser = true
+                            nextResponseText = event.question
+                            _state.value = AssistantState.Speaking(responseText = event.question)
+                        }
+                        is ConversationEvent.Speaking -> {
+                            _state.value = AssistantState.Speaking(responseText = event.text)
+                        }
+                        is ConversationEvent.Completed -> {
+                            if (nextResponseText.isEmpty()) {
+                                nextResponseText = event.finalResponse
+                            }
+                            _state.value = AssistantState.Speaking(responseText = event.finalResponse)
+                        }
+                        is ConversationEvent.Error -> {
+                            Log.w(TAG, "Follow-up turn error: ${event.message}")
+                            followUpError = true
+                        }
+                        else -> {}
+                    }
+                }
+
+                if (followUpError || nextResponseText.isBlank()) {
+                    conversationManager.pendingVoiceAsk = null
+                    break
+                }
+
+                currentResponse = nextResponseText
+                currentTurnEndedInAskUser = nextTurnEndedInAskUser
+
+                if (!currentTurnEndedInAskUser) {
+                    if (currentResponse.contains("?")) {
+                        Log.d("LokiTurn", "[LokiTurn] turn ended with question prose but no ask_user — mic stays off")
+                    }
+                    conversationManager.pendingVoiceAsk = null
+                    speakAndAwait(ttsEngine, currentResponse)
+                    return currentResponse
+                }
+            }
+
+            if (rounds >= 10 && currentTurnEndedInAskUser) {
+                val exitText = "Let's stop here."
+                conversationManager.pendingVoiceAsk = null
+                speakAndAwait(ttsEngine, exitText)
+                return exitText
+            }
+
+            if (currentResponse.isNotBlank() && currentResponse != lastSpokenResponse) {
+                speakAndAwait(ttsEngine, currentResponse)
+            }
+
+            return currentResponse
+        } finally {
+            recorder.release()
+            resetAmplitude()
+        }
+    }
+
+    internal suspend fun speakAndAwait(ttsEngine: TtsEngine?, text: String) {
+        if (text.isBlank() || ttsEngine == null) return
+        _state.value = AssistantState.Speaking(responseText = text)
+        if (!ttsEngine.isReady) return
+        ttsEngine.speakAndAwait(text)
+    }
+
+    internal fun openPermissionsScreen(context: Context?) {
+        val targetContext = this.context ?: context ?: return
+        try {
+            val intent = Intent(targetContext, Class.forName("dev.loki.android.ui.MainActivity")).apply {
+                putExtra("openScreen", "PERMISSIONS")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            targetContext.startActivity(intent)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to open permissions screen intent", e)
         }
     }
 
@@ -297,6 +798,8 @@ class AssistantSession(
             Log.i(TAG, "cancelTurn() invoked — stopping STT, LLM generation, tools, and TTS playback")
             activeTurnJob?.cancel()
             activeTurnJob = null
+            activeVoiceSession?.cancel()
+            activeVoiceSession = null
 
             val provider = AssistantSessionProvider.instance
             try {
@@ -317,12 +820,18 @@ class AssistantSession(
 
     fun dismiss() {
         cancelTurn()
+        try {
+            AssistantSessionProvider.instance?.getConversationManager()?.clearVoiceCandidates()
+        } catch (_: Exception) {}
         onDismissCallback?.invoke()
     }
 
     fun destroy() {
         Log.i(TAG, "destroy() invoked")
         cancelTurn()
+        try {
+            AssistantSessionProvider.instance?.getConversationManager()?.clearVoiceCandidates()
+        } catch (_: Exception) {}
         scope.coroutineContext[Job]?.cancel()
     }
 
@@ -331,6 +840,8 @@ class AssistantSession(
         const val RMS_CEILING = 8000f
         const val THROTTLE_INTERVAL_MS = 33L
         const val SMOOTHING_ALPHA = 0.4f
+        const val MAX_CONSECUTIVE_ERRORS = 3
+        const val MAX_CONSECUTIVE_SILENCES = 2
 
         fun normalizeRms(rawRms: Float, ceiling: Float = RMS_CEILING): Float {
             return (rawRms / ceiling).coerceIn(0f, 1f)
@@ -338,6 +849,16 @@ class AssistantSession(
 
         fun smoothRms(currentSmoothed: Float, target: Float, alpha: Float = SMOOTHING_ALPHA): Float {
             return (currentSmoothed * (1f - alpha) + target * alpha).coerceIn(0f, 1f)
+        }
+
+        fun isSilentBuffer(audioFloats: FloatArray, threshold: Float = 0.02f): Boolean {
+            if (audioFloats.isEmpty()) return true
+            for (sample in audioFloats) {
+                if (kotlin.math.abs(sample) >= threshold) {
+                    return false
+                }
+            }
+            return true
         }
     }
 }

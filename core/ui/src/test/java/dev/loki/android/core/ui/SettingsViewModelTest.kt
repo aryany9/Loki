@@ -124,4 +124,46 @@ class SettingsViewModelTest {
         viewModel.setThemeMode(ThemeMode.LIGHT)
         advanceUntilIdle()
     }
+
+    @Test
+    fun `SettingsViewModel setConversationLanguage persists to repository and updates active config`() = runTest(testDispatcher) {
+        val fakeLlm = FakeLlmEngine()
+        val dummyContext = object : ContextWrapper(null) {
+            override fun getApplicationContext(): Context = this
+            override fun getFilesDir(): File = tempDir
+        }
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = ToolRegistry(),
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+        val themeRepo = ThemeRepository(dummyContext)
+        val agentConfigRepo = object : AgentConfigRepository(dummyContext) {
+            private var savedConfig = AgentConfig()
+            override fun getAgentConfigFlow(modelId: String?) = kotlinx.coroutines.flow.flowOf(savedConfig)
+            override suspend fun getAgentConfig(modelId: String?) = savedConfig
+            override suspend fun saveAgentConfig(config: AgentConfig, modelId: String?) {
+                savedConfig = config
+            }
+        }
+
+        val viewModel = SettingsViewModel(
+            themeRepository = themeRepo,
+            conversationManager = manager,
+            agentConfigRepository = agentConfigRepo
+        )
+
+        advanceUntilIdle()
+        assertEquals("auto", viewModel.conversationLanguage.value)
+
+        viewModel.setConversationLanguage("hi")
+        advanceUntilIdle()
+
+        assertEquals("hi", manager.getAgentConfig().conversationLanguage)
+        assertEquals("hi", agentConfigRepo.getAgentConfig().conversationLanguage)
+    }
 }

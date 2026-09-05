@@ -7,6 +7,8 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dev.loki.android.core.conversation.ConversationManager
+import dev.loki.android.core.conversation.ConversationStore
+import dev.loki.android.core.conversation.MemoryStore
 import dev.loki.android.core.llm.LiteRtLlmEngine
 import dev.loki.android.core.llm.LlmEngine
 import dev.loki.android.core.llm.ModelManager
@@ -43,9 +45,24 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideToolRegistry(): ToolRegistry {
+    fun provideConversationStore(@ApplicationContext context: Context): dev.loki.android.core.conversation.ConversationStore {
+        return dev.loki.android.core.conversation.ConversationStore(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideMemoryStore(@ApplicationContext context: Context): dev.loki.android.core.conversation.MemoryStore {
+        return dev.loki.android.core.conversation.MemoryStore(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideToolRegistry(
+        memoryStore: dev.loki.android.core.conversation.MemoryStore,
+        conversationStore: dev.loki.android.core.conversation.ConversationStore
+    ): ToolRegistry {
         val registry = ToolRegistry()
-        DefaultLocalTools.registerAll(registry)
+        DefaultLocalTools.registerAll(registry, memoryStore = memoryStore, conversationStore = conversationStore)
         return registry
     }
 
@@ -86,14 +103,18 @@ object AppModule {
         llmEngine: LlmEngine,
         toolRegistry: ToolRegistry,
         ttsEngine: TtsEngine,
-        permissionManager: PermissionManager
+        permissionManager: PermissionManager,
+        conversationStore: dev.loki.android.core.conversation.ConversationStore,
+        memoryStore: dev.loki.android.core.conversation.MemoryStore
     ): ConversationManager {
         return ConversationManager(
             context = context,
             llmEngine = llmEngine,
             toolRegistry = toolRegistry,
             ttsEngine = ttsEngine,
-            permissionManager = permissionManager
+            permissionManager = permissionManager,
+            conversationStore = conversationStore,
+            memoryStore = memoryStore
         )
     }
 

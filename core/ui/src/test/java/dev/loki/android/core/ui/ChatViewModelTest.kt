@@ -22,6 +22,7 @@ import dev.loki.android.core.models.ModelRuntimeController
 import dev.loki.android.core.models.ModelStorage
 import dev.loki.android.core.models.RuntimeConfig
 import dev.loki.android.core.tools.ToolRegistry
+import dev.loki.android.core.tools.ToolResult
 import java.nio.file.Files
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -415,13 +416,13 @@ class ChatViewModelTest {
 
         val errorSttEngine = object : dev.loki.android.core.voice.stt.SttEngine {
             override val isListening: Boolean = false
-            override fun startListening(): kotlinx.coroutines.flow.Flow<dev.loki.android.core.voice.stt.SttEvent> = kotlinx.coroutines.flow.flow {
+            override fun startListening(language: String): kotlinx.coroutines.flow.Flow<dev.loki.android.core.voice.stt.SttEvent> = kotlinx.coroutines.flow.flow {
                 emit(dev.loki.android.core.voice.stt.SttEvent.Error(RuntimeException("Whisper model failed")))
             }
             override fun stopListening() {}
             override fun cancel() {}
             override fun release() {}
-            override suspend fun transcribeAudio(pcmAudio: FloatArray): String = ""
+            override suspend fun transcribeAudio(pcmAudio: FloatArray, language: String): String = ""
         }
 
         val fakeSttResolver = object : dev.loki.android.core.assistant.VoiceInputStrategyResolver() {
@@ -510,7 +511,7 @@ class ChatViewModelTest {
         var asrLoaded = false
         val fakeAsrEngine = object : dev.loki.android.core.voice.stt.SttEngine, ModelRuntimeController {
             override val isListening: Boolean = false
-            override fun startListening() = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
+            override fun startListening(language: String) = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
             override fun stopListening() {}
             override fun cancel() {}
             override fun release() {}
@@ -639,7 +640,7 @@ class ChatViewModelTest {
 
         val nonControllerSttEngine = object : dev.loki.android.core.voice.stt.SttEngine {
             override val isListening: Boolean = false
-            override fun startListening() = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
+            override fun startListening(language: String) = kotlinx.coroutines.flow.emptyFlow<dev.loki.android.core.voice.stt.SttEvent>()
             override fun stopListening() {}
             override fun cancel() {}
             override fun release() {}
@@ -786,6 +787,150 @@ class ChatViewModelTest {
         assertEquals(null, viewModel.currentConversationId)
         assertTrue(viewModel.messages.value.isEmpty())
         assertEquals(1, store.listConversations().size) // No extra conversation created
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `pendingConfirmation is populated on ConfirmationRequired and cleared on respondToConfirmation`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val tempDir = Files.createTempDirectory("cvm_confirm_test").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+
+        var executedTool = false
+        val gatedTool = object : dev.loki.android.core.tools.LocalTool {
+            override val name: String = "call_contact"
+            override val description: String = "Call contact"
+            override val parameters: Map<String, dev.loki.android.core.tools.ToolParam> = emptyMap()
+            override val requiresConfirmation: Boolean = true
+            override fun describeAction(arguments: Map<String, Any?>): String = "Call Alice at +1234567890?"
+            override suspend fun execute(context: android.content.Context, arguments: Map<String, Any?>): ToolResult {
+                executedTool = true
+                return ToolResult.success(mapOf("status" to "initiated"))
+            }
+        }
+
+        val toolRegistry = ToolRegistry().apply { register(gatedTool) }
+        val fakeLlm = object : LlmEngine {
+            private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready("TestModel"))
+            override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+            override val capabilities: ModelCapabilities = ModelCapabilities(supportsText = true, supportsToolCalling = true)
+            private var step = 0
+
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?, runtimeConfig: RuntimeConfig, force: Boolean): Boolean = true
+            override suspend fun startConversation(agentConfig: AgentConfig): Boolean = true
+
+            override suspend fun generate(
+                prompt: String,
+                audioBytes: ByteArray?,
+                grammar: String?,
+                maxTokens: Int,
+                onToken: ((String) -> Unit)?
+            ): Result<String> {
+                return if (step++ == 0) {
+                    Result.success("""{"tool": "call_contact", "arguments": {}}""")
+                } else {
+                    Result.success("""{"response": "Calling Alice."}""")
+                }
+            }
+
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = toolRegistry,
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        // Send message invoking gated tool
+        viewModel.sendMessage("Call Alice")
+        // Advance slightly so LLM generates tool call and reaches confirmation gate
+        testScheduler.runCurrent()
+
+        val pending = viewModel.pendingConfirmation.value
+        org.junit.Assert.assertNotNull(pending)
+        assertEquals("call_contact", pending?.toolName)
+        assertEquals("Call Alice at +1234567890?", pending?.repeatBack)
+
+        // Confirm
+        viewModel.respondToConfirmation(true)
+        advanceUntilIdle()
+
+        assertEquals(null, viewModel.pendingConfirmation.value)
+        assertTrue(executedTool)
+
+        tempDir.deleteRecursively()
+    }
+
+    @Test
+    fun `cancelGeneration clears pendingConfirmation`() = runTest(testDispatcher) {
+        val dummyContext = ContextWrapper(null)
+        val tempDir = Files.createTempDirectory("cvm_cancel_confirm_test").toFile()
+        val store = ConversationStore(tempDir, ioDispatcher = testDispatcher)
+
+        val gatedTool = object : dev.loki.android.core.tools.LocalTool {
+            override val name: String = "call_contact"
+            override val description: String = "Call contact"
+            override val parameters: Map<String, dev.loki.android.core.tools.ToolParam> = emptyMap()
+            override val requiresConfirmation: Boolean = true
+            override fun describeAction(arguments: Map<String, Any?>): String = "Call Alice?"
+            override suspend fun execute(context: android.content.Context, arguments: Map<String, Any?>): ToolResult {
+                return ToolResult.success()
+            }
+        }
+
+        val toolRegistry = ToolRegistry().apply { register(gatedTool) }
+        val fakeLlm = object : LlmEngine {
+            private val _modelState = MutableStateFlow<LlmModelState>(LlmModelState.Ready("TestModel"))
+            override val modelState: StateFlow<LlmModelState> = _modelState.asStateFlow()
+            override val capabilities: ModelCapabilities = ModelCapabilities(supportsText = true, supportsToolCalling = true)
+
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?, runtimeConfig: RuntimeConfig, force: Boolean): Boolean = true
+            override suspend fun startConversation(agentConfig: AgentConfig): Boolean = true
+
+            override suspend fun generate(
+                prompt: String,
+                audioBytes: ByteArray?,
+                grammar: String?,
+                maxTokens: Int,
+                onToken: ((String) -> Unit)?
+            ): Result<String> {
+                return Result.success("""{"tool": "call_contact", "arguments": {}}""")
+            }
+
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        val manager = ConversationManager(
+            context = dummyContext,
+            llmEngine = fakeLlm,
+            toolRegistry = toolRegistry,
+            ttsEngine = null,
+            conversationStore = store,
+            ioDispatcher = testDispatcher
+        )
+        val viewModel = ChatViewModel(conversationManager = manager)
+        advanceUntilIdle()
+
+        viewModel.sendMessage("Call Alice")
+        testScheduler.runCurrent()
+
+        org.junit.Assert.assertNotNull(viewModel.pendingConfirmation.value)
+
+        viewModel.cancelGeneration()
+        advanceUntilIdle()
+
+        assertEquals(null, viewModel.pendingConfirmation.value)
 
         tempDir.deleteRecursively()
     }

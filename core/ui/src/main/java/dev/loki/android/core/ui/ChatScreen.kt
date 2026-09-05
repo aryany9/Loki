@@ -43,6 +43,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -124,6 +125,7 @@ fun ChatScreen(
     onNavigateToPermissions: (() -> Unit)? = null,
     onNavigateToModelLibrary: (() -> Unit)? = null,
     onNavigateToAgentPlayground: (() -> Unit)? = null,
+    onNavigateToMemory: (() -> Unit)? = null,
     onNavigateToSettings: (() -> Unit)? = null
 ) {
     val messages by viewModel.messages.collectAsState()
@@ -131,6 +133,7 @@ fun ChatScreen(
     val isRecording by viewModel.isRecording.collectAsState()
     val voiceError by viewModel.voiceError.collectAsState()
     val modelState by viewModel.modelState.collectAsState()
+    val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
@@ -304,6 +307,19 @@ fun ChatScreen(
                             onClick = {
                                 coroutineScope.launch { drawerState.close() }
                                 onNavigateToPermissions()
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp)
+                        )
+                    }
+
+                    if (onNavigateToMemory != null) {
+                        NavigationDrawerItem(
+                            icon = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
+                            label = { Text("Memory", style = MaterialTheme.typography.labelLarge) },
+                            selected = false,
+                            onClick = {
+                                coroutineScope.launch { drawerState.close() }
+                                onNavigateToMemory()
                             },
                             modifier = Modifier.padding(horizontal = 12.dp)
                         )
@@ -503,6 +519,79 @@ fun ChatScreen(
                                         tint = MaterialTheme.colorScheme.onErrorContainer,
                                         modifier = Modifier.size(16.dp)
                                     )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Confirmation Card (gated destructive action)
+                AnimatedVisibility(
+                    visible = pendingConfirmation != null,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    pendingConfirmation?.let { confirm ->
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(LokiCornerTokens.medium),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shadowElevation = 4.dp
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Security,
+                                        contentDescription = "Confirmation required",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text(
+                                        text = "Confirmation Required",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+
+                                Text(
+                                    text = confirm.repeatBack.ifEmpty { "Do you want to proceed with ${confirm.toolName}?" },
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    TextButton(
+                                        onClick = { viewModel.respondToConfirmation(false) }
+                                    ) {
+                                        Text("Cancel", color = MaterialTheme.colorScheme.error)
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = { viewModel.respondToConfirmation(true) },
+                                        shape = RoundedCornerShape(LokiCornerTokens.small),
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                    ) {
+                                        Text("Confirm")
+                                    }
                                 }
                             }
                         }
@@ -796,7 +885,7 @@ fun ModelStatusBadge(
                 )
 
                 val modelName = when (modelState) {
-                    is LlmModelState.Ready -> (modelState as LlmModelState.Ready).modelName
+                    is LlmModelState.Ready -> "${(modelState as LlmModelState.Ready).modelName} · ${(modelState as LlmModelState.Ready).activeBackend}"
                     is LlmModelState.Loading -> "Qwen 2.5 / LiteRT"
                     is LlmModelState.Error -> "Model Error"
                     is LlmModelState.NotLoaded -> "None Loaded"

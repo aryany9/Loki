@@ -56,13 +56,17 @@ data class ModelArtifact(
 
 @Serializable
 data class ModelRecordCapabilities(
-    val audioInput: ModelMetadataField<Boolean> = ModelMetadataField(value = false, confidence = MetadataConfidence.UNKNOWN)
+    val audioInput: ModelMetadataField<Boolean> = ModelMetadataField(value = false, confidence = MetadataConfidence.UNKNOWN),
+    val npuTargetSoc: ModelMetadataField<String> = ModelMetadataField(value = null, confidence = MetadataConfidence.UNKNOWN)
 ) {
     val isAudioInputSupported: Boolean
         get() = audioInput.value == true && (
             audioInput.confidence == MetadataConfidence.VERIFIED ||
             audioInput.confidence == MetadataConfidence.USER_CONFIRMED
         )
+
+    val isNpuTargeted: Boolean
+        get() = !npuTargetSoc.value.isNullOrBlank()
 }
 
 @Serializable
@@ -114,6 +118,7 @@ fun ModelRecord.withAvailability(availability: ModelAvailability): ModelRecord =
 @Serializable
 enum class ExecutionBackend {
     AUTOMATIC,
+    NPU,
     GPU,
     CPU
 }
@@ -137,7 +142,8 @@ data class RuntimeConfig(
 data class AgentConfig(
     val systemInstruction: String = DEFAULT_SYSTEM_PROMPT,
     val generationConfig: GenerationConfig = GenerationConfig(),
-    val runtimeConfig: RuntimeConfig = RuntimeConfig()
+    val runtimeConfig: RuntimeConfig = RuntimeConfig(),
+    val conversationLanguage: String = "auto"
 ) {
     companion object {
         const val DEFAULT_SYSTEM_PROMPT = "You are Loki, a private offline Android assistant running on the user's device."

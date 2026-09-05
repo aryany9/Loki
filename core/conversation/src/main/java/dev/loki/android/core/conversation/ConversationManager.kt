@@ -16,10 +16,42 @@ sealed interface ConversationEvent {
     data class GeneratingToken(val partial: String) : ConversationEvent
     data class ToolExecuting(val toolName: String, val args: Map<String, Any?>) : ConversationEvent
     data class ToolExecuted(val toolName: String, val result: ToolResult) : ConversationEvent
+    /**
+     * Emitted when a tool with [requiresConfirmation] = true is about to execute.
+     * The session will suspend until [ConversationSession.respondToConfirmation] is called,
+     * or the timeout elapses.
+     *
+     * @param toolName   The name of the tool awaiting confirmation.
+     * @param repeatBack Human-readable description of the action (e.g. "Call Rahul at +91 …").
+     */
+    data class ConfirmationRequired(
+        val toolName: String,
+        val repeatBack: String
+    ) : ConversationEvent
     data class Speaking(val text: String) : ConversationEvent
+    data class AskUser(val question: String) : ConversationEvent
     data class Completed(val finalResponse: String, val toolResult: ToolResult? = null) : ConversationEvent
+    data class ContextCompacted(val message: String = "Context compacted") : ConversationEvent
     data class Error(val message: String) : ConversationEvent
 }
+
+/**
+ * Structured in-activation pending state carrying question and candidate options across turns.
+ */
+data class PendingAsk(
+    val question: String,
+    val candidates: List<ContactCandidate> = emptyList(),
+    val selectedId: String? = null
+)
+
+/**
+ * Structured in-activation pending confirmation state carrying resolved candidate, repeat-back string, and asked status.
+ */
+data class PendingVoiceConfirmation(
+    val candidate: ContactCandidate,
+    val repeatBack: String,
+    val isAsked: Boolean = false
+)
 
 /**
  * ConversationManager manages LLM & tool coordination, providing scoped ConversationSessions
@@ -31,21 +63,42 @@ class ConversationManager(
     val toolRegistry: ToolRegistry,
     val ttsEngine: TtsEngine? = null,
     val permissionManager: dev.loki.android.core.tools.PermissionManager = dev.loki.android.core.tools.PermissionManager(),
-    val conversationStore: ConversationStore = ConversationStore(context),
-    private val maxIterations: Int = 5,
-    val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    val conversationStore: ConversationStore = ConversationStore(context, ioDispatcher),
+    val memoryStore: MemoryStore = MemoryStore(context, ioDispatcher),
+    private val maxIterations: Int = 5
 ) {
     private var persistentChatContext = ConversationContext(maxTurns = 10)
     private var activeAgentConfig: AgentConfig = AgentConfig()
     private var activeConversationId: String? = null
+    private val sharedVoiceCandidates = mutableMapOf<String, ContactCandidate>()
+    private val chatContactCandidates = mutableMapOf<String, ContactCandidate>()
+    var pendingVoiceAsk: PendingAsk? = null
+    var pendingVoiceConfirmation: PendingVoiceConfirmation? = null
 
     val currentConversationId: String?
         get() = activeConversationId
+
+    fun getVoiceCandidates(): Map<String, ContactCandidate> = sharedVoiceCandidates.toMap()
+
+    fun clearVoiceCandidates() {
+        sharedVoiceCandidates.clear()
+        pendingVoiceAsk = null
+        pendingVoiceConfirmation = null
+    }
+
+    fun clearContactCandidates() {
+        sharedVoiceCandidates.clear()
+        chatContactCandidates.clear()
+        pendingVoiceAsk = null
+        pendingVoiceConfirmation = null
+    }
 
     fun getAgentConfig(): AgentConfig = activeAgentConfig
 
     fun setAgentConfig(config: AgentConfig) {
         activeAgentConfig = config
+        ttsEngine?.configureLanguage(config.conversationLanguage)
     }
 
     /**
@@ -60,6 +113,7 @@ class ConversationManager(
             llmEngine.initializeAsync(modelPath = null, runtimeConfig = config.runtimeConfig, force = true)
         }
         activeAgentConfig = config
+        ttsEngine?.configureLanguage(config.conversationLanguage)
         reset()
         return llmEngine.startConversation(config)
     }
@@ -68,6 +122,7 @@ class ConversationManager(
         val record = conversationStore.createConversation(title = title)
         activeConversationId = record.id
         persistentChatContext.clear()
+        chatContactCandidates.clear()
         llmEngine.startConversation(activeAgentConfig)
         return record
     }
@@ -80,6 +135,7 @@ class ConversationManager(
         val record = conversationStore.loadConversation(id) ?: return null
         activeConversationId = record.id
         persistentChatContext.clear()
+        chatContactCandidates.clear()
         for (turn in record.turns) {
             persistentChatContext.append(turn)
         }
@@ -120,8 +176,10 @@ class ConversationManager(
             agentConfig = activeAgentConfig,
             maxIterations = maxIterations,
             conversationStore = conversationStore,
+            memoryStore = memoryStore,
             conversationId = convId,
-            ioDispatcher = ioDispatcher
+            ioDispatcher = ioDispatcher,
+            contactCandidateRegistry = chatContactCandidates
         )
     }
 
@@ -136,8 +194,14 @@ class ConversationManager(
             agentConfig = activeAgentConfig,
             maxIterations = maxIterations,
             conversationStore = null,
+            memoryStore = memoryStore,
             conversationId = null,
-            ioDispatcher = ioDispatcher
+            ioDispatcher = ioDispatcher,
+            contactCandidateRegistry = sharedVoiceCandidates,
+            pendingAsk = pendingVoiceAsk,
+            onPendingAskUpdated = { updated -> pendingVoiceAsk = updated },
+            pendingVoiceConfirmation = pendingVoiceConfirmation,
+            onPendingVoiceConfirmationUpdated = { updated -> pendingVoiceConfirmation = updated }
         )
     }
 
@@ -157,6 +221,11 @@ class ConversationManager(
         cancel()
         activeConversationId = null
         persistentChatContext.clear()
+        sharedVoiceCandidates.clear()
+        chatContactCandidates.clear()
+        pendingVoiceAsk = null
+        pendingVoiceConfirmation = null
+        llmEngine.resetConversation()
     }
 
     companion object {

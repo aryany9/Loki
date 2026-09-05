@@ -149,17 +149,43 @@ fun ModelLibraryScreen(
             if (models.isEmpty()) {
                 Text("No installed models", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val probe = remember(context) { dev.loki.android.core.llm.NpuCapabilityProbe.probe(context) }
+
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(models, key = { it.id }) { model ->
+                    val targetSoc = model.capabilities.npuTargetSoc.value
+                    val socModel = probe.socModel
+                    val htpGen = probe.htpGeneration
+                    val isSocCompatible = if (model.capabilities.isNpuTargeted && !targetSoc.isNullOrBlank()) {
+                        (socModel != null && socModel.contains(targetSoc, ignoreCase = true)) ||
+                        (htpGen != null && htpGen.equals(dev.loki.android.core.llm.NpuCapabilityProbe.lookupHtpGeneration(targetSoc), ignoreCase = true))
+                    } else true
+
                     Row(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(model.displayName, style = MaterialTheme.typography.titleMedium)
                             val audioTag = if (model.capabilities.isAudioInputSupported) " · Direct Audio" else ""
-                            Text("${model.format} · ${model.availability}$audioTag", style = MaterialTheme.typography.bodySmall)
+                            val npuTag = if (model.capabilities.isNpuTargeted) " · NPU (${targetSoc ?: "Qualcomm"})" else ""
+                            if (model.capabilities.isNpuTargeted && !isSocCompatible) {
+                                Text(
+                                    "Unavailable for execution on this device (targets $targetSoc; device is ${probe.socModel ?: "unsupported"})",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            } else {
+                                Text("${model.format} · ${model.availability}$audioTag$npuTag", style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                         when (model.availability) {
                             ModelAvailability.LOADED -> Button(onClick = { onEject(model.runtime) }) { Text("Eject") }
-                            ModelAvailability.DOWNLOADED -> Button(onClick = { onLoad(model.id) }) { Text("Load") }
+                            ModelAvailability.DOWNLOADED -> {
+                                if (isSocCompatible) {
+                                    Button(onClick = { onLoad(model.id) }) { Text("Load") }
+                                } else {
+                                    Button(onClick = {}, enabled = false) { Text("Unavailable") }
+                                }
+                            }
                             ModelAvailability.NOT_DOWNLOADED -> Unit
                         }
                         Button(onClick = { setPendingDeleteId(model.id) }) { Text("Delete") }

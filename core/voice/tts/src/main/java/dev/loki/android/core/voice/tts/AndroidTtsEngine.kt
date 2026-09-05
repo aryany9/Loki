@@ -16,6 +16,10 @@ class AndroidTtsEngine(
 ) : TtsEngine, AutoCloseable {
 
     private var tts: TextToSpeech? = null
+    private var pendingLanguageTag: String? = null
+    var currentLocale: Locale? = null
+        private set
+
     override var isReady: Boolean = false
         private set
     override var isSpeaking: Boolean = false
@@ -24,13 +28,32 @@ class AndroidTtsEngine(
     init {
         tts = TextToSpeech(context.applicationContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.US
                 isReady = true
-                Log.i(TAG, "Android TextToSpeech initialized successfully")
+                configureLanguage(pendingLanguageTag)
+                Log.i(TAG, "Android TextToSpeech initialized successfully with locale $currentLocale")
                 onInitComplete?.invoke(true)
             } else {
                 Log.e(TAG, "Failed to initialize Android TextToSpeech (status: $status)")
                 onInitComplete?.invoke(false)
+            }
+        }
+    }
+
+    override fun configureLanguage(bcp47Tag: String?) {
+        pendingLanguageTag = bcp47Tag
+        val targetLocale = resolveLocale(bcp47Tag)
+        currentLocale = targetLocale
+
+        tts?.let { engine ->
+            try {
+                val result = engine.setLanguage(targetLocale)
+                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    Log.w(TAG, "TTS language '$targetLocale' not supported or missing data (code $result), falling back to default voice")
+                } else {
+                    Log.i(TAG, "TTS configured language: $targetLocale")
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Exception configuring TTS language '$targetLocale'", e)
             }
         }
     }
@@ -69,6 +92,21 @@ class AndroidTtsEngine(
             }
         })
 
+        if (text.any { it in '\u0900'..'\u097F' }) {
+            try {
+                tts?.setLanguage(Locale("hi", "IN"))
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to set Hindi locale for Devanagari text", e)
+            }
+        } else {
+            val targetLocale = resolveLocale(pendingLanguageTag)
+            try {
+                tts?.setLanguage(targetLocale)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to restore locale $targetLocale", e)
+            }
+        }
+
         val params = Bundle()
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
     }
@@ -92,5 +130,13 @@ class AndroidTtsEngine(
 
     companion object {
         private const val TAG = "AndroidTtsEngine"
+
+        fun resolveLocale(bcp47Tag: String?): Locale {
+            return if (bcp47Tag.isNullOrBlank() || bcp47Tag.equals("auto", ignoreCase = true)) {
+                Locale.getDefault()
+            } else {
+                Locale.forLanguageTag(bcp47Tag)
+            }
+        }
     }
 }
