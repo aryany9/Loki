@@ -849,6 +849,11 @@ class ConversationSessionTest {
         assertTrue(ConversationSession.containsProtocolArtifacts(artifact2))
         assertTrue(ConversationSession.containsProtocolArtifacts(artifact3))
         assertTrue(ConversationSession.containsProtocolArtifacts(artifact4))
+
+        // Chat mode allows Markdown code blocks and tool mentions in prose
+        val javaCode = "```java\npublic class HelloWorld {\n    public static void main(String[] args) {\n        System.out.println(\"Hello!\");\n    }\n}\n```"
+        assertFalse("Markdown code block must NOT be treated as artifact in CHAT mode", ConversationSession.containsProtocolArtifacts(javaCode, dev.loki.android.core.models.ConversationMode.CHAT))
+        assertTrue("Markdown code block MUST be treated as artifact in VOICE mode", ConversationSession.containsProtocolArtifacts(javaCode, dev.loki.android.core.models.ConversationMode.VOICE))
     }
 
     @Test

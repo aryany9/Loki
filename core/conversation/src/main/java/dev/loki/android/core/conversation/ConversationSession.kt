@@ -329,7 +329,7 @@ open class ConversationSession(
                         if (parsed.tool == "ask_user") {
                             val rawText = parsed.arguments["text"]?.toString()?.trim() ?: ""
                             val hasPendingConfirm = pendingVoiceConfirmation != null
-                            val isRawValid = rawText.isNotBlank() && !containsProtocolArtifacts(rawText)
+                            val isRawValid = rawText.isNotBlank() && !containsProtocolArtifacts(rawText, mode)
 
                             // Loop breaker: If confirmation question was already asked and model emits ask_user again,
                             // break out of the infinite repetition loop, cancel the task, and don't re-arm mic.
@@ -873,7 +873,7 @@ open class ConversationSession(
                     }
 
                     is ParsedLlmResponse.DirectResponse -> {
-                        val sanitized = if (containsProtocolArtifacts(parsed.text)) {
+                        val sanitized = if (containsProtocolArtifacts(parsed.text, mode)) {
                             TurnLogger.logError(turnId, "Sanitized malformed LLM output (contained protocol artifacts): ${parsed.text}")
                             try {
                                 android.util.Log.d("LokiTurn", "[LokiTurn] Sanitized malformed LLM output (contained protocol artifacts): ${parsed.text}")
@@ -914,7 +914,7 @@ open class ConversationSession(
                             correctiveRetryUsed = true
                             continue
                         }
-                        finalResponseText = if (parsed.raw.isNotBlank() && !containsProtocolArtifacts(parsed.raw) && !parsed.raw.contains("{") && !parsed.raw.contains("\"tool\"")) {
+                        finalResponseText = if (parsed.raw.isNotBlank() && !containsProtocolArtifacts(parsed.raw, mode) && !parsed.raw.contains("{") && !parsed.raw.contains("\"tool\"")) {
                             parsed.raw.trim()
                         } else {
                             try {
@@ -938,7 +938,7 @@ open class ConversationSession(
             return@channelFlow
         }
 
-        if (containsProtocolArtifacts(finalResponseText)) {
+        if (containsProtocolArtifacts(finalResponseText, mode)) {
             try {
                 android.util.Log.d("LokiTurn", "[LokiTurn] Sanitized malformed LLM output (contained protocol artifacts): $finalResponseText")
             } catch (_: Throwable) {}
@@ -975,7 +975,7 @@ open class ConversationSession(
 
     private suspend fun buildCommonSections(sb: StringBuilder) {
         // SYSTEM_FOUNDATION
-        sb.append("You are Loki, a private offline Android assistant running on the user's device. You operate entirely on-device with privacy and safety as highest priority.\n\n")
+        sb.append("You are Loki, a helpful, direct, and capable offline AI assistant running on Android. You are an AI assistant, NOT the mythological Norse god or Marvel character — do not adopt a mischievous, theatrical, or trickster persona. Always answer questions straightforwardly, neutrally, and helpfully.\n\n")
     }
 
     private fun appendUserCustomInstructionsAndLanguage(sb: StringBuilder, modalityInstruction: String) {
@@ -1261,10 +1261,13 @@ open class ConversationSession(
         private val TOOL_JSON_REGEX = """\{\s*"tool"\s*:""".toRegex()
         private val STANDALONE_TOOL_NAME_REGEX = """\b(ask_user|call_contact|lookup_contact|dial_number|select_contact|get_current_time|get_battery_status|open_app|set_timer|set_alarm|media_control|toggle_flashlight|open_wifi_settings|open_bluetooth_settings|get_wifi_state|get_bluetooth_state|get_ram_usage|remember_fact|search_chat_history)\b""".toRegex(RegexOption.IGNORE_CASE)
 
-        internal fun containsProtocolArtifacts(text: String): Boolean {
+        internal fun containsProtocolArtifacts(
+            text: String,
+            mode: dev.loki.android.core.models.ConversationMode = dev.loki.android.core.models.ConversationMode.VOICE
+        ): Boolean {
             if (text.contains("<|") || text.contains("<|tool_call")) return true
-            if (text.contains("```")) return true
             if (TOOL_JSON_REGEX.containsMatchIn(text)) return true
+            if (mode == dev.loki.android.core.models.ConversationMode.VOICE && text.contains("```")) return true
             if (STANDALONE_TOOL_NAME_REGEX.containsMatchIn(text)) return true
             return false
         }
