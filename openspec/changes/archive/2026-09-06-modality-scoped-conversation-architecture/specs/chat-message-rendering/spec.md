@@ -26,3 +26,30 @@ The response parser SHALL identify direct natural language responses containing 
 - **THEN** `ToolCallParser.parse()` returns `DirectResponse` containing the full un-truncated Markdown
 - **AND** no corrective "Return JSON only" retry prompt is sent to the model
 - **AND** the code block renders in the chat UI with monospace styling
+
+### Requirement: Clean Real-Time Streaming Tokens
+The token streaming pipeline SHALL sanitize intermediate tokens via `ToolCallParser.cleanStreamingPartial()` before emitting updates to the UI state. Partial outputs representing tool invocation JSON SHALL suppress text updates to prevent raw JSON flashes, while `{"response": "..."}` JSON envelopes SHALL be unwrapped on-the-fly to stream clean natural language without exposing wrapper JSON syntax.
+
+#### Scenario: Tool call JSON is suppressed from streaming text
+- **WHEN** the model streams tokens beginning with a tool call JSON structure
+- **THEN** `ToolCallParser.cleanStreamingPartial()` returns `null`
+- **AND** `ChatViewModel` maintains the thinking state without flashing raw JSON tokens in the message bubble
+
+#### Scenario: Response envelope is unwrapped during streaming
+- **WHEN** the model streams tokens formatted as `{"response": "Here is your answer..."}`
+- **THEN** `ToolCallParser.cleanStreamingPartial()` strips the envelope prefix and trailing formatting
+- **AND** the UI renders the conversational answer directly in Markdown
+
+### Requirement: Modality-Scoped Protocol Artifact Sanitization
+Protocol artifact detection SHALL be scoped by interaction modality: in `VOICE` mode, backticks (` ``` `) and standalone tool names SHALL trigger sanitization to ensure clean TTS audio output; in `CHAT` mode, backtick-fenced code blocks and natural mentions of tool names within prose SHALL be preserved.
+
+#### Scenario: Code fences preserved in Chat mode
+- **WHEN** a chat response contains backticks or code blocks
+- **THEN** `containsProtocolArtifacts(text, ConversationMode.CHAT)` evaluates to `false`
+- **AND** Markdown formatting is retained in the UI
+
+#### Scenario: Bare tool name sanitized in Chat mode
+- **WHEN** a chat response contains only a bare tool name (e.g. `ask_user`) with no accompanying prose
+- **THEN** `containsProtocolArtifacts(text, ConversationMode.CHAT)` evaluates to `true`
+- **AND** the bare artifact is sanitized
+

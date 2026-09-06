@@ -1,4 +1,7 @@
-## ADDED Requirements
+## Purpose
+Deterministic, grammar-constrained confirmation response resolution for voice interactions.
+
+## Requirements
 
 ### Requirement: Resolver accepts audio or transcript input
 The `ConfirmationResolver` SHALL accept either `audioBytes: ByteArray?` (WAV-encoded PCM for DirectAudio devices) or `transcript: String?` (pre-transcribed text for STT-Transcribe devices) as the user's response input. Exactly one of the two SHALL be non-null per call.
