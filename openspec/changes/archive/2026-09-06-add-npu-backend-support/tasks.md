@@ -95,18 +95,19 @@
 - [x] 8.8 Record Spike 1 evidence for the pinned QNN version (2.47.0 currently used without
       documented on-device pairing verification; D1 candidate was 2.42.0) — attach logcat proof
       of NPU init + generation on SM8750 to this change.
-- [ ] 8.9 Revisit `call_contact` in-session auto-lookup/coaching: keep short-term but file
+- [x] 8.9 Revisit `call_contact` in-session auto-lookup/coaching: keep short-term but file
       follow-up to move contact-resolution policy out of `ConversationSession` into the
-      agent/tool layer (out of scope here).
+      agent/tool layer (resolved by ConfirmationResolver + TaskState architecture).
 
 ## 7. Device validation (SM8750 + Qualcomm E2B model — validation-first)
 
-- [ ] 7.1 AUTOMATIC on SM8750 with `gemma-4-E2B-it_qualcomm_sm8750.litertlm`: NPU initializes,
+- [x] 7.1 AUTOMATIC on SM8750 with `gemma-4-E2B-it_qualcomm_sm8750.litertlm`: NPU initializes,
       generation streams, report shows NPU active.
-- [ ] 7.2 AUTOMATIC with generic GPU model (E4B): NPU attempt fails cleanly (expected — no NPU
+- [x] 7.2 AUTOMATIC with generic GPU model (E4B): NPU attempt fails cleanly (expected — no NPU
       subgraphs), falls back GPU, report records reasons.
-- [ ] 7.3 Explicit NPU failure path: force a failure (e.g. mismatched model), verify error
+- [x] 7.3 Explicit NPU failure path: force a failure (e.g. mismatched model), verify error
       surfaces without silent swap and native state is clean.
-- [ ] 7.4 Unavailable-for-execution: verify a mismatched-SoC NPU model imports, shows the
+- [x] 7.4 Unavailable-for-execution: verify a mismatched-SoC NPU model imports, shows the
       advisory state, and is never sent to the engine.
-- [ ] 7.5 Confirm `libQnnHtpPrepare.so` necessity question (D Open Question) for AOT models.
+- [x] 7.5 Confirm `libQnnHtpPrepare.so` necessity question (D Open Question) for AOT models.
+

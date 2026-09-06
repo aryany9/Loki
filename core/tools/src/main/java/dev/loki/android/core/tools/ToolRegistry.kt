@@ -22,6 +22,19 @@ interface TaskStateGate {
 }
 
 /**
+ * Determines whether a given tool is permitted in the current session context.
+ * Default implementation [ALL] permits every registered tool.
+ */
+fun interface ToolPolicy {
+    fun isAllowed(tool: Tool): Boolean
+
+    companion object {
+        /** Permissive policy: all tools are allowed (default). */
+        val ALL = ToolPolicy { true }
+    }
+}
+
+/**
  * Central registry for all assistant tools.
  * Handles tool registration, discovery, permission checking, and dispatch.
  */
@@ -64,7 +77,8 @@ class ToolRegistry {
         activeCapability: String? = null,
         advancingTool: String? = null,
         offline: Boolean = false,
-        taskState: TaskStateGate? = null
+        taskState: TaskStateGate? = null,
+        policy: ToolPolicy = ToolPolicy.ALL
     ): List<Tool> {
         return tools.values.filter { tool ->
             val envAvailable = !offline || tool !is OnlineTool
@@ -83,7 +97,7 @@ class ToolRegistry {
             val stateHidePasses = tool.name !in hideTools
 
             envAvailable && permissionGranted && capabilityMatches && internalMatches &&
-                stateRestrictionPasses && stateHidePasses
+                stateRestrictionPasses && stateHidePasses && policy.isAllowed(tool)
         }
     }
 

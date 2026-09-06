@@ -997,12 +997,15 @@ fun AssistantMessage(
             }
         }
 
-        if (message.toolResult != null) {
-            Spacer(modifier = Modifier.height(8.dp))
-            ToolResultCard(
-                toolResult = message.toolResult,
-                toolName = message.toolName
-            )
+        message.toolInvocations.forEach { invocation ->
+            androidx.compose.runtime.key(invocation.id) {
+                Spacer(modifier = Modifier.height(8.dp))
+                ToolResultCard(
+                    toolName = invocation.toolName,
+                    result = invocation.result,
+                    isExecuting = invocation.isExecuting
+                )
+            }
         }
     }
 }
@@ -1074,36 +1077,41 @@ fun ThinkingIndicator(
 
 @Composable
 fun ToolResultCard(
-    toolResult: ToolResult,
-    toolName: String? = null,
+    toolName: String,
+    result: ToolResult?,
+    isExecuting: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val isSuccess = toolResult.success
+    val isSuccess = result?.success ?: false
     val containerColor = MaterialTheme.colorScheme.surfaceVariant
-    val icon = if (isSuccess) Icons.Default.Check else Icons.Default.Close
-    val iconColor = if (isSuccess) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error
+    val icon = if (isExecuting) Icons.Default.Build else if (isSuccess) Icons.Default.Check else Icons.Default.Close
+    val iconColor = if (isExecuting) MaterialTheme.colorScheme.primary else if (isSuccess) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error
 
     Surface(
         shape = RoundedCornerShape(LokiCornerTokens.medium),
         color = containerColor,
         modifier = modifier
             .fillMaxWidth()
-            .clickable { expanded = !expanded }
+            .clickable(enabled = result != null) { expanded = !expanded }
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = if (isSuccess) "Success" else "Error",
-                    tint = iconColor,
-                    modifier = Modifier.size(18.dp)
-                )
+                if (isExecuting) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = iconColor)
+                } else {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = if (isSuccess) "Success" else "Error",
+                        tint = iconColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
                 Spacer(modifier = Modifier.width(8.dp))
-                val title = toolName ?: "Tool Execution"
+                val title = toolName
                 Text(
                     text = title,
                     style = MaterialTheme.typography.labelLarge,
@@ -1122,11 +1130,11 @@ fun ToolResultCard(
             AnimatedVisibility(visible = expanded) {
                 Column(modifier = Modifier.padding(top = 8.dp)) {
                     val payloadText = if (isSuccess) {
-                        toolResult.data?.entries?.joinToString("\n") { "${it.key}: ${it.value}" }
+                        result?.data?.entries?.joinToString("\n") { "${it.key}: ${it.value}" }
                             ?.ifEmpty { "Success (no output)" }
                             ?: "Success (no output)"
                     } else {
-                        toolResult.error ?: "Action failed"
+                        result?.error ?: "Action failed"
                     }
                     Surface(
                         shape = RoundedCornerShape(LokiCornerTokens.small),

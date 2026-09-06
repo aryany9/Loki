@@ -36,6 +36,9 @@ data class PendingConfirmation(
 /**
  * ConversationSession executes a ReAct-style agent loop for a specific conversation context.
  * Can be persistent (for multi-turn Chat UI) or ephemeral (for hands-free Voice turns).
+ * maxTurns = 1 limits each ConversationSession to one LLM generation cycle; it does not limit
+ * a Voice Interaction to one user/assistant exchange. AssistantSession may create multiple
+ * ConversationSessions while resolving a single voice task.
  */
 open class ConversationSession(
     private val context: Context,
@@ -50,6 +53,7 @@ open class ConversationSession(
     val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
     val memoryStore: MemoryStore = MemoryStore(context, ioDispatcher),
     val conversationId: String? = null,
+    val mode: dev.loki.android.core.models.ConversationMode = dev.loki.android.core.models.ConversationMode.CHAT,
     val contactCandidateRegistry: MutableMap<String, ContactCandidate> = mutableMapOf(),
     var pendingAsk: PendingAsk? = null,
     val onPendingAskUpdated: ((PendingAsk?) -> Unit)? = null,
@@ -64,49 +68,52 @@ open class ConversationSession(
         internal set
 
     init {
-        if (pendingVoiceConfirmation != null) {
-            val cand = pendingVoiceConfirmation!!.candidate
-            if (cand.id.isNotBlank()) {
-                contactCandidateRegistry[cand.id.lowercase()] = cand
-            }
-            if (cand.name.isNotBlank() && cand.name != "the contact") {
-                contactCandidateRegistry[cand.name.lowercase()] = cand
-            }
-            if (taskState == null) {
-                taskState = ContactResolution(
-                    candidates = listOf(cand),
-                    selectedId = cand.id,
-                    isAsked = pendingVoiceConfirmation!!.isAsked
-                )
-                activeCapability = "calling"
-            } else if (taskState is ContactResolution) {
-                val res = taskState as ContactResolution
-                if (res.isAsked != pendingVoiceConfirmation!!.isAsked) {
-                    taskState = res.copy(isAsked = pendingVoiceConfirmation!!.isAsked)
+        // Voice/Legacy: synthesize TaskState from legacy PendingAsk/PendingVoiceConfirmation state.
+        if (taskState == null) {
+            if (pendingVoiceConfirmation != null) {
+                val cand = pendingVoiceConfirmation!!.candidate
+                if (cand.id.isNotBlank()) {
+                    contactCandidateRegistry[cand.id.lowercase()] = cand
+                }
+                if (cand.name.isNotBlank() && cand.name != "the contact") {
+                    contactCandidateRegistry[cand.name.lowercase()] = cand
+                }
+                if (taskState == null) {
+                    taskState = ContactResolution(
+                        candidates = listOf(cand),
+                        selectedId = cand.id,
+                        isAsked = pendingVoiceConfirmation!!.isAsked
+                    )
+                    activeCapability = "calling"
+                } else if (taskState is ContactResolution) {
+                    val res = taskState as ContactResolution
+                    if (res.isAsked != pendingVoiceConfirmation!!.isAsked) {
+                        taskState = res.copy(isAsked = pendingVoiceConfirmation!!.isAsked)
+                    }
                 }
             }
-        }
-        if (taskState == null && pendingAsk != null && pendingAsk!!.candidates.isNotEmpty()) {
-            taskState = ContactResolution(
-                candidates = pendingAsk!!.candidates,
-                selectedId = pendingAsk!!.selectedId,
-                isAsked = pendingVoiceConfirmation?.isAsked ?: false
-            )
-            activeCapability = "calling"
-        }
-        if (pendingVoiceConfirmation == null && taskState is ContactResolution && (taskState as ContactResolution).selectedId != null) {
-            val res = taskState as ContactResolution
-            val selected = res.candidates.firstOrNull { it.id == res.selectedId }
-            if (selected != null) {
-                val phoneArg = selected.phoneNumber
-                val digits = phoneArg.filter { it.isDigit() }
-                val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
-                val suffixPart = if (suffix.isNotBlank()) ", the number ending in $suffix" else ""
-                pendingVoiceConfirmation = PendingVoiceConfirmation(
-                    candidate = selected,
-                    repeatBack = "Shall I call ${selected.name}$suffixPart?",
-                    isAsked = res.isAsked
+            if (taskState == null && pendingAsk != null && pendingAsk!!.candidates.isNotEmpty()) {
+                taskState = ContactResolution(
+                    candidates = pendingAsk!!.candidates,
+                    selectedId = pendingAsk!!.selectedId,
+                    isAsked = pendingVoiceConfirmation?.isAsked ?: false
                 )
+                activeCapability = "calling"
+            }
+            if (pendingVoiceConfirmation == null && taskState is ContactResolution && (taskState as ContactResolution).selectedId != null) {
+                val res = taskState as ContactResolution
+                val selected = res.candidates.firstOrNull { it.id == res.selectedId }
+                if (selected != null) {
+                    val phoneArg = selected.phoneNumber
+                    val digits = phoneArg.filter { it.isDigit() }
+                    val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
+                    val suffixPart = if (suffix.isNotBlank()) ", the number ending in $suffix" else ""
+                    pendingVoiceConfirmation = PendingVoiceConfirmation(
+                        candidate = selected,
+                        repeatBack = "Shall I call ${selected.name}$suffixPart?",
+                        isAsked = res.isAsked
+                    )
+                }
             }
         }
     }
@@ -211,19 +218,24 @@ open class ConversationSession(
             while (iterations < maxIterations) {
                 iterations++
 
+                val modePolicy = when (mode) {
+                    dev.loki.android.core.models.ConversationMode.CHAT -> ChatToolPolicy
+                    dev.loki.android.core.models.ConversationMode.VOICE -> VoiceToolPolicy
+                }
                 val currentAvailableTools = toolRegistry.getAvailableTools(
                     context = context,
                     permissionManager = permissionManager,
                     activeCapability = activeCapability,
                     advancingTool = taskState?.advancingTool,
-                    taskState = taskState as? dev.loki.android.core.tools.TaskStateGate
+                    taskState = taskState as? dev.loki.android.core.tools.TaskStateGate,
+                    policy = modePolicy
                 )
                 val currentDisabledTools = toolRegistry.getDisabledTools(
                     context = context,
                     permissionManager = permissionManager,
                     activeCapability = activeCapability,
                     advancingTool = taskState?.advancingTool
-                )
+                ).filter { (tool, _) -> modePolicy.isAllowed(tool) }
                 TurnLogger.logTools(turnId, currentAvailableTools.size, currentDisabledTools.size)
 
                 val activeBackend = when (val state = llmEngine.modelState.value) {
@@ -271,7 +283,10 @@ open class ConversationSession(
 
                 TurnLogger.logPrompt(turnId, promptToSend)
 
-                val defaultBudget = if (activeBackend == dev.loki.android.core.models.ExecutionBackend.NPU) 256 else 512
+                val defaultBudget = when (mode) {
+                    dev.loki.android.core.models.ConversationMode.VOICE -> 128
+                    dev.loki.android.core.models.ConversationMode.CHAT -> if (activeBackend == dev.loki.android.core.models.ExecutionBackend.NPU) 256 else 512
+                }
                 val maxTokens = agentConfig.generationConfig.maxOutputTokens ?: defaultBudget
                 val cumulativePartial = StringBuilder()
                 val scopedGrammar = GrammarBuilder.buildFrom(currentAvailableTools)
@@ -314,7 +329,7 @@ open class ConversationSession(
                         if (parsed.tool == "ask_user") {
                             val rawText = parsed.arguments["text"]?.toString()?.trim() ?: ""
                             val hasPendingConfirm = pendingVoiceConfirmation != null
-                            val isRawValid = rawText.isNotBlank() && !containsProtocolArtifacts(rawText)
+                            val isRawValid = rawText.isNotBlank() && !containsProtocolArtifacts(rawText, mode)
 
                             // Loop breaker: If confirmation question was already asked and model emits ask_user again,
                             // break out of the infinite repetition loop, cancel the task, and don't re-arm mic.
@@ -858,7 +873,7 @@ open class ConversationSession(
                     }
 
                     is ParsedLlmResponse.DirectResponse -> {
-                        val sanitized = if (containsProtocolArtifacts(parsed.text)) {
+                        val sanitized = if (containsProtocolArtifacts(parsed.text, mode)) {
                             TurnLogger.logError(turnId, "Sanitized malformed LLM output (contained protocol artifacts): ${parsed.text}")
                             try {
                                 android.util.Log.d("LokiTurn", "[LokiTurn] Sanitized malformed LLM output (contained protocol artifacts): ${parsed.text}")
@@ -899,7 +914,7 @@ open class ConversationSession(
                             correctiveRetryUsed = true
                             continue
                         }
-                        finalResponseText = if (parsed.raw.isNotBlank() && !containsProtocolArtifacts(parsed.raw) && !parsed.raw.contains("{") && !parsed.raw.contains("\"tool\"")) {
+                        finalResponseText = if (parsed.raw.isNotBlank() && !containsProtocolArtifacts(parsed.raw, mode) && !parsed.raw.contains("{") && !parsed.raw.contains("\"tool\"")) {
                             parsed.raw.trim()
                         } else {
                             try {
@@ -923,7 +938,7 @@ open class ConversationSession(
             return@channelFlow
         }
 
-        if (containsProtocolArtifacts(finalResponseText)) {
+        if (containsProtocolArtifacts(finalResponseText, mode)) {
             try {
                 android.util.Log.d("LokiTurn", "[LokiTurn] Sanitized malformed LLM output (contained protocol artifacts): $finalResponseText")
             } catch (_: Throwable) {}
@@ -949,59 +964,107 @@ open class ConversationSession(
     }.flowOn(ioDispatcher)
 
     internal suspend fun buildCoreSystemPrompt(isCompact: Boolean = false): String {
-        if (isCompact) {
-            val sb = StringBuilder()
-            sb.append("You are Loki, an on-device assistant.\n")
-            sb.append("Always respond in the same language the user writes or speaks in (e.g. Hindi, English, Hinglish).\n")
-            sb.append("When you need the user's answer — a choice, a confirmation, any missing information — you MUST end your turn by invoking the ask_user tool with your question as its text argument. If you end your turn with a plain question in text, the conversation ENDS and the user CANNOT reply. ask_user is the ONLY way to hand the turn to the user.\n")
-            sb.append("Example — WRONG: replying with plain text \"Which Mom would you like to call?\" — RIGHT: {\"tool\": \"ask_user\", \"arguments\": {\"text\": \"Which Mom would you like to call?\"}}\n")
-            sb.append("When the user asks to call or message someone, immediately call lookup_contact with their name — do not ask for contact information. Only ask which contact when a lookup returns multiple matches.\n")
-            sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}} or {\"response\": \"conversational answer\"}.")
-            return sb.toString()
-        }
-
         val sb = StringBuilder()
-        sb.append("You are Loki, a private offline Android assistant running on the user's device. You operate entirely on-device with privacy and safety as highest priority.\n\n")
-        sb.append("When you need the user's answer — a choice, a confirmation, any missing information — you MUST end your turn by invoking the ask_user tool with your question as its text argument. If you end your turn with a plain question in text, the conversation ENDS and the user CANNOT reply. ask_user is the ONLY way to hand the turn to the user.\n")
-        sb.append("Example — WRONG: replying with plain text \"Which Mom would you like to call?\" — RIGHT: {\"tool\": \"ask_user\", \"arguments\": {\"text\": \"Which Mom would you like to call?\"}}\n\n")
-        sb.append("When the user asks to call or message someone, immediately call lookup_contact with their name — do not ask for contact information. Only ask which contact when a lookup returns multiple matches.\n\n")
+        buildCommonSections(sb)
+        when (mode) {
+            dev.loki.android.core.models.ConversationMode.VOICE -> applyVoiceProfile(sb)
+            dev.loki.android.core.models.ConversationMode.CHAT -> applyChatProfile(sb)
+        }
+        return sb.toString()
+    }
 
-        val customInstruction = agentConfig.systemInstruction.trim()
-        if (customInstruction.isNotBlank() && customInstruction != AgentConfig.DEFAULT_SYSTEM_PROMPT.trim()) {
+    private suspend fun buildCommonSections(sb: StringBuilder) {
+        // SYSTEM_FOUNDATION
+        sb.append("You are Loki, a helpful, direct, and capable offline AI assistant running on Android. You are an AI assistant, NOT the mythological Norse god or Marvel character — do not adopt a mischievous, theatrical, or trickster persona. Always answer questions straightforwardly, neutrally, and helpfully.\n\n")
+    }
+
+    private fun appendUserCustomInstructionsAndLanguage(sb: StringBuilder, modalityInstruction: String) {
+        val commonInstruction = agentConfig.systemInstruction.trim()
+        val hasCommon = commonInstruction.isNotBlank() && commonInstruction != AgentConfig.DEFAULT_SYSTEM_PROMPT.trim()
+        val hasModality = modalityInstruction.isNotBlank()
+        if (hasCommon || hasModality) {
             sb.append("Additional Instructions:\n")
-            sb.append(customInstruction)
-            sb.append("\n\n")
+            if (hasCommon) {
+                sb.append(commonInstruction).append("\n")
+            }
+            if (hasModality) {
+                sb.append(modalityInstruction).append("\n")
+            }
+            sb.append("\n")
         }
 
         val lang = agentConfig.conversationLanguage.trim()
         if (lang.isBlank() || lang.equals("auto", ignoreCase = true)) {
             sb.append("Always respond in the same language the user writes or speaks in.\n\n")
         } else {
-            val locale = Locale.forLanguageTag(lang)
-            val displayName = locale.getDisplayLanguage(Locale.US).ifBlank { lang }
+            val locale = java.util.Locale.forLanguageTag(lang)
+            val displayName = locale.getDisplayLanguage(java.util.Locale.US).ifBlank { lang }
             sb.append("Always respond in $displayName.\n\n")
         }
+    }
 
-        val memories = memoryStore.getAll()
+    private suspend fun applyVoiceProfile(sb: StringBuilder) {
+        // MODALITY_PROFILE — Voice: spoken-first, no Markdown
+        sb.append("You are operating in Voice mode. Keep responses concise and natural for text-to-speech playback. Do not use Markdown formatting, bullet points, or code blocks.\n\n")
+
+        // USER_CUSTOM_INSTRUCTION & LANGUAGE (Tier 3 — subordinate)
+        appendUserCustomInstructionsAndLanguage(sb, agentConfig.voiceInstruction.trim())
+
+        // SCOPED_MEMORIES (Tier 3)
+        appendScopedMemories(sb, dev.loki.android.core.models.ConversationMode.VOICE)
+
+        // TOOL_PROTOCOL (Recency anchor — pinned last)
+        sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}} or {\"response\": \"conversational answer\"}.\n\n")
+
+        // TURN_PROTOCOL (Recency anchor — pinned last)
+        sb.append("If the task requires more information from the user before you can continue, end your turn by invoking ask_user with your question as its text argument. Do NOT end a turn that requires user input with plain text — the user cannot reply to plain text.\n")
+        sb.append("Example — WRONG: replying with plain text \"Which Mom would you like to call?\" — RIGHT: {\"tool\": \"ask_user\", \"arguments\": {\"text\": \"Which Mom would you like to call?\"}}.")
+    }
+
+    private suspend fun applyChatProfile(sb: StringBuilder) {
+        // MODALITY_PROFILE — Chat: rich Markdown, async visual timeline
+        sb.append("You are operating in Chat mode. Use rich Markdown formatting including code blocks, bullet points, and headers where appropriate.\n\n")
+
+        // USER_CUSTOM_INSTRUCTION & LANGUAGE (Tier 3 — subordinate)
+        appendUserCustomInstructionsAndLanguage(sb, agentConfig.chatInstruction.trim())
+
+        // SCOPED_MEMORIES (Tier 3)
+        appendScopedMemories(sb, dev.loki.android.core.models.ConversationMode.CHAT)
+
+        // TOOL_PROTOCOL (Recency anchor — pinned last)
+        sb.append("To use a tool, output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}}. If no tool is needed, respond directly in Markdown — do not wrap conversational responses in JSON.\n\n")
+
+        // TURN_PROTOCOL (Recency anchor — pinned last, Chat-specific: no ask_user)
+        sb.append("If you need information from the user, ask directly in Markdown. Do NOT invoke ask_user — it is not available in this context and will cause an error.")
+    }
+
+    /**
+     * Calculates the remaining character budget for scoped memory injection.
+     *
+     * Formula: Total KV Capacity - (Output Tokens + System Foundation + Active Tool Schemas + History)
+     * Clamped to [0, maxMemoryCapChars] to prevent negative or unbounded allocations.
+     */
+    private fun calculateMemoryBudget(
+        kvCapacityChars: Int = 8000, // conservative estimate for 2048-token context
+        outputReservationChars: Int = 512,
+        systemFoundationChars: Int = 600,
+        activeToolSchemasChars: Int = 0,
+        historyChars: Int = 0,
+        maxMemoryCapChars: Int = 800
+    ): Int {
+        val remaining = kvCapacityChars - outputReservationChars - systemFoundationChars - activeToolSchemasChars - historyChars
+        return remaining.coerceIn(0, maxMemoryCapChars)
+    }
+
+    private suspend fun appendScopedMemories(sb: StringBuilder, mode: dev.loki.android.core.models.ConversationMode) {
+        val historyChars = conversationContext.getTurns().sumOf { it.toString().length }
+        val budget = calculateMemoryBudget(historyChars = historyChars)
+        val memories = memoryStore.getMemoriesFor(mode = mode, maxChars = budget, maxCount = 10)
         if (memories.isNotEmpty()) {
-            val memoryLines = mutableListOf<String>()
-            var charCount = 0
-            for (entry in memories) {
-                if (memoryLines.size >= 10) break
-                val line = "- ${entry.text.trim()}"
-                if (charCount + line.length + 1 > 800) break
-                memoryLines.add(line)
-                charCount += line.length + 1
-            }
-            if (memoryLines.isNotEmpty()) {
-                sb.append("What you remember about the user:\n")
-                sb.append(memoryLines.joinToString("\n"))
-                sb.append("\n\n")
-            }
+            sb.append("What you remember about the user:\n")
+            memories.forEach { sb.append("- ${it.text.trim()}\n") }
+            sb.append("\n")
         }
-
-        sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}} or {\"response\": \"conversational answer\"}.")
-        return sb.toString()
     }
 
     internal fun buildPerTurnPrompt(
@@ -1197,12 +1260,20 @@ open class ConversationSession(
 
         private val TOOL_JSON_REGEX = """\{\s*"tool"\s*:""".toRegex()
         private val STANDALONE_TOOL_NAME_REGEX = """\b(ask_user|call_contact|lookup_contact|dial_number|select_contact|get_current_time|get_battery_status|open_app|set_timer|set_alarm|media_control|toggle_flashlight|open_wifi_settings|open_bluetooth_settings|get_wifi_state|get_bluetooth_state|get_ram_usage|remember_fact|search_chat_history)\b""".toRegex(RegexOption.IGNORE_CASE)
+        private val STANDALONE_TOOL_NAME_EXACT_REGEX = """^(?:`?)(ask_user|call_contact|lookup_contact|dial_number|select_contact|get_current_time|get_battery_status|open_app|set_timer|set_alarm|media_control|toggle_flashlight|open_wifi_settings|open_bluetooth_settings|get_wifi_state|get_bluetooth_state|get_ram_usage|remember_fact|search_chat_history)(?:\([^)]*\))?(?:`?)$""".toRegex(RegexOption.IGNORE_CASE)
 
-        internal fun containsProtocolArtifacts(text: String): Boolean {
+        internal fun containsProtocolArtifacts(
+            text: String,
+            mode: dev.loki.android.core.models.ConversationMode = dev.loki.android.core.models.ConversationMode.VOICE
+        ): Boolean {
             if (text.contains("<|") || text.contains("<|tool_call")) return true
-            if (text.contains("```")) return true
             if (TOOL_JSON_REGEX.containsMatchIn(text)) return true
-            if (STANDALONE_TOOL_NAME_REGEX.containsMatchIn(text)) return true
+            if (mode == dev.loki.android.core.models.ConversationMode.VOICE) {
+                if (text.contains("```")) return true
+                if (STANDALONE_TOOL_NAME_REGEX.containsMatchIn(text)) return true
+            } else {
+                if (STANDALONE_TOOL_NAME_EXACT_REGEX.matches(text.trim())) return true
+            }
             return false
         }
 

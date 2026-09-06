@@ -2,7 +2,7 @@
 
 ## MODIFIED Requirements
 
-### Requirement: Backend Selection & Fallback
+### Requirement: Execution backend selection with fallback
 
 The engine MUST support `ExecutionBackend` selection (`AUTOMATIC`, `NPU`, `GPU`, `CPU`). `AUTOMATIC` (the default) MUST resolve an ordered candidate chain **NPU → GPU → CPU**, where NPU is included only when the hardware probe reports NPU usable AND the model is NPU-compatible. Backend initialization attempts MUST be transactional (native resources fully released between attempts) and observable (each attempt recorded with backend, duration, outcome, and failure reason; the resolved backend and failed-attempt reasons surfaced via engine state).
 
@@ -30,6 +30,8 @@ The engine MUST support `ExecutionBackend` selection (`AUTOMATIC`, `NPU`, `GPU`,
 - **THEN** the candidate chain contains only GPU and CPU
 - **AND** no NPU initialization attempt is made
 
+## ADDED Requirements
+
 ### Requirement: NPU sampler configuration exclusion
 
 The engine MUST NOT customize `ConversationConfig.samplerConfig` when the active backend is NPU.
@@ -39,8 +41,6 @@ The engine MUST NOT customize `ConversationConfig.samplerConfig` when the active
 - **WHEN** `startConversation()` is called with an `AgentConfig` containing generation settings
 - **THEN** the conversation is created without sampler customization
 - **AND** system instruction handling is unchanged
-
-## ADDED Requirements
 
 ### Requirement: Hardware NPU capability probe
 

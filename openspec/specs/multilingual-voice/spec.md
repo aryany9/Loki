@@ -1,4 +1,5 @@
-# multilingual-voice Specification
+## Purpose
+Persistent conversation language configuration supporting auto-detection and explicit language targeting across STT, TTS, and prompt directives.
 
 ## Requirements
 

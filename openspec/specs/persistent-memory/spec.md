@@ -1,8 +1,6 @@
 ## Purpose
 Durable on-device persistent memory store for user facts and preferences, injected into conversation system prompts and manageable via a dedicated Memory screen.
-
 ## Requirements
-
 ### Requirement: Durable on-device memory store
 The system SHALL persist user memory entries as a single JSON file under app-private storage with atomic writes and synchronized access, where each entry contains an id, text, creation timestamp, last-updated timestamp, and source (`MODEL_TOOL` or `USER_MANUAL`). Corrupt or missing store files SHALL degrade to an empty memory list without crashing.
 
@@ -27,7 +25,7 @@ A dedicated Memory screen (accessible from the navigation drawer) SHALL provide 
 - **THEN** the store is empty
 
 ### Requirement: Memory is injected into new conversations under a budget cap
-`buildSystemPrompt` SHALL append stored memories as a "What you remember about the user" block, ordered most-recently-updated first, capped at 10 entries AND 800 characters (whichever is reached first). Memory content SHALL NOT displace the tool-signature or safety portions of the system prompt.
+`buildSystemPrompt` SHALL retrieve applicable memories via `MemoryStore.getMemoriesFor(mode, budget)` and append them as a "What you remember about the user" block, ordered most-recently-updated first. The injected block SHALL strictly observe the dynamic character budget allocated to memory after reserving tokens for output, system foundation, active tool schemas, and conversation history. Memory content SHALL NOT displace safety, domain, or tool protocol portions of the prompt.
 
 #### Scenario: New chat knows the user
 - **WHEN** the user starts a new conversation after saving "My name is Arya"
@@ -35,8 +33,8 @@ A dedicated Memory screen (accessible from the navigation drawer) SHALL provide 
 
 #### Scenario: Budget cap respected
 - **WHEN** the store holds 50 long memories
-- **THEN** the injected block stops at 10 entries / 800 characters (most recent first)
-- **AND** total system-prompt size remains within the existing token budget
+- **THEN** `getMemoriesFor()` truncates entries to fit within the dynamically calculated memory budget
+- **AND** total system-prompt size remains strictly within KV cache capacity
 
 ### Requirement: Memory changes apply from the next conversation start
 Because the native KV cache is initialized once per conversation, memory edits SHALL take effect on the next conversation start or conversation switch; no mid-conversation re-initialization is required.
@@ -45,3 +43,16 @@ Because the native KV cache is initialized once per conversation, memory edits S
 - **WHEN** the user deletes a memory while a chat is active
 - **THEN** the active conversation is uninterrupted
 - **AND** the memory is absent from the system prompt of the next conversation
+
+### Requirement: Scoped Memory Storage and Retrieval
+Each `MemoryEntry` SHALL carry a `MemoryScope` (`GLOBAL`, `VOICE`, or `CHAT`). `MemoryStore.getMemoriesFor(mode, budget)` SHALL encapsulate visibility matching: `GLOBAL` memories are returned for all modes, `VOICE` memories are returned only when `mode == ConversationMode.VOICE`, and `CHAT` memories are returned only when `mode == ConversationMode.CHAT`.
+
+#### Scenario: Voice-specific memory hidden from Chat
+- **WHEN** a memory entry has `scope = MemoryScope.VOICE`
+- **THEN** `getMemoriesFor(ConversationMode.CHAT, budget)` omits the entry
+- **AND** `getMemoriesFor(ConversationMode.VOICE, budget)` includes the entry
+
+#### Scenario: Global memory visible to all modes
+- **WHEN** a memory entry has `scope = MemoryScope.GLOBAL`
+- **THEN** both Voice and Chat sessions receive the memory within their allocated budgets
+

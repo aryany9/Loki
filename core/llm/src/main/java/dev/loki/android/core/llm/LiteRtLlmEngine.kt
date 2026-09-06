@@ -315,7 +315,8 @@ class LiteRtLlmEngine(
             Log.i(TAG, "[Loki] Active backend is NPU: skipping custom SamplerConfig")
             ConversationConfig(
                 systemInstruction = systemContents,
-                initialMessages = replayMessages
+                initialMessages = replayMessages,
+                enableResponseFormat = true
             )
         } else {
             val genConfig = agentConfig.generationConfig
@@ -328,7 +329,8 @@ class LiteRtLlmEngine(
             ConversationConfig(
                 systemInstruction = systemContents,
                 initialMessages = replayMessages,
-                samplerConfig = samplerConfig
+                samplerConfig = samplerConfig,
+                enableResponseFormat = true
             )
         }
     }
@@ -486,14 +488,47 @@ class LiteRtLlmEngine(
                 Message.user(prompt)
             }
 
+            // Build a ResponseFormat constraint only for plain regex patterns.
+            // GBNF grammars (from ConversationSession tool-call structure) always start with
+            // "root ::=" and are NOT valid regexes — passing them to ResponseFormat.regex()
+            // causes a native LLGuidance parse error. Skip ResponseFormat for GBNF and apply
+            // only when grammar is a simple regex pattern (e.g. "CONFIRMED|DECLINED|UNKNOWN").
+            val isGbnf = grammar?.trimStart()?.startsWith("root ::=") == true
+            val responseFormat: com.google.ai.edge.litertlm.ResponseFormat? =
+                if (grammar != null && !isGbnf) {
+                    Log.d(TAG, "[Loki] Applying ResponseFormat.regex for grammar-constrained generation")
+                    com.google.ai.edge.litertlm.ResponseFormat.regex(grammar)
+                } else null
+
             val fullResponse = StringBuilder()
-            conversation.sendMessageAsync(userMessage, maxOutputToken = maxTokens).collect { partialMessage ->
-                val textContent = partialMessage.contents.contents
-                    .filterIsInstance<Content.Text>()
-                    .firstOrNull()?.text ?: ""
-                if (textContent.isNotEmpty()) {
-                    onToken?.invoke(textContent)
-                    fullResponse.append(textContent)
+            if (responseFormat != null) {
+                conversation.sendMessageAsync(
+                    userMessage,
+                    emptyMap<String, Any>(),  // extras — non-nullable; disambiguates the overload
+                    null,   // RepetitionPenaltyConfig
+                    null,   // NoRepeatNgramConfig
+                    null,   // SuppressTokensConfig
+                    maxTokens,
+                    null,   // ThinkingConfig
+                    responseFormat
+                ).collect { partialMessage ->
+                    val textContent = partialMessage.contents.contents
+                        .filterIsInstance<Content.Text>()
+                        .firstOrNull()?.text ?: ""
+                    if (textContent.isNotEmpty()) {
+                        onToken?.invoke(textContent)
+                        fullResponse.append(textContent)
+                    }
+                }
+            } else {
+                conversation.sendMessageAsync(userMessage, maxOutputToken = maxTokens).collect { partialMessage ->
+                    val textContent = partialMessage.contents.contents
+                        .filterIsInstance<Content.Text>()
+                        .firstOrNull()?.text ?: ""
+                    if (textContent.isNotEmpty()) {
+                        onToken?.invoke(textContent)
+                        fullResponse.append(textContent)
+                    }
                 }
             }
 

@@ -14,10 +14,31 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
+import dev.loki.android.core.models.ConversationMode
+
 @Serializable
 enum class MemorySource {
     MODEL_TOOL,
     USER_MANUAL
+}
+
+/**
+ * Defines visibility scope for a memory entry across interaction modalities.
+ * [GLOBAL] memories are visible in all modes.
+ * [VOICE] memories are only visible to voice sessions.
+ * [CHAT] memories are only visible to chat sessions.
+ */
+@Serializable
+enum class MemoryScope {
+    GLOBAL,
+    VOICE,
+    CHAT;
+
+    fun isApplicableTo(mode: ConversationMode): Boolean = when (this) {
+        GLOBAL -> true
+        VOICE -> mode == ConversationMode.VOICE
+        CHAT -> mode == ConversationMode.CHAT
+    }
 }
 
 @Serializable
@@ -26,7 +47,9 @@ data class MemoryEntry(
     val text: String,
     val createdAtEpochMs: Long = System.currentTimeMillis(),
     val updatedAtEpochMs: Long = System.currentTimeMillis(),
-    val source: MemorySource = MemorySource.MODEL_TOOL
+    val source: MemorySource = MemorySource.MODEL_TOOL,
+    /** Visibility scope; defaults to GLOBAL for backward compatibility with existing serialized entries. */
+    val scope: MemoryScope = MemoryScope.GLOBAL
 )
 
 /**
@@ -112,6 +135,37 @@ class MemoryStore(
     suspend fun getAll(): List<MemoryEntry> = withContext(ioDispatcher) {
         mutex.withLock {
             loadLocked().sortedByDescending { it.updatedAtEpochMs }
+        }
+    }
+
+    /**
+     * Returns memories applicable to [mode], ordered most-recently-updated first,
+     * clamped to [maxCount] entries and [maxChars] total characters.
+     *
+     * Visibility rules:
+     * - [MemoryScope.GLOBAL] entries are included for all modes.
+     * - [MemoryScope.VOICE] entries are included only when [mode] is [ConversationMode.VOICE].
+     * - [MemoryScope.CHAT] entries are included only when [mode] is [ConversationMode.CHAT].
+     */
+    suspend fun getMemoriesFor(
+        mode: ConversationMode,
+        maxChars: Int,
+        maxCount: Int = 10
+    ): List<MemoryEntry> = withContext(ioDispatcher) {
+        mutex.withLock {
+            val sorted = loadLocked()
+                .filter { it.scope.isApplicableTo(mode) }
+                .sortedByDescending { it.updatedAtEpochMs }
+            val result = mutableListOf<MemoryEntry>()
+            var charCount = 0
+            for (entry in sorted) {
+                if (result.size >= maxCount) break
+                val line = "- ${entry.text.trim()}"
+                if (charCount + line.length + 1 > maxChars) break
+                result.add(entry)
+                charCount += line.length + 1
+            }
+            result
         }
     }
 

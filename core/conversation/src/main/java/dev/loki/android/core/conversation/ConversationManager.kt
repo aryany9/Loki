@@ -2,6 +2,7 @@ package dev.loki.android.core.conversation
 
 import android.content.Context
 import dev.loki.android.core.llm.LlmEngine
+import dev.loki.android.core.models.ConversationMode
 import dev.loki.android.core.models.AgentConfig
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.ToolResult
@@ -16,6 +17,18 @@ sealed interface ConversationEvent {
     data class GeneratingToken(val partial: String) : ConversationEvent
     data class ToolExecuting(val toolName: String, val args: Map<String, Any?>) : ConversationEvent
     data class ToolExecuted(val toolName: String, val result: ToolResult) : ConversationEvent
+    /**
+     * Emitted when a tool execution begins. [callId] correlates with [ToolCallCompleted] and [ToolCallFailed].
+     */
+    data class ToolCallStarted(val callId: String, val toolName: String, val arguments: Map<String, Any?>) : ConversationEvent
+    /**
+     * Emitted when a tool execution completes successfully. [callId] matches the originating [ToolCallStarted].
+     */
+    data class ToolCallCompleted(val callId: String, val toolName: String, val result: dev.loki.android.core.tools.ToolResult) : ConversationEvent
+    /**
+     * Emitted when a tool execution fails. [callId] matches the originating [ToolCallStarted].
+     */
+    data class ToolCallFailed(val callId: String, val toolName: String, val error: String) : ConversationEvent
     /**
      * Emitted when a tool with [requiresConfirmation] = true is about to execute.
      * The session will suspend until [ConversationSession.respondToConfirmation] is called,
@@ -57,7 +70,7 @@ data class PendingVoiceConfirmation(
  * ConversationManager manages LLM & tool coordination, providing scoped ConversationSessions
  * for persistent chat and ephemeral voice interactions.
  */
-class ConversationManager(
+open class ConversationManager(
     private val context: Context,
     val llmEngine: LlmEngine,
     val toolRegistry: ToolRegistry,
@@ -85,6 +98,7 @@ class ConversationManager(
         sharedVoiceCandidates.clear()
         pendingVoiceAsk = null
         pendingVoiceConfirmation = null
+        confirmedResolution = null
     }
 
     fun clearContactCandidates() {
@@ -92,6 +106,63 @@ class ConversationManager(
         chatContactCandidates.clear()
         pendingVoiceAsk = null
         pendingVoiceConfirmation = null
+    }
+
+    /** Backing store for confirmed resolution — set by [confirmContactResolution], cleared by [clearVoiceTask]. */
+    private var confirmedResolution: ContactResolution? = null
+
+    /**
+     * Derives the current [TaskState] from the in-activation pending voice state.
+     * When [confirmContactResolution] has been called, returns a [ContactResolution] with
+     * `confirmed = true` so the next [ConversationSession] sees `call_contact` unblocked.
+     * Mirrors the synthesis logic in [ConversationSession.init] so that [AssistantSession]
+     * can read [TaskState.expectedSemantics] without constructing a full session.
+     */
+    val taskState: TaskState?
+        get() {
+            // Confirmed override takes precedence — next session will execute call_contact directly.
+            confirmedResolution?.let { return it }
+            val vc = pendingVoiceConfirmation
+            if (vc != null) {
+                return ContactResolution(
+                    candidates = listOf(vc.candidate),
+                    selectedId = vc.candidate.id,
+                    isAsked = vc.isAsked
+                )
+            }
+            val pa = pendingVoiceAsk
+            if (pa != null && pa.candidates.isNotEmpty()) {
+                return ContactResolution(
+                    candidates = pa.candidates,
+                    selectedId = pa.selectedId,
+                    isAsked = false
+                )
+            }
+            return null
+        }
+
+    /**
+     * Advances [ContactResolution] state to `confirmed = true` so that the next
+     * [ConversationSession] will see `call_contact` unblocked in the tool grammar.
+     *
+     * No-op if the current state is not a [ContactResolution] with [ContactResolution.selectedId]
+     * non-null and [ContactResolution.confirmed] == false.
+     */
+    open fun confirmContactResolution() {
+        val current = taskState as? ContactResolution ?: return
+        if (current.selectedId == null || current.confirmed) return
+        confirmedResolution = current.copy(confirmed = true)
+    }
+
+    /**
+     * Clears all active voice task state: [taskState], [pendingVoiceAsk], and
+     * [pendingVoiceConfirmation].  No-op if all are already null.
+     */
+    open fun clearVoiceTask() {
+        pendingVoiceAsk = null
+        pendingVoiceConfirmation = null
+        confirmedResolution = null
+        sharedVoiceCandidates.clear()
     }
 
     fun getAgentConfig(): AgentConfig = activeAgentConfig
@@ -160,7 +231,7 @@ class ConversationManager(
         return conversationStore.renameConversation(id, title)
     }
 
-    fun newChatSession(): ConversationSession {
+    open fun newChatSession(): ConversationSession {
         val convId = activeConversationId ?: run {
             val newId = UUID.randomUUID().toString()
             activeConversationId = newId
@@ -178,13 +249,14 @@ class ConversationManager(
             conversationStore = conversationStore,
             memoryStore = memoryStore,
             conversationId = convId,
+            mode = ConversationMode.CHAT,
             ioDispatcher = ioDispatcher,
             contactCandidateRegistry = chatContactCandidates
         )
     }
 
     fun newVoiceSession(): ConversationSession {
-        return ConversationSession(
+        val session = ConversationSession(
             context = context,
             llmEngine = llmEngine,
             toolRegistry = toolRegistry,
@@ -196,6 +268,7 @@ class ConversationManager(
             conversationStore = null,
             memoryStore = memoryStore,
             conversationId = null,
+            mode = ConversationMode.VOICE,
             ioDispatcher = ioDispatcher,
             contactCandidateRegistry = sharedVoiceCandidates,
             pendingAsk = pendingVoiceAsk,
@@ -203,6 +276,16 @@ class ConversationManager(
             pendingVoiceConfirmation = pendingVoiceConfirmation,
             onPendingVoiceConfirmationUpdated = { updated -> pendingVoiceConfirmation = updated }
         )
+        // If confirmContactResolution() was called before this session, apply the confirmed
+        // state now. ConversationSession.init{} always re-synthesizes taskState from
+        // pendingVoiceConfirmation (which has confirmed=false), so we overwrite it here
+        // from the confirmedResolution backing field.
+        // Use it once then clear so it does not leak into subsequent sessions.
+        confirmedResolution?.let {
+            session.taskState = it
+            confirmedResolution = null
+        }
+        return session
     }
 
     fun processUtterance(
@@ -225,6 +308,7 @@ class ConversationManager(
         chatContactCandidates.clear()
         pendingVoiceAsk = null
         pendingVoiceConfirmation = null
+        confirmedResolution = null
         llmEngine.resetConversation()
     }
 

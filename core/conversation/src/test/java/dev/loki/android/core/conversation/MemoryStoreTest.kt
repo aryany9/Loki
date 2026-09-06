@@ -102,4 +102,99 @@ class MemoryStoreTest {
         assertTrue(store.clear())
         assertTrue(store.getAll().isEmpty())
     }
+
+    // ── Task 1.6: Scoped retrieval and budget enforcement ────────────────────
+
+    @Test
+    fun `getMemoriesFor returns GLOBAL entries for both VOICE and CHAT`() = runTest {
+        store.add("Global fact", MemorySource.USER_MANUAL)
+        val voiceResults = store.getMemoriesFor(dev.loki.android.core.models.ConversationMode.VOICE, maxChars = 1000)
+        val chatResults = store.getMemoriesFor(dev.loki.android.core.models.ConversationMode.CHAT, maxChars = 1000)
+        assertEquals(1, voiceResults.size)
+        assertEquals(1, chatResults.size)
+        assertEquals("Global fact", voiceResults[0].text)
+        assertEquals("Global fact", chatResults[0].text)
+    }
+
+    @Test
+    fun `getMemoriesFor returns VOICE-scoped entry only to VOICE mode`() = runTest {
+        store.add("Voice-only tip", MemorySource.USER_MANUAL)
+        // Patch scope on the stored entry by updating the store directly
+        val all = store.getAll()
+        assertEquals(1, all.size)
+        // Re-add with explicit VOICE scope using a store that supports it
+        store.clear()
+        val storeWithScope = MemoryStore(baseDir = tempDir, nowMillis = { fakeNow += 50; fakeNow })
+        // Add with VOICE scope via the full add overload
+        val entry = MemoryEntry(text = "Voice-only tip", scope = MemoryScope.VOICE)
+        val file = java.io.File(tempDir, "memories.json")
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true; prettyPrint = false }
+        file.writeText(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(MemoryEntry.serializer()), listOf(entry)))
+
+        val voiceResults = storeWithScope.getMemoriesFor(dev.loki.android.core.models.ConversationMode.VOICE, maxChars = 1000)
+        val chatResults = storeWithScope.getMemoriesFor(dev.loki.android.core.models.ConversationMode.CHAT, maxChars = 1000)
+        assertEquals(1, voiceResults.size)
+        assertTrue(chatResults.isEmpty())
+    }
+
+    @Test
+    fun `getMemoriesFor returns CHAT-scoped entry only to CHAT mode`() = runTest {
+        val storeWithScope = MemoryStore(baseDir = tempDir, nowMillis = { fakeNow += 50; fakeNow })
+        val entry = MemoryEntry(text = "Chat-only preference", scope = MemoryScope.CHAT)
+        val file = java.io.File(tempDir, "memories.json")
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true; prettyPrint = false }
+        file.writeText(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(MemoryEntry.serializer()), listOf(entry)))
+
+        val chatResults = storeWithScope.getMemoriesFor(dev.loki.android.core.models.ConversationMode.CHAT, maxChars = 1000)
+        val voiceResults = storeWithScope.getMemoriesFor(dev.loki.android.core.models.ConversationMode.VOICE, maxChars = 1000)
+        assertEquals(1, chatResults.size)
+        assertTrue(voiceResults.isEmpty())
+    }
+
+    @Test
+    fun `getMemoriesFor respects maxChars character budget`() = runTest {
+        val storeWithScope = MemoryStore(baseDir = tempDir, nowMillis = { fakeNow += 50; fakeNow })
+        val entries = listOf(
+            MemoryEntry(text = "Short"),          // "- Short" = 7 chars
+            MemoryEntry(text = "Also short"),     // "- Also short" = 12 chars
+            MemoryEntry(text = "Another one"),    // "- Another one" = 13 chars
+        ).sortedByDescending { it.updatedAtEpochMs }
+        val file = java.io.File(tempDir, "memories.json")
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true; prettyPrint = false }
+        file.writeText(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(MemoryEntry.serializer()), entries))
+
+        // Budget of 20 chars: only the first two entries fit (7+1 + 12+1 = 21 — second would overflow too, only first fits within 20)
+        val results = storeWithScope.getMemoriesFor(dev.loki.android.core.models.ConversationMode.CHAT, maxChars = 20)
+        assertTrue("Expected at most 2 entries within 20-char budget", results.size <= 2)
+    }
+
+    @Test
+    fun `getMemoriesFor respects maxCount cap`() = runTest {
+        val storeWithScope = MemoryStore(baseDir = tempDir, nowMillis = { fakeNow += 50; fakeNow })
+        val entries = (1..5).map { MemoryEntry(text = "Fact $it") }
+        val file = java.io.File(tempDir, "memories.json")
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true; isLenient = true; prettyPrint = false }
+        file.writeText(json.encodeToString(kotlinx.serialization.builtins.ListSerializer(MemoryEntry.serializer()), entries))
+
+        val results = storeWithScope.getMemoriesFor(
+            dev.loki.android.core.models.ConversationMode.CHAT,
+            maxChars = 10000,
+            maxCount = 3
+        )
+        assertEquals(3, results.size)
+    }
+
+    @Test
+    fun `legacy entries without scope field default to GLOBAL and are visible to all modes`() = runTest {
+        // Simulate a legacy JSON entry without a scope field
+        val legacyJson = """[{"id":"legacy-1","text":"Legacy memory","createdAtEpochMs":1000,"updatedAtEpochMs":1000,"source":"USER_MANUAL"}]"""
+        val file = java.io.File(tempDir, "memories.json")
+        file.writeText(legacyJson)
+        val storeWithLegacy = MemoryStore(baseDir = tempDir)
+        val voiceResults = storeWithLegacy.getMemoriesFor(dev.loki.android.core.models.ConversationMode.VOICE, maxChars = 1000)
+        val chatResults = storeWithLegacy.getMemoriesFor(dev.loki.android.core.models.ConversationMode.CHAT, maxChars = 1000)
+        assertEquals(1, voiceResults.size)
+        assertEquals(1, chatResults.size)
+        assertEquals("Legacy memory", voiceResults[0].text)
+    }
 }

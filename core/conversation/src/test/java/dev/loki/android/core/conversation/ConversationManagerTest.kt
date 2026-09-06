@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -829,6 +830,128 @@ class ConversationManagerTest {
         manager.pendingVoiceAsk = pending
         manager.reset()
         assertNull(manager.pendingVoiceAsk)
+    }
+    @Test
+    fun `confirmContactResolution advances taskState to confirmed = true when guard conditions are met`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, MockLlmEngine(emptyList()), ToolRegistry(), ttsEngine = null)
+
+        val candidate = ContactCandidate("c1", "Mom", "1234567890")
+        manager.pendingVoiceConfirmation = PendingVoiceConfirmation(candidate, "Shall I call Mom?", isAsked = true)
+
+        // Before: taskState is ContactResolution(confirmed=false)
+        val before = manager.taskState as? ContactResolution
+        assertNotNull(before)
+        assertFalse(before!!.confirmed)
+        assertEquals("c1", before.selectedId)
+
+        manager.confirmContactResolution()
+
+        // After: taskState should be ContactResolution(confirmed=true)
+        val after = manager.taskState as? ContactResolution
+        assertNotNull(after)
+        assertTrue(after!!.confirmed)
+        assertEquals("c1", after.selectedId)
+    }
+
+    @Test
+    fun `confirmContactResolution is a no-op when taskState is null`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, MockLlmEngine(emptyList()), ToolRegistry(), ttsEngine = null)
+
+        // No state set — manager.taskState is null
+        assertNull(manager.taskState)
+        manager.confirmContactResolution() // must not throw
+        assertNull(manager.taskState)
+    }
+
+    @Test
+    fun `confirmContactResolution is a no-op when taskState is already confirmed`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, MockLlmEngine(emptyList()), ToolRegistry(), ttsEngine = null)
+
+        val candidate = ContactCandidate("c1", "Mom", "1234567890")
+        manager.pendingVoiceConfirmation = PendingVoiceConfirmation(candidate, "Shall I call Mom?", isAsked = true)
+        // First confirm
+        manager.confirmContactResolution()
+        val afterFirst = manager.taskState as? ContactResolution
+        assertNotNull(afterFirst)
+        assertTrue(afterFirst!!.confirmed)
+
+        // Second confirm should be no-op (already confirmed)
+        manager.confirmContactResolution()
+        val afterSecond = manager.taskState as? ContactResolution
+        assertNotNull(afterSecond)
+        assertTrue(afterSecond!!.confirmed) // still confirmed, no state change
+    }
+
+    @Test
+    fun `confirmContactResolution is a no-op when selectedId is null`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, MockLlmEngine(emptyList()), ToolRegistry(), ttsEngine = null)
+
+        // pendingVoiceAsk with candidates but no selectedId
+        val candidates = listOf(ContactCandidate("c1", "Mom", "123"), ContactCandidate("c2", "Mom Mobile", "456"))
+        manager.pendingVoiceAsk = PendingAsk("Which Mom?", candidates)
+
+        val state = manager.taskState as? ContactResolution
+        assertNotNull(state)
+        assertNull(state!!.selectedId)
+
+        manager.confirmContactResolution() // should be no-op since selectedId == null
+        // taskState should remain unchanged
+        val after = manager.taskState as? ContactResolution
+        assertNotNull(after)
+        assertNull(after!!.selectedId)
+        assertFalse(after.confirmed)
+    }
+
+    @Test
+    fun `clearVoiceTask clears pendingVoiceAsk, pendingVoiceConfirmation, and taskState`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, MockLlmEngine(emptyList()), ToolRegistry(), ttsEngine = null)
+
+        val candidate = ContactCandidate("c1", "Mom", "123")
+        manager.pendingVoiceAsk = PendingAsk("Which Mom?", listOf(candidate))
+        manager.pendingVoiceConfirmation = PendingVoiceConfirmation(candidate, "Shall I call Mom?")
+
+        assertNotNull(manager.taskState)
+        assertNotNull(manager.pendingVoiceAsk)
+        assertNotNull(manager.pendingVoiceConfirmation)
+
+        manager.clearVoiceTask()
+
+        assertNull(manager.taskState)
+        assertNull(manager.pendingVoiceAsk)
+        assertNull(manager.pendingVoiceConfirmation)
+    }
+
+    @Test
+    fun `clearVoiceTask also clears confirmed resolution state`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, MockLlmEngine(emptyList()), ToolRegistry(), ttsEngine = null)
+
+        val candidate = ContactCandidate("c1", "Mom", "123")
+        manager.pendingVoiceConfirmation = PendingVoiceConfirmation(candidate, "Shall I call Mom?", isAsked = true)
+        manager.confirmContactResolution()
+
+        // Confirmed state is set
+        assertTrue((manager.taskState as? ContactResolution)?.confirmed == true)
+
+        manager.clearVoiceTask()
+
+        // Everything cleared
+        assertNull(manager.taskState)
+    }
+
+    @Test
+    fun `clearVoiceTask is a no-op when state is already clear`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val manager = ConversationManager(dummyContext, MockLlmEngine(emptyList()), ToolRegistry(), ttsEngine = null)
+
+        assertNull(manager.taskState)
+        manager.clearVoiceTask() // must not throw
+        assertNull(manager.taskState)
     }
 }
 
