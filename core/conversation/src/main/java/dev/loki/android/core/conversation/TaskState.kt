@@ -5,6 +5,74 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
+ * The outcome of a confirmation resolution call.
+ * Maps raw LLM output (grammar-constrained) to a deterministic semantic outcome.
+ */
+enum class ConfirmationOutcome {
+    /** User clearly affirmed the action. */
+    CONFIRMED,
+    /** User clearly declined the action. */
+    DECLINED,
+    /** Response was ambiguous, unclear, or unrelated. */
+    UNKNOWN;
+
+    companion object {
+        /**
+         * Decodes the raw LLM output string into a [ConfirmationOutcome].
+         *
+         * This function is a **format decoder**, not a semantic interpreter.
+         * The LLM is responsible for classifying the user's intent; this function
+         * only converts the LLM's output format into the enum value.
+         *
+         * Accepted formats (in priority order):
+         * 1. Bare token (exact match, case-insensitive, after trim):
+         *    `CONFIRMED`, `DECLINED`, `UNKNOWN`
+         * 2. Known JSON label envelope produced by the LiteRT audio model
+         *    when grammar isn't sampler-enforced:
+         *    `{"label": "CONFIRMED"}`, `{"label":"DECLINED"}`, etc.
+         * 3. Anything else → [UNKNOWN] (safe default — do not attempt
+         *    to semantically interpret free-form text here).
+         */
+        fun from(raw: String): ConfirmationOutcome {
+            val trimmed = raw.trim()
+
+            // ── Step 1: exact bare-token match ────────────────────────────────
+            when (trimmed.uppercase()) {
+                "CONFIRMED" -> return CONFIRMED
+                "DECLINED"  -> return DECLINED
+                "UNKNOWN"   -> return UNKNOWN
+            }
+
+            // ── Step 2: known JSON label envelope ─────────────────────────────
+            // Handles: {"label": "CONFIRMED"} / {"label":"DECLINED"} etc.
+            // Only matches if the string is a JSON object and the "label" key
+            // holds one of the three exact tokens. Substring matches inside
+            // arbitrary prose are intentionally NOT accepted.
+            if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+                val labelValue = JSON_LABEL_REGEX.find(trimmed)?.groupValues?.getOrNull(1)
+                if (labelValue != null) {
+                    return when (labelValue.uppercase()) {
+                        "CONFIRMED" -> CONFIRMED
+                        "DECLINED"  -> DECLINED
+                        "UNKNOWN"   -> UNKNOWN
+                        else        -> UNKNOWN
+                    }
+                }
+            }
+
+            // ── Step 3: unrecognised format → safe default ────────────────────
+            return UNKNOWN
+        }
+
+        /**
+         * Matches the `"label"` key in a JSON object and captures its string value.
+         * Example matches: `"label": "CONFIRMED"`, `"label":"DECLINED"`.
+         */
+        private val JSON_LABEL_REGEX = Regex(""""label"\s*:\s*"([^"]+)"""")
+    }
+}
+
+/**
  * Describes what type of user response the model is currently expecting.
  * Derived from [TaskState] without changing any existing constructor signatures.
  */

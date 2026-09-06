@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import dev.loki.android.core.conversation.ConversationEvent
+import dev.loki.android.core.conversation.ConfirmationOutcome
+import dev.loki.android.core.conversation.ExpectedResponseSemantics
 import dev.loki.android.core.models.ModelRuntime
 import dev.loki.android.core.tools.ToolErrorCode
 import dev.loki.android.core.voice.stt.SttEvent
@@ -672,6 +674,49 @@ class AssistantSession(
                     break
                 }
 
+                // ── 4.1 / 4.6 Branch on expectedSemantics ──────────────────────────────────
+                // Read taskState BEFORE creating a new ConversationSession. When semantics is
+                // CONFIRMATION, we call ConfirmationResolver instead of the full session path.
+                val expectedSemantics = conversationManager.taskState?.expectedSemantics
+                if (expectedSemantics == ExpectedResponseSemantics.CONFIRMATION) {
+                    // 4.2 Resolve CONFIRMED / DECLINED / UNKNOWN via grammar-constrained LLM call
+                    val question = conversationManager.pendingVoiceAsk?.question
+                        ?: conversationManager.pendingVoiceConfirmation?.repeatBack
+                        ?: currentResponse
+                    Log.d(TAG, "handleFollowUpLoop: CONFIRMATION semantics — calling ConfirmationResolver")
+                    val outcome = ConfirmationResolver.resolve(
+                        audioBytes = audioPcmBytes,
+                        transcript = transcript,
+                        question = question,
+                        llmEngine = conversationManager.llmEngine
+                    )
+                    Log.d(TAG, "handleFollowUpLoop: ConfirmationResolver outcome=$outcome")
+
+                    when (outcome) {
+                        ConfirmationOutcome.CONFIRMED -> {
+                            // 4.3 Advance confirmed state; next session will execute call_contact
+                            conversationManager.confirmContactResolution()
+                            // Fall through to create a fresh ConversationSession and continue loop.
+                            // currentTurnEndedInAskUser is left true so the loop continues.
+                        }
+                        ConfirmationOutcome.DECLINED -> {
+                            // 4.4 Clear task state, speak cancellation, exit loop
+                            conversationManager.clearVoiceTask()
+                            val cancelText = "Okay, I've cancelled that."
+                            currentTurnEndedInAskUser = false
+                            speakAndAwait(ttsEngine, cancelText)
+                            return cancelText
+                        }
+                        ConfirmationOutcome.UNKNOWN -> {
+                            // 4.5 Leave state unchanged; currentTurnEndedInAskUser stays true;
+                            // continue to next iteration — existing re-prompt path via currentResponse
+                            Log.d(TAG, "handleFollowUpLoop: UNKNOWN outcome — re-prompting")
+                            continue
+                        }
+                    }
+                }
+                // ── End CONFIRMATION branch ─────────────────────────────────────────────────
+
                 // Fresh voice session per turn (D2)
                 val followUpSession = conversationManager.newVoiceSession()
                 activeVoiceSession = followUpSession
@@ -742,6 +787,7 @@ class AssistantSession(
                 Log.i(TAG, "MAX_VOICE_ROUNDS ($MAX_VOICE_ROUNDS) reached; triggering terminal circuit-breaker")
                 val exitText = "Let's stop here."
                 conversationManager.pendingVoiceAsk = null
+                conversationManager.clearVoiceTask()
                 conversationManager.clearVoiceCandidates()
                 speakAndAwait(ttsEngine, exitText)
                 return exitText

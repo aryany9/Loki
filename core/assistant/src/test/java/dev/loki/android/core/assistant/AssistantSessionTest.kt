@@ -1488,4 +1488,241 @@ class AssistantSessionTest {
         assertTrue(spokenTexts.contains("Let's stop here."))
         session.destroy()
     }
+
+    // ─── Confirmation resolver integration tests ────────────────────────────────
+
+    private fun makeFakeTts(spoken: MutableList<String> = mutableListOf()) = object : dev.loki.android.core.voice.tts.TtsEngine {
+        override val isSpeaking: Boolean = false
+        override val isReady: Boolean = true
+        override fun speak(text: String, utteranceId: String, onStart: (() -> Unit)?, onDone: (() -> Unit)?, onError: ((String) -> Unit)?) {
+            spoken.add(text)
+            onDone?.invoke()
+        }
+        override fun stop() {}
+        override fun release() {}
+    }
+
+    private fun makeSpeechRecorder(audioFloats: FloatArray = FloatArray(1600) { 0.5f }) = object : dev.loki.android.core.voice.stt.AudioRecorder() {
+        override fun arm(): Boolean = true
+        override suspend fun recordGatedUtterance(isCommitGated: () -> Boolean, onRmsUpdate: ((Float) -> Unit)?): FloatArray = audioFloats
+        override fun release() {}
+    }
+
+    @Test
+    fun `handleFollowUpLoop AWAITING_CONFIRMATION + CONFIRMED calls confirmContactResolution and continues loop`() = runTest {
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { makeSpeechRecorder() }
+
+        val spokenTexts = mutableListOf<String>()
+        val fakeTts = makeFakeTts(spokenTexts)
+
+        // Resolver will return "CONFIRMED" on first call, then the next session returns "call_contact"
+        var generateCallCount = 0
+        var confirmContactResolutionCalled = false
+
+        val candidate = dev.loki.android.core.conversation.ContactCandidate("c1", "Mom", "1234567890")
+        val fakeConversationManager = object : dev.loki.android.core.conversation.ConversationManager(
+            context = object : android.content.ContextWrapper(null) {},
+            llmEngine = object : dev.loki.android.core.llm.LlmEngine {
+                private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+                override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+                override fun isReady(): Boolean = true
+                override suspend fun initializeAsync(modelPath: String?): Boolean = true
+                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                    generateCallCount++
+                    // First call is from ConfirmationResolver (grammar constrained, short prompt)
+                    return if (grammar != null && grammar.contains("CONFIRMED")) {
+                        Result.success("CONFIRMED")
+                    } else {
+                        // Next session generates a direct response (not ask_user) — loop exits
+                        Result.success("""{"response": "Calling Mom now."}""")
+                    }
+                }
+                override fun cancel() {}
+                override fun release() {}
+            },
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ttsEngine = fakeTts
+        ) {
+            override fun confirmContactResolution() {
+                confirmContactResolutionCalled = true
+                super.confirmContactResolution()
+            }
+        }
+        // Set up AWAITING_CONFIRMATION state
+        fakeConversationManager.pendingVoiceConfirmation = dev.loki.android.core.conversation.PendingVoiceConfirmation(
+            candidate = candidate,
+            repeatBack = "Shall I call Mom?",
+            isAsked = true
+        )
+
+        session.handleFollowUpLoop(
+            conversationManager = fakeConversationManager,
+            voiceSession = fakeConversationManager.newVoiceSession(),
+            sttEngine = null,
+            initialResponseText = "Shall I call Mom?",
+            useDirectAudio = true
+        )
+
+        assertTrue("confirmContactResolution() must be called on CONFIRMED", confirmContactResolutionCalled)
+        session.destroy()
+    }
+
+    @Test
+    fun `handleFollowUpLoop AWAITING_CONFIRMATION + DECLINED calls clearVoiceTask and exits with cancellation phrase`() = runTest {
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { makeSpeechRecorder() }
+
+        val spokenTexts = mutableListOf<String>()
+        val fakeTts = makeFakeTts(spokenTexts)
+
+        var clearVoiceTaskCalled = false
+        val candidate = dev.loki.android.core.conversation.ContactCandidate("c1", "Mom", "1234567890")
+        val fakeConversationManager = object : dev.loki.android.core.conversation.ConversationManager(
+            context = object : android.content.ContextWrapper(null) {},
+            llmEngine = object : dev.loki.android.core.llm.LlmEngine {
+                private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+                override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+                override fun isReady(): Boolean = true
+                override suspend fun initializeAsync(modelPath: String?): Boolean = true
+                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                    return if (grammar != null && grammar.contains("CONFIRMED")) {
+                        Result.success("DECLINED")
+                    } else {
+                        Result.success("""{"response": "Okay."}""")
+                    }
+                }
+                override fun cancel() {}
+                override fun release() {}
+            },
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ttsEngine = fakeTts
+        ) {
+            override fun clearVoiceTask() {
+                clearVoiceTaskCalled = true
+                super.clearVoiceTask()
+            }
+        }
+        fakeConversationManager.pendingVoiceConfirmation = dev.loki.android.core.conversation.PendingVoiceConfirmation(
+            candidate = candidate,
+            repeatBack = "Shall I call Mom?",
+            isAsked = true
+        )
+
+        val result = session.handleFollowUpLoop(
+            conversationManager = fakeConversationManager,
+            voiceSession = fakeConversationManager.newVoiceSession(),
+            sttEngine = null,
+            initialResponseText = "Shall I call Mom?",
+            useDirectAudio = true
+        )
+
+        assertTrue("clearVoiceTask() must be called on DECLINED", clearVoiceTaskCalled)
+        assertEquals("Okay, I've cancelled that.", result)
+        assertTrue("TTS must speak cancellation phrase", spokenTexts.any { it.contains("cancelled") })
+        session.destroy()
+    }
+
+    @Test
+    fun `handleFollowUpLoop AWAITING_CONFIRMATION + UNKNOWN does not exit loop and re-prompts`() = runTest {
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+
+        var resolverCallCount = 0
+        // First round: UNKNOWN → re-prompt; Second round: DECLINED → exit
+        val audioFloats = FloatArray(1600) { 0.5f }
+        session.audioRecorderFactory = { makeSpeechRecorder(audioFloats) }
+
+        val spokenTexts = mutableListOf<String>()
+        val fakeTts = makeFakeTts(spokenTexts)
+
+        val candidate = dev.loki.android.core.conversation.ContactCandidate("c1", "Mom", "1234567890")
+        val fakeConversationManager = dev.loki.android.core.conversation.ConversationManager(
+            context = object : android.content.ContextWrapper(null) {},
+            llmEngine = object : dev.loki.android.core.llm.LlmEngine {
+                private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+                override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+                override fun isReady(): Boolean = true
+                override suspend fun initializeAsync(modelPath: String?): Boolean = true
+                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                    return if (grammar != null && grammar.contains("CONFIRMED")) {
+                        resolverCallCount++
+                        if (resolverCallCount == 1) Result.success("UNKNOWN")
+                        else Result.success("DECLINED")
+                    } else {
+                        Result.success("""{"response": "Okay."}""")
+                    }
+                }
+                override fun cancel() {}
+                override fun release() {}
+            },
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ttsEngine = fakeTts
+        )
+        fakeConversationManager.pendingVoiceConfirmation = dev.loki.android.core.conversation.PendingVoiceConfirmation(
+            candidate = candidate,
+            repeatBack = "Shall I call Mom?",
+            isAsked = true
+        )
+
+        session.handleFollowUpLoop(
+            conversationManager = fakeConversationManager,
+            voiceSession = fakeConversationManager.newVoiceSession(),
+            sttEngine = null,
+            initialResponseText = "Shall I call Mom?",
+            useDirectAudio = true
+        )
+
+        // Resolver should be called at least twice (once for UNKNOWN, once for DECLINED)
+        assertTrue("Resolver must be called at least twice on UNKNOWN then DECLINED", resolverCallCount >= 2)
+        session.destroy()
+    }
+
+    @Test
+    fun `handleFollowUpLoop non-CONFIRMATION semantics bypasses resolver and uses full session path`() = runTest {
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { makeSpeechRecorder() }
+
+        val fakeTts = makeFakeTts()
+        var resolverGrammarSeen = false
+
+        val fakeConversationManager = dev.loki.android.core.conversation.ConversationManager(
+            context = object : android.content.ContextWrapper(null) {},
+            llmEngine = object : dev.loki.android.core.llm.LlmEngine {
+                private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+                override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+                override fun isReady(): Boolean = true
+                override suspend fun initializeAsync(modelPath: String?): Boolean = true
+                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                    if (grammar != null && grammar.contains("CONFIRMED")) resolverGrammarSeen = true
+                    return Result.success("""{"response": "Calling the first Mom."}""")
+                }
+                override fun cancel() {}
+                override fun release() {}
+            },
+            toolRegistry = dev.loki.android.core.tools.ToolRegistry(),
+            ttsEngine = fakeTts
+        )
+        // SELECTION semantics — two candidates, no selectedId yet
+        val candidates = listOf(
+            dev.loki.android.core.conversation.ContactCandidate("c1", "Mom", "123"),
+            dev.loki.android.core.conversation.ContactCandidate("c2", "Mom Mobile", "456")
+        )
+        fakeConversationManager.pendingVoiceAsk = dev.loki.android.core.conversation.PendingAsk("Which Mom?", candidates)
+
+        session.handleFollowUpLoop(
+            conversationManager = fakeConversationManager,
+            voiceSession = fakeConversationManager.newVoiceSession(),
+            sttEngine = null,
+            initialResponseText = "Which Mom?",
+            useDirectAudio = true
+        )
+
+        assertFalse("ConfirmationResolver grammar must NOT be used for SELECTION semantics", resolverGrammarSeen)
+        session.destroy()
+    }
 }
+
