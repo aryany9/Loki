@@ -23,16 +23,18 @@
 - [ ] 2.4 Existing `AudioRecorderTest` VAD suites still pass unchanged (front-end seam is
       transparent to VAD logic).
 
-## 3. On-device validation & VAD recalibration
+## 3. On-device validation & VAD verification
 - [ ] 3.1 Device pass: confirm `VOICE_RECOGNITION` initializes on target hardware, the
       observability line reports the expected configuration, and sample-rate/duration of
       recorded buffers is unchanged (no hidden resampler).
-- [ ] 3.2 RMS recalibration: run the VAD scenarios from `fix-npu-turn-context` 10.7
-      (first-word onset, end-of-speech within silence window, short utterances ≥350ms kept,
-      ambient bursts ignored) against the DSP pipeline; adjust absolute RMS floor constants
-      if the distribution shifted; record chosen values in this change's notes.
-- [ ] 3.3 STT quality check: Whisper transcripts on the DSP pipeline are at least as good
-      as raw MIC for the same utterances (no DSP artifacts degrading recognition). If
-      degraded, one-line revert to `MIC` + explicit effects is the documented fallback.
-- [ ] 3.4 Update ROADMAP.md: mark the parked "Audio capability layer" item as delivered by
-      this change (barge-in / Silero VAD remain parked).
+- [ ] 3.2 VAD verification: verify existing VAD thresholds (sustained onset ≥250ms,
+      `speechThreshold = maxOf(noiseFloor * 2.2f, 800f)`, `1.6f` continuation factor,
+      short utterances ≥350ms kept, ambient bursts ignored) against the DSP pipeline;
+      adjust floor constants only if the distribution shifted on device.
+- [ ] 3.3 Acoustic & AEC check: verify `AcousticEchoCanceler` suppresses TTS speaker bleed
+      during armed follow-up capture, and verify Whisper transcripts / DirectAudio on the
+      DSP pipeline show reduced background noise hallucinations. If degraded, one-line
+      revert to `MIC` is the documented fallback.
+- [ ] 3.4 Update ROADMAP.md: mark the "Audio capability layer" item as delivered by this
+      change (Silero VAD remains parked).
+

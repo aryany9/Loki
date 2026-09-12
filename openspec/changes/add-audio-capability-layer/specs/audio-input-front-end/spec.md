@@ -18,35 +18,33 @@ The voice capture path SHALL request `AudioSource.VOICE_RECOGNITION` when constr
 - **THEN** the reader retries with `AudioSource.MIC`, logs a warning, and capture proceeds
 
 ### Requirement: Platform DSP effect attachment
-The reader SHALL attach `NoiseSuppressor` and `AcousticEchoCanceler` to the active audio
-session when each reports `isAvailable()` and creation succeeds, and SHALL release any
-attached effects when the recorder is torn down. `AutomaticGainControl` SHALL be disabled
-by default.
+The reader SHALL attach `NoiseSuppressor` and `AcousticEchoCanceler` (`AEC`) to the active audio session when each reports `isAvailable()` and creation succeeds, and SHALL release any attached effects when the recorder is torn down. Attaching `AcousticEchoCanceler` SHALL prevent device speaker output from bleeding back into the microphone during armed capture or multi-round dialogue. `AutomaticGainControl` SHALL be disabled by default.
 
 #### Scenario: Effects attached where supported
-- **GIVEN** a device where `NoiseSuppressor.isAvailable()` returns true
+- **GIVEN** a device where `NoiseSuppressor.isAvailable()` and `AcousticEchoCanceler.isAvailable()` return true
 - **WHEN** recording starts
-- **THEN** a `NoiseSuppressor` is created on the recorder's audio session and enabled
+- **THEN** both effects are created on the recorder's audio session ID and enabled
+
+#### Scenario: Acoustic echo cancellation suppresses speaker playback
+- **GIVEN** the microphone is armed while TTS is playing or completing
+- **WHEN** audio is captured during playback
+- **THEN** `AcousticEchoCanceler` cancels device speaker acoustic feedback from the PCM input buffer
 
 #### Scenario: Effects released on teardown
 - **WHEN** the recorder is stopped/released
 - **THEN** every attached effect is released and no effect outlives the session
 
 ### Requirement: Front-end observability
-The reader SHALL log the resolved front-end configuration (source, ns/aec/agc booleans)
-once per recorder lifetime, so VAD logs can be attributed to a known capture pipeline.
+The reader SHALL log the resolved front-end configuration (source, ns/aec/agc booleans) once per recorder lifetime, so capture characteristics can be diagnosed in logs.
 
 #### Scenario: Configuration logged
 - **WHEN** the reader starts recording
-- **THEN** a single log line states the chosen source and the attached effects
+- **THEN** a single log line states the chosen source and the attached effects: `[Loki/AudioFrontEnd] source=<src> ns=<bool> aec=<bool> agc=<bool>`
 
-### Requirement: VAD knob recalibration with DSP input
-Because a DSP source changes the RMS distribution, this capability SHALL include an
-on-device tuning pass validating onset, end-of-speech, and short-utterance behavior with
-the new pipeline, and SHALL update absolute RMS floor constants if required. Relative
-(× noiseFloor) factors remain unchanged unless device logs prove otherwise.
+### Requirement: VAD knob verification with DSP input
+Because a DSP source changes the acoustic background floor, this capability SHALL verify onset, end-of-speech, and short-utterance behavior with the new pipeline, ensuring absolute and relative thresholds in `AudioRecorder.kt` operate cleanly on-device.
 
 #### Scenario: Onset and end-of-speech validated post-DSP
-- **WHEN** the tuning pass runs against the DSP-enabled pipeline
-- **THEN** speech onset triggers on first-word energy, capture ends within the configured
-  silence window after speech ceases, and short utterances (≥350ms) are preserved
+- **WHEN** speech is captured against the DSP-enabled pipeline
+- **THEN** speech onset triggers on sustained first-word energy (≥250ms), capture ends within the configured silence window after speech ceases, and short utterances (≥350ms) are preserved
+
