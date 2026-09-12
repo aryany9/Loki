@@ -10,3 +10,11 @@ data class ConversationRecord(
     val updatedAt: Long = System.currentTimeMillis(),
     val turns: List<ConversationTurn> = emptyList()
 )
+
+@Serializable
+data class TurnSearchResult(
+    val conversationId: String,
+    val conversationTitle: String,
+    val snippet: String,
+    val dateEpochMs: Long
+)

@@ -40,8 +40,12 @@ import dev.loki.android.core.sound.AudioCue
 import dev.loki.android.core.sound.audioStartCueEnabled
 import dev.loki.android.core.theme.LokiTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -49,6 +53,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -73,7 +78,7 @@ class LokiVoiceInteractionSession(context: Context) : VoiceInteractionSession(co
 
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
-    val assistantSession = AssistantSession(onDismissCallback = { hide() })
+    val assistantSession = AssistantSession(context = context, onDismissCallback = { hide() })
 
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
@@ -257,10 +262,10 @@ fun VoiceSessionOverlay(
     onDismiss: () -> Unit
 ) {
     val equalizerMode = when (state) {
-        is AssistantState.Listening -> VoiceEqualizerMode.LISTENING
+        is AssistantState.Listening, is AssistantState.AwaitingFollowUp -> VoiceEqualizerMode.LISTENING
         is AssistantState.Processing -> VoiceEqualizerMode.PROCESSING
         is AssistantState.Speaking -> VoiceEqualizerMode.SPEAKING
-        is AssistantState.Idle, is AssistantState.Error -> VoiceEqualizerMode.IDLE
+        is AssistantState.Idle, is AssistantState.Error, is AssistantState.Completed -> VoiceEqualizerMode.IDLE
     }
 
     Surface(
@@ -325,6 +330,48 @@ fun VoiceSessionOverlay(
                         )
                     }
                 }
+                is AssistantState.AwaitingFollowUp -> {
+                    val infiniteTransition = rememberInfiniteTransition(label = "followup_pulse")
+                    val pulseAlpha by infiniteTransition.animateFloat(
+                        initialValue = 0.7f,
+                        targetValue = 1.0f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(durationMillis = 1000, easing = LinearEasing),
+                            repeatMode = RepeatMode.Reverse
+                        ),
+                        label = "pulse_alpha"
+                    )
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = "Listening",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Listening...",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Text(
+                            text = state.responseText,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = pulseAlpha),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        )
+                    }
+                }
                 is AssistantState.Processing -> {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -356,6 +403,24 @@ fun VoiceSessionOverlay(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                             contentDescription = "Speaking",
+                            tint = MaterialTheme.colorScheme.tertiary
+                        )
+                        Text(
+                            text = state.responseText,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                }
+                is AssistantState.Completed -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = "Completed",
                             tint = MaterialTheme.colorScheme.tertiary
                         )
                         Text(

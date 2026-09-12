@@ -1,14 +1,40 @@
 package dev.loki.android.core.llm
 
 import dev.loki.android.core.models.AgentConfig
+import dev.loki.android.core.models.ExecutionBackend
 import dev.loki.android.core.models.ModelCapabilities
 import kotlinx.coroutines.flow.StateFlow
+
+enum class AttemptOutcome {
+    SUCCESS,
+    FAILED,
+    SKIPPED
+}
+
+data class BackendAttempt(
+    val backend: ExecutionBackend,
+    val durationMs: Long,
+    val outcome: AttemptOutcome,
+    val failureReason: String? = null
+)
+
+data class EngineInitReport(
+    val attempts: List<BackendAttempt> = emptyList(),
+    val finalBackend: ExecutionBackend? = null
+)
 
 sealed interface LlmModelState {
     data object NotLoaded : LlmModelState
     data class Loading(val modelName: String = "Qwen3.8-4B") : LlmModelState
-    data class Ready(val modelName: String = "Qwen3.8-4B") : LlmModelState
-    data class Error(val message: String) : LlmModelState
+    data class Ready(
+        val modelName: String = "Qwen3.8-4B",
+        val activeBackend: ExecutionBackend = ExecutionBackend.GPU,
+        val initReport: EngineInitReport? = null
+    ) : LlmModelState
+    data class Error(
+        val message: String,
+        val initReport: EngineInitReport? = null
+    ) : LlmModelState
 }
 
 enum class ModelPromptFormat {
@@ -22,6 +48,9 @@ interface LlmEngine {
         get() = ModelPromptFormat.CHATML
     val capabilities: ModelCapabilities
         get() = ModelCapabilities()
+    var onContextCompacted: ((String) -> Unit)?
+        get() = null
+        set(_) {}
     fun isReady(): Boolean
 
     suspend fun initializeAsync(modelPath: String? = null): Boolean =
@@ -88,6 +117,15 @@ interface LlmEngine {
         maxTokens: Int = 256,
         onToken: ((String) -> Unit)? = null
     ): Result<String>
+
+    suspend fun generate(
+        prompt: String,
+        audioBytes: ByteArray?,
+        grammar: String? = null,
+        maxTokens: Int = 256,
+        onToken: ((String) -> Unit)? = null,
+        source: String = "VOICE"
+    ): Result<String> = generate(prompt, audioBytes, grammar, maxTokens, onToken)
 
     fun cancel()
     fun release()

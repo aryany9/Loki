@@ -34,6 +34,13 @@ android {
         }
     }
 
+    packaging {
+        jniLibs {
+            // Mandatory for LiteRT Qualcomm dispatch: locates vendor libraries via readdir() of nativeLibraryDir
+            useLegacyPackaging = true
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
@@ -73,6 +80,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.hilt.android)
+    implementation(libs.qnn.runtime)
     ksp(libs.hilt.compiler)
 
     testImplementation(libs.junit)

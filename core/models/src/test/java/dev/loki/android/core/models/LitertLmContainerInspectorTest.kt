@@ -47,6 +47,30 @@ class LitertLmContainerInspectorTest {
     }
 
     @Test
+    fun `detects NPU target from container header content`() {
+        val headerText = "LITERTLM\u0001\u0000\u0000\u0000tf_lite_prefill_decode\u0000qualcomm_sm8750\u0000"
+        val bytes = headerText.toByteArray(Charsets.US_ASCII)
+
+        val info = LitertLmContainerInspector.inspectBytes(bytes)
+
+        assertTrue(info.isLitertLmContainer)
+        assertTrue(info.isNpuTargeted)
+        assertEquals("SM8750", info.npuTargetSoc)
+    }
+
+    @Test
+    fun `detects NPU target from filename fallback when header is generic`() {
+        val headerText = "LITERTLM\u0001\u0000\u0000\u0000tf_lite_prefill_decode\u0000"
+        val bytes = headerText.toByteArray(Charsets.US_ASCII)
+
+        val info = LitertLmContainerInspector.inspectBytes(bytes, fileName = "gemma-4-E2B-it_qualcomm_sm8750.litertlm")
+
+        assertTrue(info.isLitertLmContainer)
+        assertTrue(info.isNpuTargeted)
+        assertEquals("SM8750", info.npuTargetSoc)
+    }
+
+    @Test
     fun `inspects file directly from disk`() {
         val tempFile = Files.createTempFile("test-model", ".litertlm").toFile()
         try {

@@ -137,4 +137,39 @@ class LiteRtWhisperEngineTest {
         engine.release()
         assertFalse(engine.isReady())
     }
+
+    @Test
+    fun `transcribeAudio uninitialized returns empty string with custom language`() = runTest {
+        val engine = makeEngine()
+        val result = engine.transcribeAudio(FloatArray(100), language = "hi")
+        org.junit.Assert.assertEquals("", result)
+    }
+
+    @Test
+    fun `fake SttEngine captures language parameter`() = runTest {
+        var capturedLanguage: String? = null
+        val fakeStt = object : SttEngine {
+            override val isListening: Boolean = false
+            override fun startListening(language: String): kotlinx.coroutines.flow.Flow<SttEvent> {
+                capturedLanguage = language
+                return kotlinx.coroutines.flow.emptyFlow()
+            }
+            override suspend fun transcribeAudio(pcmAudio: FloatArray, language: String): String {
+                capturedLanguage = language
+                return "transcript"
+            }
+            override fun stopListening() {}
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        fakeStt.transcribeAudio(FloatArray(10), "es")
+        org.junit.Assert.assertEquals("es", capturedLanguage)
+
+        fakeStt.startListening("hi")
+        org.junit.Assert.assertEquals("hi", capturedLanguage)
+
+        fakeStt.startListening()
+        org.junit.Assert.assertEquals("auto", capturedLanguage)
+    }
 }

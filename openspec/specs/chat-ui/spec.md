@@ -71,3 +71,18 @@ Pressing the chat mic to start voice input SHALL play a short attention tone as 
 #### Scenario: Mic press starts voice with audio cue
 - **WHEN** the user presses the chat mic
 - **THEN** the start tone plays and the voice recording path begins
+
+---
+
+### Requirement: Chat renders a confirmation card for pending destructive actions
+When a confirmation is pending in a chat session, the chat surface SHALL display a card above the composer containing the repeat-back text and Confirm / Cancel actions. Selecting either action SHALL resolve the pending confirmation and dismiss the card. Cancelling generation SHALL dismiss the card as a denial.
+
+#### Scenario: Confirmation card accepted
+- **WHEN** the user taps Confirm on the card
+- **THEN** the pending tool executes and the card is dismissed
+- **AND** the normal tool-result and assistant flow continues
+
+#### Scenario: Confirmation card cancelled
+- **WHEN** the user taps Cancel on the card
+- **THEN** no tool execution occurs and the card is dismissed
+- **AND** the assistant responds based on the denial tool-result turn

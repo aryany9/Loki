@@ -34,9 +34,12 @@ android {
 dependencies {
     implementation(project(":core:models"))
     implementation(project(":core:conversation"))
+    implementation(project(":core:tools"))
     implementation(project(":core:voice:stt"))
+    implementation(project(":core:voice:tts"))
     implementation(project(":core:theme"))
     implementation(project(":core:sound"))
+    implementation(project(":core:llm"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.savedstate)
     implementation(platform(libs.androidx.compose.bom))

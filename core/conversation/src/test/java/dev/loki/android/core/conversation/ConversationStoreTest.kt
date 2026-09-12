@@ -139,4 +139,45 @@ class ConversationStoreTest {
         assertTrue(turnTexts?.contains("Turn 1") == true)
         assertTrue(turnTexts?.contains("Turn 2") == true)
     }
+
+    @Test
+    fun `searchTurns finds matching user and assistant turns across multiple conversations`() = runTest {
+        val conv1 = store.createConversation(title = "Trip Planning")
+        val conv2 = store.createConversation(title = "Study Notes")
+
+        store.appendTurn(conv1.id, ConversationTurn.User("I need to study for my history exam"), autoTitle = false)
+        store.appendTurn(conv1.id, ConversationTurn.Assistant("Here is a study plan for your exam."), autoTitle = false)
+        store.appendTurn(conv2.id, ConversationTurn.User("Remind me about the math exam next week"), autoTitle = false)
+        store.appendTurn(conv2.id, ConversationTurn.User("What is the weather today?"), autoTitle = false)
+
+        val results = store.searchTurns("exam", limit = 5)
+        assertEquals(3, results.size)
+        assertTrue(results.any { it.conversationTitle == "Trip Planning" && it.snippet.contains("history exam") })
+        assertTrue(results.any { it.conversationTitle == "Trip Planning" && it.snippet.contains("study plan") })
+        assertTrue(results.any { it.conversationTitle == "Study Notes" && it.snippet.contains("math exam") })
+    }
+
+    @Test
+    fun `searchTurns skips corrupt conversation files gracefully`() = runTest {
+        val valid = store.createConversation(title = "Valid Chat")
+        store.appendTurn(valid.id, ConversationTurn.User("Secret code is 9999"), autoTitle = false)
+
+        val corruptFile = File(tempDir, "broken.json")
+        corruptFile.writeText("{ invalid json }")
+
+        val results = store.searchTurns("code", limit = 5)
+        assertEquals(1, results.size)
+        assertEquals("Valid Chat", results[0].conversationTitle)
+        assertTrue(results[0].snippet.contains("9999"))
+    }
+
+    @Test
+    fun `searchTurns returns empty list on empty query or no matches`() = runTest {
+        val conv = store.createConversation(title = "Chat")
+        store.appendTurn(conv.id, ConversationTurn.User("Hello world"), autoTitle = false)
+
+        assertTrue(store.searchTurns("", limit = 5).isEmpty())
+        assertTrue(store.searchTurns("   ", limit = 5).isEmpty())
+        assertTrue(store.searchTurns("nonexistent_term", limit = 5).isEmpty())
+    }
 }

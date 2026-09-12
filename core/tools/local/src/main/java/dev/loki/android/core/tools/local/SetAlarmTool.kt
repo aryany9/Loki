@@ -11,6 +11,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class SetAlarmTool : LocalTool {
     override val name: String = "set_alarm"
+    override val capability: String = "clock"
     override val description: String = "Set an alarm for a specific hour and minute."
     override val parameters: Map<String, ToolParam> = mapOf(
         "hour" to ToolParam(ToolParamType.NUMBER, "Hour in 24-hour format (0-23)", required = true),

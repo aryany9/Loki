@@ -1,0 +1,191 @@
+package dev.loki.android.core.conversation
+
+import dev.loki.android.core.tools.TaskStateGate
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/**
+ * The outcome of a confirmation resolution call.
+ * Maps raw LLM output (grammar-constrained) to a deterministic semantic outcome.
+ */
+enum class ConfirmationOutcome {
+    /** User clearly affirmed the action. */
+    CONFIRMED,
+    /** User clearly declined the action. */
+    DECLINED,
+    /** Response was ambiguous, unclear, or unrelated. */
+    UNKNOWN;
+
+    companion object {
+        /**
+         * Decodes the raw LLM output string into a [ConfirmationOutcome].
+         *
+         * This function is a **format decoder**, not a semantic interpreter.
+         * The LLM is responsible for classifying the user's intent; this function
+         * only converts the LLM's output format into the enum value.
+         *
+         * Accepted formats (in priority order):
+         * 1. Bare token (exact match, case-insensitive, after trim):
+         *    `CONFIRMED`, `DECLINED`, `UNKNOWN`
+         * 2. Known JSON label envelope produced by the LiteRT audio model
+         *    when grammar isn't sampler-enforced:
+         *    `{"label": "CONFIRMED"}`, `{"label":"DECLINED"}`, etc.
+         * 3. Anything else → [UNKNOWN] (safe default — do not attempt
+         *    to semantically interpret free-form text here).
+         */
+        fun from(raw: String): ConfirmationOutcome {
+            val trimmed = raw.trim()
+
+            // ── Step 1: exact bare-token match ────────────────────────────────
+            when (trimmed.uppercase()) {
+                "CONFIRMED" -> return CONFIRMED
+                "DECLINED"  -> return DECLINED
+                "UNKNOWN"   -> return UNKNOWN
+            }
+
+            // ── Step 2: known JSON label envelope ─────────────────────────────
+            // Handles: {"label": "CONFIRMED"} / {"label":"DECLINED"} etc.
+            // Only matches if the string is a JSON object and the "label" key
+            // holds one of the three exact tokens. Substring matches inside
+            // arbitrary prose are intentionally NOT accepted.
+            if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+                val labelValue = JSON_LABEL_REGEX.find(trimmed)?.groupValues?.getOrNull(1)
+                if (labelValue != null) {
+                    return when (labelValue.uppercase()) {
+                        "CONFIRMED" -> CONFIRMED
+                        "DECLINED"  -> DECLINED
+                        "UNKNOWN"   -> UNKNOWN
+                        else        -> UNKNOWN
+                    }
+                }
+            }
+
+            // ── Step 3: unrecognised format → safe default ────────────────────
+            return UNKNOWN
+        }
+
+        /**
+         * Matches the `"label"` key in a JSON object and captures its string value.
+         * Example matches: `"label": "CONFIRMED"`, `"label":"DECLINED"`.
+         */
+        private val JSON_LABEL_REGEX = Regex(""""label"\s*:\s*"([^"]+)"""")
+    }
+}
+
+/**
+ * Describes what type of user response the model is currently expecting.
+ * Derived from [TaskState] without changing any existing constructor signatures.
+ */
+enum class ExpectedResponseSemantics {
+    /** Model is waiting for the user to select among multiple candidates. */
+    SELECTION,
+    /** Model is waiting for the user to confirm or deny a proposed action. */
+    CONFIRMATION,
+    /** Model needs a specific missing piece of information from the user. */
+    MISSING_SLOT,
+    /** Model accepts any free-form user utterance. */
+    FREE_TEXT,
+}
+
+/**
+ * Sealed interface representing application-owned task state for multi-turn tool flows.
+ *
+ * The advancing tool and resolved state are derived directly from the state's own fields
+ * (D3 — no separate mapping registry).
+ */
+sealed interface TaskState {
+    /** The tool that can resolve or advance the state right now, derived from state fields. */
+    val advancingTool: String?
+
+    /** Whether the state is resolved and no longer blocks capability switching. */
+    val resolved: Boolean
+
+    val expectedSemantics: ExpectedResponseSemantics
+        get() = ExpectedResponseSemantics.FREE_TEXT
+}
+
+/**
+ * Represents a contact candidate exposed to the task state and model context.
+ * Note: Phone numbers are stored for app-side resolution only and MUST NOT be
+ * included in the model prompt context.
+ */
+@Serializable
+data class ContactCandidate(
+    val id: String = "",
+    val name: String = "",
+    @SerialName("number")
+    val phoneNumber: String = ""
+)
+
+/**
+ * Task state for disambiguating and confirming contact selection before placing a call.
+ *
+ * Derived invariant:
+ * - candidates unresolved (selectedId == null) -> advancingTool = "select_contact"
+ * - candidate selected but unconfirmed (!confirmed) -> advancingTool = "call_contact"
+ * - confirmed -> advancingTool = null, resolved = true
+ *
+ * Implements [TaskStateGate] so that [ToolRegistry] can restrict the grammar at each stage:
+ * - CONTACT_DISAMBIGUATION: only select_contact + general tools are exposed.
+ * - CALL_CONFIRMATION: call_contact is hidden from grammar until confirmed.
+ */
+data class ContactResolution(
+    val candidates: List<ContactCandidate>,
+    val selectedId: String? = null,
+    val isAsked: Boolean = false,
+    val confirmed: Boolean = false
+) : TaskState, TaskStateGate {
+    override val resolved: Boolean
+        get() = confirmed
+
+    override val advancingTool: String?
+        get() = when {
+            resolved -> null
+            selectedId == null && candidates.isNotEmpty() -> "select_contact"
+            selectedId != null && !confirmed -> "call_contact"
+            else -> null
+        }
+
+    override val expectedSemantics: ExpectedResponseSemantics
+        get() = when {
+            selectedId == null && candidates.isNotEmpty() && !confirmed -> ExpectedResponseSemantics.SELECTION
+            selectedId != null && !confirmed -> ExpectedResponseSemantics.CONFIRMATION
+            else -> ExpectedResponseSemantics.FREE_TEXT
+        }
+
+    /**
+     * During CONTACT_DISAMBIGUATION (selectedId == null) restrict grammar to only select_contact.
+     * Null otherwise (no restriction).
+     */
+    override val restrictToTool: String?
+        get() = if (selectedId == null && candidates.isNotEmpty() && !confirmed) "select_contact" else null
+
+    /**
+     * Single hidden tool for legacy consumers:
+     * - CONTACT_DISAMBIGUATION: ask_user
+     * - Before confirmation question is asked (!isAsked): call_contact
+     * - Awaiting confirmation answer (isAsked && !confirmed): ask_user
+     */
+    override val hiddenTool: String?
+        get() = when {
+            selectedId == null && candidates.isNotEmpty() && !confirmed -> "ask_user"
+            selectedId != null && !isAsked && !confirmed -> "call_contact"
+            selectedId != null && isAsked && !confirmed -> "ask_user"
+            else -> null
+        }
+
+    /**
+     * State-scoped grammar tool exclusion:
+     * - CONTACT_DISAMBIGUATION (selectedId == null): exclude ask_user and call_contact.
+     * - CALL_CONFIRMATION before question asked (!isAsked): exclude call_contact.
+     * - AWAITING_CONFIRMATION (isAsked && !confirmed): exclude ask_user (prevents confirmation loops).
+     * - CONFIRMED: no exclusions.
+     */
+    override val hiddenTools: Set<String>
+        get() = when {
+            selectedId == null && candidates.isNotEmpty() && !confirmed -> setOf("ask_user", "call_contact")
+            selectedId != null && !isAsked && !confirmed -> setOf("call_contact")
+            selectedId != null && isAsked && !confirmed -> setOf("ask_user")
+            else -> emptySet()
+        }
+}

@@ -11,7 +11,10 @@ import dev.loki.android.core.sound.audioStartCueEnabled
 import dev.loki.android.core.conversation.ConversationEvent
 import dev.loki.android.core.conversation.ConversationManager
 import dev.loki.android.core.conversation.ConversationRecord
+import dev.loki.android.core.conversation.ConversationSession
 import dev.loki.android.core.conversation.ConversationTurn
+import dev.loki.android.core.conversation.PendingConfirmation
+import dev.loki.android.core.conversation.ToolCallParser
 import dev.loki.android.core.llm.LlmModelState
 import dev.loki.android.core.assistant.VoiceUnavailableReason
 import dev.loki.android.core.models.DownloadResult
@@ -83,6 +86,10 @@ class ChatViewModel(
     private val _voiceDownloadProgress = MutableStateFlow<Float?>(null)
     val voiceDownloadProgress: StateFlow<Float?> = _voiceDownloadProgress.asStateFlow()
 
+    private val _pendingConfirmation = MutableStateFlow<PendingConfirmation?>(null)
+    val pendingConfirmation: StateFlow<PendingConfirmation?> = _pendingConfirmation.asStateFlow()
+
+    private var activeChatSession: ConversationSession? = null
     private var generationJob: Job? = null
     private var inFlightAssistantMessageId: String? = null
 
@@ -104,6 +111,7 @@ class ChatViewModel(
     suspend fun loadInitialConversation() {
         conversationManager.reset()
         _messages.value = emptyList()
+        _pendingConfirmation.value = null
         refreshConversations()
     }
 
@@ -122,6 +130,7 @@ class ChatViewModel(
         cancelGeneration()
         conversationManager.reset()
         _messages.value = emptyList()
+        _pendingConfirmation.value = null
         viewModelScope.launch {
             refreshConversations()
         }
@@ -136,6 +145,7 @@ class ChatViewModel(
             if (wasActive) {
                 conversationManager.reset()
                 _messages.value = emptyList()
+                _pendingConfirmation.value = null
             }
             refreshConversations()
         }
@@ -154,9 +164,17 @@ class ChatViewModel(
         }
     }
 
+    fun respondToConfirmation(accepted: Boolean) {
+        activeChatSession?.respondToConfirmation(accepted)
+        _pendingConfirmation.value = null
+    }
+
     fun cancelGeneration() {
         generationJob?.cancel()
         generationJob = null
+        activeChatSession?.respondToConfirmation(false)
+        activeChatSession = null
+        _pendingConfirmation.value = null
         conversationManager.llmEngine.cancel()
 
         val targetId = inFlightAssistantMessageId
@@ -204,8 +222,8 @@ class ChatViewModel(
         generationJob?.cancel()
         generationJob = viewModelScope.launch {
             var lastUpdateTime = 0L
-            var latestToolResult: ToolResult? = null
-            var latestToolName: String? = null
+            var currentToolInvocations = mutableListOf<ToolInvocation>()
+            var inFlightCallId: String? = null
 
             try {
                 if (conversationManager.currentConversationId == null) {
@@ -214,6 +232,7 @@ class ChatViewModel(
                 }
 
                 val chatSession = conversationManager.newChatSession()
+                activeChatSession = chatSession
                 chatSession.processUtterance(
                     userInput = userInput,
                     audioBytes = audioBytes,
@@ -227,63 +246,117 @@ class ChatViewModel(
                             }
                         }
                         is ConversationEvent.ToolExecuting -> {
-                            latestToolName = event.toolName
+                            val callId = inFlightCallId ?: java.util.UUID.randomUUID().toString()
+                            val newInvocation = ToolInvocation(
+                                id = callId,
+                                toolName = event.toolName,
+                                arguments = event.args,
+                                result = null,
+                                isExecuting = true
+                            )
+                            currentToolInvocations = (currentToolInvocations + newInvocation).toMutableList()
+                            inFlightCallId = callId
                             _messages.value = _messages.value.map { msg ->
-                                if (msg.id == inFlightMessageId) {
-                                    msg.copy(
-                                        isThinking = true,
-                                        isStreaming = false,
-                                        text = "Executing ${event.toolName}...",
-                                        toolName = event.toolName
-                                    )
-                                } else msg
+                                if (msg.id == inFlightMessageId) msg.copy(
+                                    text = "",
+                                    toolInvocations = currentToolInvocations.toList()
+                                ) else msg
                             }
                         }
+                        is ConversationEvent.ConfirmationRequired -> {
+                            _pendingConfirmation.value = PendingConfirmation(
+                                toolName = event.toolName,
+                                arguments = emptyMap(),
+                                repeatBack = event.repeatBack
+                            )
+                        }
                         is ConversationEvent.ToolExecuted -> {
-                            latestToolResult = event.result
+                            _pendingConfirmation.value = null
+                            val cid = inFlightCallId
+                            currentToolInvocations = currentToolInvocations.map { inv ->
+                                if (inv.id == cid) inv.copy(result = event.result, isExecuting = false) else inv
+                            }.toMutableList()
+                            inFlightCallId = null
                             _messages.value = _messages.value.map { msg ->
-                                if (msg.id == inFlightMessageId) {
-                                    msg.copy(
-                                        toolResult = event.result,
-                                        toolName = latestToolName ?: msg.toolName
-                                    )
-                                } else msg
+                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
                             }
                         }
                         is ConversationEvent.GeneratingToken -> {
                             val now = System.currentTimeMillis()
                             if (now - lastUpdateTime >= 50L) {
                                 lastUpdateTime = now
+                                val cleaned = ToolCallParser.cleanStreamingPartial(event.partial)
                                 _messages.value = _messages.value.map { msg ->
                                     if (msg.id == inFlightMessageId) {
-                                        msg.copy(
-                                            text = event.partial,
-                                            isThinking = false,
-                                            isStreaming = true,
-                                            toolResult = latestToolResult ?: msg.toolResult,
-                                            toolName = latestToolName ?: msg.toolName
-                                        )
+                                        if (cleaned != null) {
+                                            msg.copy(
+                                                text = cleaned,
+                                                isThinking = false,
+                                                isStreaming = true
+                                            )
+                                        } else {
+                                            msg.copy(
+                                                text = "",
+                                                isThinking = true,
+                                                isStreaming = false
+                                            )
+                                        }
                                     } else msg
                                 }
                             }
                         }
                         is ConversationEvent.Completed -> {
-                            val finalToolResult = event.toolResult ?: latestToolResult
-                            val finalToolName = latestToolName
+                            _pendingConfirmation.value = null
                             _messages.value = _messages.value.map { msg ->
                                 if (msg.id == inFlightMessageId) {
                                     msg.copy(
                                         text = event.finalResponse,
                                         isThinking = false,
-                                        isStreaming = false,
-                                        toolResult = finalToolResult,
-                                        toolName = finalToolName ?: msg.toolName
+                                        isStreaming = false
                                     )
                                 } else msg
                             }
                             refreshConversations()
                         }
+                        is ConversationEvent.ToolCallStarted -> {
+                            val newInvocation = ToolInvocation(
+                                id = event.callId,
+                                toolName = event.toolName,
+                                arguments = event.arguments,
+                                isExecuting = true
+                            )
+                            currentToolInvocations = (currentToolInvocations + newInvocation).toMutableList()
+                            inFlightCallId = event.callId
+                            _messages.value = _messages.value.map { msg ->
+                                if (msg.id == inFlightMessageId) msg.copy(
+                                    text = "",
+                                    toolInvocations = currentToolInvocations.toList()
+                                ) else msg
+                            }
+                        }
+                        is ConversationEvent.ToolCallCompleted -> {
+                            currentToolInvocations = currentToolInvocations.map { inv ->
+                                if (inv.id == event.callId) inv.copy(result = event.result, isExecuting = false) else inv
+                            }.toMutableList()
+                            inFlightCallId = null
+                            _messages.value = _messages.value.map { msg ->
+                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
+                            }
+                        }
+                        is ConversationEvent.ToolCallFailed -> {
+                            currentToolInvocations = currentToolInvocations.map { inv ->
+                                if (inv.id == event.callId) inv.copy(isExecuting = false) else inv
+                            }.toMutableList()
+                            inFlightCallId = null
+                            _messages.value = _messages.value.map { msg ->
+                                if (msg.id == inFlightMessageId) msg.copy(toolInvocations = currentToolInvocations.toList()) else msg
+                            }
+                        }
+                        is ConversationEvent.ContextCompacted -> {
+                            android.util.Log.i("ChatViewModel", "Context compacted: ${event.message}")
+                        }
                         is ConversationEvent.Error -> {
+                            _pendingConfirmation.value = null
                             _messages.value = _messages.value.map { msg ->
                                 if (msg.id == inFlightMessageId) {
                                     msg.copy(
@@ -299,8 +372,10 @@ class ChatViewModel(
                     }
                 }
             } catch (e: CancellationException) {
+                _pendingConfirmation.value = null
                 throw e
             } catch (e: Throwable) {
+                _pendingConfirmation.value = null
                 _messages.value = _messages.value.map { msg ->
                     if (msg.id == inFlightMessageId) {
                         msg.copy(
@@ -311,6 +386,7 @@ class ChatViewModel(
                     } else msg
                 }
             } finally {
+                _pendingConfirmation.value = null
                 if (inFlightAssistantMessageId == inFlightMessageId) {
                     inFlightAssistantMessageId = null
                 }
@@ -517,7 +593,8 @@ class ChatViewModel(
                     }
                 }
 
-                sttEngine.startListening().collect { event ->
+                val language = conversationManager.getAgentConfig().conversationLanguage
+                sttEngine.startListening(language).collect { event ->
                     when (event) {
                         is SttEvent.FinalResult -> {
                             _isRecording.value = false

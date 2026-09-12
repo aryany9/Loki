@@ -46,6 +46,7 @@ data class AgentPlaygroundUiState(
     val showContextResetDialog: Boolean = false,
     val validationError: String? = null,
     val statusMessage: String? = null,
+    val conversationLanguage: String = "auto",
     // Test prompt state
     val testPromptInput: String = "",
     val isTestRunning: Boolean = false,
@@ -97,7 +98,8 @@ class AgentPlaygroundViewModel(
                 seed = loadedConfig.generationConfig.seed,
                 maxOutputTokens = loadedConfig.generationConfig.maxOutputTokens ?: 256,
                 backend = loadedConfig.runtimeConfig.backend,
-                contextKvCapacity = loadedConfig.runtimeConfig.contextKvCapacity ?: 8192
+                contextKvCapacity = loadedConfig.runtimeConfig.contextKvCapacity ?: 8192,
+                conversationLanguage = loadedConfig.conversationLanguage
             )
         }
     }
@@ -224,6 +226,10 @@ class AgentPlaygroundViewModel(
         _uiState.value = _uiState.value.copy(contextKvCapacity = capacity)
     }
 
+    fun updateConversationLanguage(language: String) {
+        _uiState.value = _uiState.value.copy(conversationLanguage = language)
+    }
+
     fun toggleAdvancedExpanded() {
         _uiState.value = _uiState.value.copy(isAdvancedExpanded = !_uiState.value.isAdvancedExpanded)
     }
@@ -299,7 +305,8 @@ class AgentPlaygroundViewModel(
             runtimeConfig = RuntimeConfig(
                 backend = state.backend,
                 contextKvCapacity = state.contextKvCapacity
-            )
+            ),
+            conversationLanguage = state.conversationLanguage
         )
 
         viewModelScope.launch {
@@ -335,6 +342,7 @@ class AgentPlaygroundViewModel(
                 maxOutputTokens = 256,
                 backend = ExecutionBackend.AUTOMATIC,
                 contextKvCapacity = 8192,
+                conversationLanguage = defaultConfig.conversationLanguage,
                 statusMessage = "Reset to default configuration",
                 validationError = null
             )

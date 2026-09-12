@@ -12,7 +12,9 @@ sealed interface ModelDetection {
         val format: ModelFormat = ModelFormat.LITERT_MODEL,
         val family: String? = null,
         val confidence: MetadataConfidence = MetadataConfidence.VERIFIED,
-        val supportsAudio: Boolean = false
+        val supportsAudio: Boolean = false,
+        val isNpuTargeted: Boolean = false,
+        val npuTargetSoc: String? = null
     ) : ModelDetection
 
     data object Unknown : ModelDetection
@@ -33,7 +35,9 @@ class LiteRtModelDetector : ModelDetector {
             return ModelDetection.Detected(
                 runtime = ModelRuntime.LITERT_LM,
                 format = ModelFormat.LITERT_MODEL,
-                supportsAudio = containerInfo.supportsAudioInput
+                supportsAudio = containerInfo.supportsAudioInput,
+                isNpuTargeted = containerInfo.isNpuTargeted,
+                npuTargetSoc = containerInfo.npuTargetSoc
             )
         }
         return ModelDetection.Unknown
@@ -48,6 +52,16 @@ class LiteRtModelValidator : ModelValidator {
 
         if (!file.extension.equals("litertlm", ignoreCase = true)) {
             return@withContext ValidationResult.Invalid("File must have a .litertlm extension")
+        }
+
+        val containerInfo = LitertLmContainerInspector.inspect(file)
+        if (!containerInfo.isLitertLmContainer) {
+            return@withContext ValidationResult.Invalid("Invalid .litertlm container structure")
+        }
+
+        // NPU-targeted models validate structurally at import (Design D7 / Spec)
+        if (containerInfo.isNpuTargeted) {
+            return@withContext ValidationResult.Valid(ModelRuntime.LITERT_LM, ModelFormat.LITERT_MODEL)
         }
 
         try {

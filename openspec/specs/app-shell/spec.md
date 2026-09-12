@@ -4,7 +4,7 @@ Application shell: navigation drawer with conversation recents, simplified chat 
 ## Requirements
 
 ### Requirement: Navigation drawer hosts recents and destinations
-The chat surface SHALL be wrapped in a Material 3 navigation drawer containing: an app header, a "New chat" action, a recents list of stored conversations (most recently updated first, capped display at 20) where tapping loads that conversation, a delete affordance per recent, and navigation entries for Model Library, Agent Playground, Permissions, and Settings. The drawer state SHALL close on selection, and the system back gesture SHALL close the drawer before exiting the app. "New chat" SHALL reset the chat to the empty home state and SHALL NOT create a stored conversation until the first message is sent.
+The chat surface SHALL be wrapped in a Material 3 navigation drawer containing: an app header, a "New chat" action, a recents list of stored conversations (most recently updated first, capped display at 20) where tapping loads that conversation, a delete affordance per recent, and navigation entries for Model Library, Agent Playground, Permissions, Memory, and Settings. The drawer state SHALL close on selection, and the system back gesture SHALL close the drawer before exiting the app. "New chat" SHALL reset the chat to the empty home state and SHALL NOT create a stored conversation until the first message is sent.
 
 #### Scenario: User opens a recent conversation
 - **WHEN** the user taps a conversation in the drawer recents list
@@ -25,7 +25,7 @@ The chat surface SHALL be wrapped in a Material 3 navigation drawer containing: 
 ---
 
 ### Requirement: System back navigation walks the destination stack
-Pressing the system back button on a non-root screen (Settings, Model Library, Agent Playground, Permissions) SHALL return to the previously displayed destination, ultimately to the chat home. From the chat home (the root), the system back SHALL finish the activity as expected. No non-root screen SHALL directly exit the app on a single back press.
+Pressing the system back button on a non-root screen (Settings, Model Library, Agent Playground, Permissions, Memory) SHALL return to the previously displayed destination, ultimately to the chat home. From the chat home (the root), the system back SHALL finish the activity as expected. No non-root screen SHALL directly exit the app on a single back press.
 
 #### Scenario: Back returns to chat from settings
 - **WHEN** the user is on the Settings screen and presses the system back button once
@@ -69,3 +69,36 @@ A Settings screen SHALL provide: a theme mode selector (SYSTEM, LIGHT, DARK) tha
 #### Scenario: Settings reachable from drawer
 - **WHEN** the user opens the navigation drawer and taps Settings
 - **THEN** the Settings screen is displayed with a back affordance returning to chat
+
+### Requirement: Dedicated Memory screen manages persistent memories
+A dedicated Memory screen accessible from the navigation drawer SHALL provide a "What Loki remembers" section listing all memory entries with an add field, per-entry edit/delete, and clear-all with confirmation, styled with theme tokens and stating that memories apply to new chats.
+
+#### Scenario: Memory section reflects store state
+- **WHEN** memories are added, edited, or deleted in the Memory screen
+- **THEN** the list updates immediately from the store
+- **AND** an empty store shows a "Nothing remembered yet" empty state
+
+---
+
+### Requirement: Settings hosts the conversation-language picker
+The Settings screen SHALL include a "Conversation language" row (Auto plus a fixed list of common languages) that persists through the agent-config path and takes effect for new conversations; the Agent Playground config editor SHALL expose the same field.
+
+#### Scenario: Language picker persists
+- **WHEN** the user selects a language in Settings
+- **THEN** the choice persists across app restarts via the agent config
+
+---
+
+### Requirement: Assistant-initiated navigation intents are honored when the app is already running
+The app SHALL deliver an `openScreen` extra via `onNewIntent` and navigate to the requested screen (PERMISSIONS, MODEL_LIBRARY, AGENT_PLAYGROUND, MEMORY, SETTINGS) when the assistant launches `MainActivity` while the activity is already alive, instead of ignoring the intent.
+
+#### Scenario: Permissions screen opens from the voice overlay
+- **WHEN** the voice flow reports a permission denial and launches `MainActivity` with `openScreen=PERMISSIONS` while the app is already open
+- **THEN** the app navigates to the Permissions screen
+- **AND** the user is not left on the screen they were previously viewing
+
+#### Scenario: Deep link ignored for unknown targets
+- **WHEN** an `openScreen` extra contains a value that is not a known screen
+- **THEN** no navigation occurs and the app remains on its current screen
+
+

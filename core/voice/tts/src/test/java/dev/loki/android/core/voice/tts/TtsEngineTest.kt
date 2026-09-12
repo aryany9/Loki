@@ -52,4 +52,21 @@ class TtsEngineTest {
         engine.release()
         assertFalse(engine.isReady)
     }
+
+    @Test
+    fun `resolveLocale handles auto and null as default locale`() {
+        val defaultLocale = java.util.Locale.getDefault()
+        org.junit.Assert.assertEquals(defaultLocale, AndroidTtsEngine.resolveLocale(null))
+        org.junit.Assert.assertEquals(defaultLocale, AndroidTtsEngine.resolveLocale("auto"))
+        org.junit.Assert.assertEquals(defaultLocale, AndroidTtsEngine.resolveLocale(""))
+        org.junit.Assert.assertEquals(defaultLocale, AndroidTtsEngine.resolveLocale("   "))
+    }
+
+    @Test
+    fun `resolveLocale resolves BCP-47 tags accurately`() {
+        org.junit.Assert.assertEquals(java.util.Locale.forLanguageTag("hi"), AndroidTtsEngine.resolveLocale("hi"))
+        org.junit.Assert.assertEquals(java.util.Locale.forLanguageTag("es"), AndroidTtsEngine.resolveLocale("es"))
+        org.junit.Assert.assertEquals(java.util.Locale.forLanguageTag("fr"), AndroidTtsEngine.resolveLocale("fr"))
+        org.junit.Assert.assertEquals(java.util.Locale.forLanguageTag("en-US"), AndroidTtsEngine.resolveLocale("en-US"))
+    }
 }

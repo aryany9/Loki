@@ -28,11 +28,11 @@ class VoiceInputStrategyResolverTest {
 
     private class FakeSttEngine : SttEngine {
         override val isListening: Boolean = false
-        override fun startListening(): Flow<SttEvent> = emptyFlow()
+        override fun startListening(language: String): Flow<SttEvent> = emptyFlow()
         override fun stopListening() {}
         override fun cancel() {}
         override fun release() {}
-        override suspend fun transcribeAudio(pcmAudio: FloatArray): String = ""
+        override suspend fun transcribeAudio(pcmAudio: FloatArray, language: String): String = ""
     }
 
     @Test
@@ -182,5 +182,13 @@ class VoiceInputStrategyResolverTest {
         assertTrue(result is VoiceInputStrategyResult.Unavailable)
         val unavailable = result as VoiceInputStrategyResult.Unavailable
         assertEquals(VoiceUnavailableReason.NO_ACTIVE_MODEL, unavailable.reason)
+    }
+
+    @Test
+    fun `ungranted microphone permission resolves to Unavailable AUDIO_PERMISSION_DENIED`() {
+        val result = resolver.resolve(modelManager = null, sttEngine = null, isRecordAudioGranted = false)
+        assertTrue(result is VoiceInputStrategyResult.Unavailable)
+        val unavailable = result as VoiceInputStrategyResult.Unavailable
+        assertEquals(VoiceUnavailableReason.AUDIO_PERMISSION_DENIED, unavailable.reason)
     }
 }

@@ -10,6 +10,7 @@ import dev.loki.android.core.tools.ToolResult
 
 class GetBatteryStatusTool : LocalTool {
     override val name: String = "get_battery_status"
+    override val capability: String = "general"
     override val description: String = "Get the current device battery percentage and charging state."
     override val parameters: Map<String, ToolParam> = emptyMap()
 

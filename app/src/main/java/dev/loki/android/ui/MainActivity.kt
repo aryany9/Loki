@@ -1,6 +1,7 @@
 package dev.loki.android.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -70,6 +71,7 @@ enum class AppScreen {
     PERMISSIONS,
     MODEL_LIBRARY,
     AGENT_PLAYGROUND,
+    MEMORY,
     SETTINGS
 }
 
@@ -101,6 +103,7 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var chatViewModel: ChatViewModel
     private lateinit var agentPlaygroundViewModel: dev.loki.android.core.ui.AgentPlaygroundViewModel
+    private lateinit var memoryViewModel: dev.loki.android.core.ui.MemoryViewModel
     private lateinit var settingsViewModel: dev.loki.android.core.ui.SettingsViewModel
 
     private var permissionRefreshTrigger by mutableStateOf(0)
@@ -121,9 +124,21 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { importModel(uri) }
     }
 
+    private var pendingOpenScreen by mutableStateOf<String?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra("openScreen")?.let {
+            pendingOpenScreen = it
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        pendingOpenScreen = intent?.getStringExtra("openScreen")
 
         lifecycleScope.launch {
             val savedConfig = agentConfigRepository.getAgentConfig()
@@ -144,9 +159,14 @@ class MainActivity : ComponentActivity() {
             modelLibraryManager = modelLibraryManager
         )
 
+        memoryViewModel = dev.loki.android.core.ui.MemoryViewModel(
+            conversationManager = conversationManager
+        )
+
         settingsViewModel = dev.loki.android.core.ui.SettingsViewModel(
             themeRepository = themeRepository,
-            conversationManager = conversationManager
+            conversationManager = conversationManager,
+            agentConfigRepository = agentConfigRepository
         )
 
         setContent {
@@ -195,6 +215,20 @@ class MainActivity : ComponentActivity() {
                         backStack.clear()
                         backStack.add(AppScreen.SETUP)
                     }
+                }
+            }
+
+            LaunchedEffect(pendingOpenScreen) {
+                val target = pendingOpenScreen
+                if (target != null) {
+                    when (target) {
+                        "PERMISSIONS" -> navigateTo(AppScreen.PERMISSIONS)
+                        "MODEL_LIBRARY" -> navigateTo(AppScreen.MODEL_LIBRARY)
+                        "AGENT_PLAYGROUND" -> navigateTo(AppScreen.AGENT_PLAYGROUND)
+                        "MEMORY" -> navigateTo(AppScreen.MEMORY)
+                        "SETTINGS" -> navigateTo(AppScreen.SETTINGS)
+                    }
+                    pendingOpenScreen = null
                 }
             }
 
@@ -347,8 +381,19 @@ class MainActivity : ComponentActivity() {
                                     onNavigateToAgentPlayground = {
                                         navigateTo(AppScreen.AGENT_PLAYGROUND)
                                     },
+                                    onNavigateToMemory = {
+                                        navigateTo(AppScreen.MEMORY)
+                                    },
                                     onNavigateToSettings = {
                                         navigateTo(AppScreen.SETTINGS)
+                                    }
+                                )
+                            }
+                            AppScreen.MEMORY -> {
+                                dev.loki.android.core.ui.MemoryScreen(
+                                    viewModel = memoryViewModel,
+                                    onNavigateBack = {
+                                        goBack()
                                     }
                                 )
                             }
@@ -454,10 +499,20 @@ class MainActivity : ComponentActivity() {
                 url = ""
             )
 
+            val npuConfidence = if (containerInfo.npuTargetSoc != null) {
+                MetadataConfidence.VERIFIED
+            } else {
+                MetadataConfidence.UNKNOWN
+            }
+
             val capabilities = ModelRecordCapabilities(
                 audioInput = ModelMetadataField(
                     value = isDirectAudio,
                     confidence = confidence
+                ),
+                npuTargetSoc = ModelMetadataField(
+                    value = containerInfo.npuTargetSoc,
+                    confidence = npuConfidence
                 )
             )
 

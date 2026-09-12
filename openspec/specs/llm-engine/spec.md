@@ -57,16 +57,32 @@ The engine MUST distinguish context KV cache capacity (`contextKvCapacity`) from
 - **THEN** the engine validates and clamps the requested capacity to the supported range instead of assuming a fixed default
 
 ### Requirement: Execution backend selection with fallback
-The engine SHALL support `ExecutionBackend` selection (`AUTOMATIC`, `GPU`, `CPU`) via `RuntimeConfig`. When set to `AUTOMATIC`, the engine SHALL prefer the GPU backend and automatically fall back to the CPU backend only on genuine device or hardware backend failures (e.g. OpenCL/driver or GPU memory limitation), logging the diagnostic and proceeding.
 
-#### Scenario: Explicit CPU backend selection
-- **WHEN** `ExecutionBackend.CPU` is configured
-- **THEN** the engine initializes directly on the CPU backend without attempting GPU initialization
+The engine MUST support `ExecutionBackend` selection (`AUTOMATIC`, `NPU`, `GPU`, `CPU`). `AUTOMATIC` (the default) MUST resolve an ordered candidate chain **NPU → GPU → CPU**, where NPU is included only when the hardware probe reports NPU usable AND the model is NPU-compatible. Backend initialization attempts MUST be transactional (native resources fully released between attempts) and observable (each attempt recorded with backend, duration, outcome, and failure reason; the resolved backend and failed-attempt reasons surfaced via engine state).
 
-#### Scenario: Genuine GPU failure triggers CPU fallback
-- **WHEN** GPU backend initialization fails due to an OpenCL/driver or GPU memory limitation under `ExecutionBackend.AUTOMATIC`
-- **THEN** `LiteRtLlmEngine` catches the backend error, logs the failure, and attempts initialization on the CPU backend
-- **AND** marks the engine ready if CPU initialization succeeds
+#### Scenario: AUTOMATIC resolves NPU on a compatible device and model
+- **GIVEN** a device whose probe reports `npuUsable=true` and a model record with matching NPU target metadata
+- **WHEN** `initializeAsync()` is called with `ExecutionBackend.AUTOMATIC`
+- **THEN** the engine attempts NPU first (constructing `Backend.NPU(nativeLibraryDir)`) and, on success, reports NPU as the active backend
+
+#### Scenario: Transactional fallback with observable report
+- **GIVEN** `ExecutionBackend.AUTOMATIC` where the NPU attempt fails at initialization
+- **WHEN** the engine proceeds to the next candidate
+- **THEN** all native resources from the failed attempt are released before the GPU attempt starts
+- **AND** the init report records the NPU attempt (backend, durationMs, failure reason) and the GPU fallback
+- **AND** the UI can display the active backend and why earlier candidates failed
+
+#### Scenario: Explicit NPU selection is exclusive
+- **GIVEN** the user explicitly selects the NPU backend via the advanced setting
+- **WHEN** NPU initialization fails
+- **THEN** the load fails with the NPU error surfaced to the user
+- **AND** the engine does NOT silently substitute another backend
+
+#### Scenario: NPU never attempted when not usable or not compatible
+- **GIVEN** a device with `npuUsable=false` OR a model without NPU target metadata
+- **WHEN** `ExecutionBackend.AUTOMATIC` is used
+- **THEN** the candidate chain contains only GPU and CPU
+- **AND** no NPU initialization attempt is made
 
 ### Requirement: Fail-fast error propagation on invalid model artifacts
 The system SHALL NOT trigger CPU fallback when model loading fails due to an invalid, corrupted, incompatible, or malformed model artifact (e.g., missing tokenizer, missing model section, unsupported tensor format).
@@ -92,4 +108,79 @@ Calling `cancel()` on `LiteRtLlmEngine` MUST invoke native `Conversation.cancelP
 - **THEN** the active conversation and engine instances are closed and state is set to `NotLoaded`
 - **AND** calling `release()` again is a safe no-op
 - **AND** a subsequent `initializeAsync()` with a valid model successfully reloads the engine
+
+### Requirement: KV-overflow handling is context-preserving
+
+When the active conversation's token usage approaches the engine KV capacity, the engine MAY reset the conversation, but the reset MUST preserve the system instruction (re-created from the original `AgentConfig`) and MUST replay the most recent conversation turns within a bounded replay budget. A context-free reset (no config, no replay) is prohibited except as a logged last resort when replay cannot fit.
+
+#### Scenario: Reset preserves system instruction and recent turns
+- **GIVEN** an active multi-turn conversation nearing KV capacity
+- **WHEN** the engine performs a KV reset during `generate()`
+- **THEN** the new conversation is created with the original `AgentConfig` (system instruction intact)
+- **AND** the most recent turns are replayed within the replay budget before the new prompt
+
+#### Scenario: Last-resort reset is observable
+- **GIVEN** a conversation whose recent turns exceed the replay budget
+- **WHEN** the engine performs a KV reset
+- **THEN** the conversation is re-created with the `AgentConfig` but without replay
+- **AND** the reset and dropped context are logged/surfaced as an event
+
+### Requirement: NPU KV capacity must not exceed the AOT graph's real context
+
+When the active backend is NPU, the engine KV capacity used by compaction/reset guards SHALL be clamped to the AOT graph's real context (conservative default until container metadata provides the exact value), never the generic requested capacity (e.g. 8192).
+
+#### Scenario: Compaction guard on NPU uses clamped capacity
+- **GIVEN** an NPU-active conversation with requested KV capacity 8192 but an AOT graph context of ~1280
+- **WHEN** token usage grows
+- **THEN** the context-preserving reset triggers based on the clamped capacity
+- **AND** the native runtime is not driven past its graph limit before a reset occurs
+
+### Requirement: Voice activation replays recent context
+
+On a new voice activation that creates a fresh engine conversation, the most recent turns of the previous voice conversation SHALL be replayed within the same bounded replay budget used for KV compaction, so assistant memory is continuous across voice activations.
+
+#### Scenario: Follow-up across voice activations
+- **GIVEN** a previous voice session where the user asked about a contact
+- **WHEN** the user activates the assistant again and says "call her"
+- **THEN** the new conversation's first prompt includes the replayed recent turns plus tool schemas
+
+### Requirement: NPU sampler configuration exclusion
+
+The engine MUST NOT customize `ConversationConfig.samplerConfig` when the active backend is NPU.
+
+#### Scenario: Conversation creation under NPU
+- **GIVEN** the engine initialized successfully on the NPU backend
+- **WHEN** `startConversation()` is called with an `AgentConfig` containing generation settings
+- **THEN** the conversation is created without sampler customization
+- **AND** system instruction handling is unchanged
+
+### Requirement: Hardware NPU capability probe
+
+The engine SHALL run a hardware capability probe once per engine initialization that detects: the NPU vendor from device SoC properties (Qualcomm/MediaTek/Google Tensor/Samsung/Unknown), the HTP generation from a pinned SoC→generation mapping (`supported_soc.csv` data), and `npuUsable` — whether the QNN runtime libraries and the LiteRT vendor dispatch library are actually reachable from `applicationInfo.nativeLibraryDir`. Probe results SHALL be exposed as observable engine capabilities and SHALL NOT by themselves trigger backend attempts.
+
+#### Scenario: Probe on a device without NPU libraries
+- **GIVEN** a Qualcomm SoC device where QNN/dispatch libraries are absent from `nativeLibraryDir`
+- **WHEN** the probe runs
+- **THEN** `npuVendor` is Qualcomm and `npuUsable` is false
+- **AND** no NPU engine initialization is triggered by the probe itself
+
+#### Scenario: Probe detection is pure and unit-testable
+- **GIVEN** synthetic SoC property inputs (manufacturer, model, hardware, board)
+- **WHEN** vendor detection and generation mapping run
+- **THEN** results are deterministic and testable without an Android device
+
+### Requirement: QNN runtime is sourced only from the official Maven artifact
+
+The build SHALL obtain QNN runtime libraries exclusively via the pinned `com.qualcomm.qti:qnn-runtime` Maven dependency. Qualcomm binaries SHALL NOT be committed to the repository, mirrored, or hosted by Loki. The vendor dispatch library SHALL be built from the LiteRT source revision matching the litertlm dependency and staged via Gradle. The APK SHALL retain the artifact's license/NOTICE files, and release verification SHALL confirm the pinned QNN version's license permits in-application object-code bundling.
+
+#### Scenario: Build reproducibility without vendored binaries
+- **GIVEN** a fresh checkout of the repository
+- **WHEN** the project builds
+- **THEN** QNN runtime libraries resolve from Maven at the pinned version
+- **AND** no Qualcomm `.so` files exist in version control
+
+#### Scenario: Packaging requirement for NPU
+- **GIVEN** the release build configuration
+- **WHEN** native libraries are packaged
+- **THEN** `useLegacyPackaging` is enabled for jniLibs so the dispatch can locate vendor libraries via `nativeLibraryDir`
 

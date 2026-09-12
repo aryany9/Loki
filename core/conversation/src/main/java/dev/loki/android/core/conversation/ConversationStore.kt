@@ -129,6 +129,44 @@ class ConversationStore(
         }
     }
 
+    suspend fun searchTurns(query: String, limit: Int = 5): List<TurnSearchResult> = withContext(ioDispatcher) {
+        val trimmedQuery = query.trim()
+        if (trimmedQuery.isBlank() || limit <= 0) return@withContext emptyList()
+
+        mutex.withLock {
+            val files = baseDir.listFiles { file -> file.isFile && file.extension == "json" } ?: emptyArray()
+            val results = mutableListOf<TurnSearchResult>()
+
+            for (file in files) {
+                try {
+                    val content = file.readText()
+                    val record = json.decodeFromString<ConversationRecord>(content)
+                    for (turn in record.turns) {
+                        val turnText = when (turn) {
+                            is ConversationTurn.User -> turn.text
+                            is ConversationTurn.Assistant -> turn.text
+                            else -> null
+                        }
+                        if (turnText != null && turnText.contains(trimmedQuery, ignoreCase = true)) {
+                            results.add(
+                                TurnSearchResult(
+                                    conversationId = record.id,
+                                    conversationTitle = record.title,
+                                    snippet = turnText.trim(),
+                                    dateEpochMs = turn.timestamp
+                                )
+                            )
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Failed to read conversation file during search: ${file.name}", e)
+                }
+            }
+
+            results.sortedByDescending { it.dateEpochMs }.take(limit)
+        }
+    }
+
     suspend fun loadConversation(id: String): ConversationRecord? = withContext(ioDispatcher) {
         mutex.withLock {
             loadLocked(id)
