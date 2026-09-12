@@ -1724,5 +1724,65 @@ class AssistantSessionTest {
         assertFalse("ConfirmationResolver grammar must NOT be used for SELECTION semantics", resolverGrammarSeen)
         session.destroy()
     }
+
+    @Test
+    fun `handleFollowUpLoop handles tool access denial cleanly by speaking guidance and completing turn`() = runTest {
+        val session = AssistantSession()
+        session.ioDispatcher = kotlinx.coroutines.Dispatchers.Unconfined
+        session.audioRecorderFactory = { makeSpeechRecorder() }
+
+        val spokenTts = mutableListOf<String>()
+        val fakeTts = makeFakeTts(spokenTts)
+
+        val lockProvider = dev.loki.android.core.tools.FakeDeviceLockStateProvider(dev.loki.android.core.tools.DeviceLockState.LOCKED)
+        val denyingPolicy = dev.loki.android.core.tools.ToolAccessPolicy { _, _, state ->
+            if (state == dev.loki.android.core.tools.DeviceLockState.LOCKED) {
+                dev.loki.android.core.tools.AccessDecision.Deny(
+                    dev.loki.android.core.tools.DenialReason.DEVICE_LOCKED,
+                    "You'll need to unlock your phone to do that."
+                )
+            } else {
+                dev.loki.android.core.tools.AccessDecision.Allow
+            }
+        }
+        val registry = dev.loki.android.core.tools.ToolRegistry(lockStateProvider = lockProvider, accessPolicy = denyingPolicy)
+        val dummyTool = object : dev.loki.android.core.tools.LocalTool {
+            override val name: String = "open_app"
+            override val description: String = "Open an application"
+            override val parameters: Map<String, dev.loki.android.core.tools.ToolParam> = emptyMap()
+            override suspend fun execute(context: android.content.Context, arguments: Map<String, Any?>): dev.loki.android.core.tools.ToolResult =
+                dev.loki.android.core.tools.ToolResult.success()
+        }
+        registry.register(dummyTool)
+
+        val fakeConversationManager = dev.loki.android.core.conversation.ConversationManager(
+            context = object : android.content.ContextWrapper(null) {},
+            llmEngine = object : dev.loki.android.core.llm.LlmEngine {
+                private val _state = kotlinx.coroutines.flow.MutableStateFlow<dev.loki.android.core.llm.LlmModelState>(dev.loki.android.core.llm.LlmModelState.Ready())
+                override val modelState: kotlinx.coroutines.flow.StateFlow<dev.loki.android.core.llm.LlmModelState> = _state
+                override fun isReady(): Boolean = true
+                override suspend fun initializeAsync(modelPath: String?): Boolean = true
+                override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                    return Result.success("""{"tool": "open_app", "arguments": {}}""")
+                }
+                override fun cancel() {}
+                override fun release() {}
+            },
+            toolRegistry = registry,
+            ttsEngine = fakeTts
+        )
+
+        val result = session.handleFollowUpLoop(
+            conversationManager = fakeConversationManager,
+            voiceSession = fakeConversationManager.newVoiceSession(),
+            sttEngine = null,
+            initialResponseText = "What app would you like to open?",
+            useDirectAudio = true
+        )
+
+        assertEquals("You'll need to unlock your phone to do that.", result)
+        assertTrue(spokenTts.contains("You'll need to unlock your phone to do that."))
+        session.destroy()
+    }
 }
 

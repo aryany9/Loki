@@ -4,6 +4,7 @@ import kotlinx.serialization.Serializable
 
 enum class ToolErrorCode {
     PERMISSION_DENIED,
+    ACCESS_DENIED,
     NOT_FOUND,
     EXECUTION_ERROR,
     VALIDATION_ERROR,
@@ -35,4 +36,6 @@ sealed interface ToolExecutionResult {
     data class Success(val toolResult: ToolResult) : ToolExecutionResult
     data class Error(val toolResult: ToolResult) : ToolExecutionResult
     data class PermissionRequired(val permission: String, val state: PermissionState) : ToolExecutionResult
+    data class AccessDenied(val decision: AccessDecision.Deny) : ToolExecutionResult
 }
+

@@ -3,8 +3,14 @@ package dev.loki.android.core.conversation
 import android.content.Context
 import dev.loki.android.core.llm.LlmEngine
 import dev.loki.android.core.llm.LlmModelState
+import dev.loki.android.core.tools.AccessDecision
+import dev.loki.android.core.tools.DenialReason
+import dev.loki.android.core.tools.DeviceLockState
+import dev.loki.android.core.tools.FakeDeviceLockStateProvider
 import dev.loki.android.core.tools.LocalTool
 import dev.loki.android.core.tools.TaskStateGate
+import dev.loki.android.core.tools.ToolAccessPolicy
+import dev.loki.android.core.tools.ToolErrorCode
 import dev.loki.android.core.tools.ToolParam
 import dev.loki.android.core.tools.ToolParamType
 import dev.loki.android.core.tools.ToolRegistry
@@ -1982,6 +1988,86 @@ class ConversationSessionTest {
         assertNotNull(capturedPrompt)
         assertTrue(capturedPrompt!!.contains("lookup_contact"))
         assertFalse(capturedPrompt!!.contains("ask_user"))
+    }
+
+    @Test
+    fun `tool execution denied by policy halts ReAct loop and outputs guidance`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val denyingPolicy = ToolAccessPolicy { tool, _, state ->
+            if (tool.name == "restricted_tool" && state == DeviceLockState.LOCKED) {
+                AccessDecision.Deny(DenialReason.DEVICE_LOCKED, "Unlock phone to use restricted tool.")
+            } else {
+                AccessDecision.Allow
+            }
+        }
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = denyingPolicy)
+        registry.register(MockScopedTool("restricted_tool", "general"))
+
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "restricted_tool", "arguments": {}}""",
+            """{"response": "Should never be reached"}"""
+        ))
+
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = session.processUtterance("run restricted tool").toList()
+
+        val toolExecuted = events.filterIsInstance<ConversationEvent.ToolExecuted>().firstOrNull()
+        assertNotNull(toolExecuted)
+        assertEquals("restricted_tool", toolExecuted!!.toolName)
+        assertFalse(toolExecuted.result.success)
+        assertEquals(ToolErrorCode.ACCESS_DENIED.name, toolExecuted.result.errorCode)
+
+        val completed = events.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
+        assertNotNull(completed)
+        assertEquals("Unlock phone to use restricted tool.", completed!!.finalResponse)
+
+        // Engine must only have been queried once (no ReAct loop re-prompt)
+        assertEquals(1, engine.prompts.size)
+    }
+
+    @Test
+    fun `lookup_contact denied by policy in pre-lookup halts turn and does not execute call_contact`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val denyingPolicy = ToolAccessPolicy { tool, _, state ->
+            if (tool.name == "lookup_contact" && state == DeviceLockState.LOCKED) {
+                AccessDecision.Deny(DenialReason.DEVICE_LOCKED)
+            } else {
+                AccessDecision.Allow
+            }
+        }
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = denyingPolicy)
+        val lookupTool = DummyLookupTool()
+        val callTool = DummyCallTool()
+        registry.register(lookupTool)
+        registry.register(callTool)
+
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "call_contact", "arguments": {"name": "Mom"}}""",
+            """{"response": "Should never be reached"}"""
+        ))
+
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = session.processUtterance("call Mom").toList()
+
+        assertFalse("lookupTool must not execute when policy denies", lookupTool.executed)
+        assertFalse("callTool must not execute when pre-lookup is denied", callTool.executed)
+
+        val completed = events.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
+        assertNotNull(completed)
+        assertEquals("You'll need to unlock your phone to access your contacts.", completed!!.finalResponse)
+        assertEquals(1, engine.prompts.size)
     }
 }
 

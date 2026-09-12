@@ -12,11 +12,11 @@ To build a reliable Gemini alternative, Loki requires a clear separation between
 
 **Goals:**
 - Provide a pure Kotlin `DeviceLockState` enum (`LOCKED`, `UNLOCKED`) and `DeviceLockStateProvider` interface in `core:tools`.
-- Provide an Android platform implementation `AndroidDeviceLockStateProvider` in `core:assistant` that queries `KeyguardManager.isKeyguardLocked`.
-- Define `ToolAccessPolicy` and `AccessDecision` (`Allow`, `Deny(DenialReason, message)`) with `DenialReason` enum (`DEVICE_LOCKED`, `USER_NOT_AUTHORIZED`, `CAPABILITY_UNSUPPORTED`).
-- Establish a single, centralized access gate in `ToolRegistry.executeDetailed()` evaluated before permissions or argument validation.
+- Provide an Android platform implementation `AndroidDeviceLockStateProvider` in `core:tools` that queries `KeyguardManager.isKeyguardLocked` with fail-closed fallback.
+- Define `ToolAccessPolicy` (accepting `tool: Tool`, `arguments: Map<String, Any?> = emptyMap()`, and `deviceLockState: DeviceLockState`) and `AccessDecision` (`Allow`, `Deny(DenialReason, message)`) with `DenialReason` enum (`DEVICE_LOCKED`, `USER_NOT_AUTHORIZED`, `CAPABILITY_UNSUPPORTED`).
+- Establish a single, centralized access gate in `ToolRegistry.executeDetailed()` evaluated after tool lookup but before permissions or argument validation.
 - Introduce `ToolExecutionResult.AccessDenied` and `ToolErrorCode.ACCESS_DENIED`.
-- Handle `AccessDenied` cleanly in `ConversationSession` and `AssistantSession` without crashes or launching trapped background activities.
+- Handle `AccessDenied` cleanly in `ConversationSession` (immediate loop break with deterministic guidance, defensive pre-lookup handling) and `AssistantSession` (clean turn completion without re-arming mic or launching settings).
 - Ensure 100% backward compatibility with all existing unit tests in `core:tools` and `core:conversation`.
 
 **Non-Goals:**
@@ -48,15 +48,27 @@ To build a reliable Gemini alternative, Loki requires a clear separation between
 - **Rationale:** In Gemini and Google Assistant, if a user on the lock screen says *"Open YouTube"*, the assistant recognizes the intent and specifically replies *"You'll need to unlock your phone to open YouTube"*. If restricted tools were stripped from the grammar, the model would hallucinate or respond *"I don't know how to open apps"*. Enforcing at the execution gate ensures the agent understands the user's intent while strictly preventing unauthorized execution.
 - **Alternative Considered:** Filtering tools from grammar during lock screen. This degraded user experience by producing confusing, unhelpful responses.
 
-### Decision 4: Independence from Verbal Confirmation State Machine
-- **Choice:** `ToolAccessPolicy` operates completely independently from `ConfirmationResolver` and verbal confirmation gates.
-- **Rationale:** Access control is a precondition for execution. If a tool is denied by `ToolAccessPolicy`, execution halts immediately. The user is never asked for verbal confirmation (e.g. *"Shall I call Mom?"*) for an action that is not permitted to run.
+### Decision 4: Independence from Verbal Confirmation State Machine & Calling as Lock-Screen Permitted Utility
+- **Choice:** `ToolAccessPolicy` operates as a precondition before execution and verbal confirmation. However, communication utilities (`lookup_contact`, `call_contact`, `hang_up`) are classified as lock-screen compatible utilities (aligning with Gemini and Android Assistant standards).
+- **Rationale:** Making phone calls hands-free (while driving or with a locked phone in pocket) is a primary assistant utility. Android's Telecom framework (`TelecomManager` / `Intent.ACTION_CALL`) natively supports display over the keyguard (`FLAG_SHOW_WHEN_LOCKED`). Safety against inadvertent dialing is guaranteed by Loki's existing verbal confirmation gate (*"Shall I call Alice?"*), rather than locking the user out.
+
+### Decision 5: Policy Signature Includes Arguments for Granular Gating
+- **Choice:** `ToolAccessPolicy.evaluate` accepts `(tool: Tool, arguments: Map<String, Any?> = emptyMap(), deviceLockState: DeviceLockState)`.
+- **Rationale:** Mobile access control often depends on arguments (e.g. emergency numbers vs personal contacts, camera vs banking package name in `open_app`). Since `executeDetailed` already receives arguments, including them in the contract now prevents breaking signature changes in Phase 2.
+
+### Decision 6: Deterministic Turn Termination on Access Denied
+- **Choice:** When `executeDetailed` returns `AccessDenied`, `ConversationSession` immediately halts the ReAct loop (`break`) and outputs deterministic guidance rather than re-prompting the LLM.
+- **Rationale:** Re-prompting an on-device SLM on the lock screen introduces 1.5–3 seconds of latency, drains battery, and risks the model hallucinating or trying alternative forbidden tools. Immediate termination provides instant, predictable security feedback.
+
+### Decision 7: Placement of `AndroidDeviceLockStateProvider` in `core:tools`
+- **Choice:** Place `AndroidDeviceLockStateProvider` in `core:tools` alongside `DeviceLockStateProvider` and `PermissionManager`.
+- **Rationale:** `core:tools` is already an Android library module housing `PermissionManager`. `KeyguardManager` is an Android framework service, not an assistant-specific concept. Housing the platform provider in `core:tools` keeps the module cohesive and prevents circular or awkward dependencies from `app` or test modules.
 
 ## Risks / Trade-offs
 
 - **[Risk] Multiple lock APIs on Android (`isKeyguardLocked` vs `isDeviceLocked`)**
-  → *Mitigation*: Use `keyguardManager.isKeyguardLocked`. Even if a device has no secure PIN set (swipe to unlock), an active keyguard will hide activities launched by background tools. Checking `isKeyguardLocked` accurately reflects whether the keyguard is currently obscuring the display.
+  → *Mitigation*: Use `keyguardManager.isKeyguardLocked`. Even if a device has no secure PIN set (swipe to unlock), an active keyguard will hide activities launched by background tools. Checking `isKeyguardLocked` accurately reflects whether the keyguard is currently obscuring the display. If `KeyguardManager` is null (e.g. headless tests), fail closed to `DeviceLockState.LOCKED`.
 - **[Risk] Direct Boot (FBE) state before first unlock**
   → *Mitigation*: Phase 1 requires that Loki is invoked while the OS is booted. Future storage migrations to Device Protected Storage will address Direct Boot explicitly.
-- **[Risk] Pre-call contact lookup in `ConversationSession`**
-  → *Mitigation*: In `ConversationSession`, internal pre-lookups call `toolRegistry.executeDetailed()`. If denied, it cleanly halts with `AccessDenied` feedback rather than failing silently.
+- **[Risk] Defensive pre-call contact lookup in `ConversationSession`**
+  → *Mitigation*: While `lookup_contact` is permitted under normal lock-screen policy, `ConversationSession` defensively checks if `lookupExec is ToolExecutionResult.AccessDenied` and cleanly terminates the turn rather than falling into an invalid or unconfirmed calling state.

@@ -420,5 +420,158 @@ class ToolRegistryTest {
         val available = registry.getAvailableTools(context = dummyContext)
         assertEquals(2, available.size)
     }
+
+    // ── Device Lock & ToolAccessPolicy foundation tests ──────────────────────
+
+    @Test
+    fun `default constructor allows execution under backward compatible defaults`() = runTest {
+        val registry = ToolRegistry()
+        registry.register(DummyTool())
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val result = registry.execute(dummyContext, "dummy_tool", mapOf("param1" to "hello"))
+        assertTrue(result.success)
+        assertEquals("hello", result.data?.get("result"))
+    }
+
+    @Test
+    fun `executeDetailed returns AccessDenied when access policy denies`() = runTest {
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val denyingPolicy = ToolAccessPolicy { _, _, _ ->
+            AccessDecision.Deny(DenialReason.DEVICE_LOCKED, "Device is locked")
+        }
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = denyingPolicy)
+        registry.register(DummyTool())
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val detailedResult = registry.executeDetailed(dummyContext, "dummy_tool", mapOf("param1" to "val"))
+        assertTrue(detailedResult is ToolExecutionResult.AccessDenied)
+        val denied = detailedResult as ToolExecutionResult.AccessDenied
+        assertEquals(DenialReason.DEVICE_LOCKED, denied.decision.reason)
+        assertEquals("Device is locked", denied.decision.message)
+    }
+
+    @Test
+    fun `execute maps AccessDenied to ToolResult with ACCESS_DENIED error code`() = runTest {
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val denyingPolicy = ToolAccessPolicy { _, _, _ ->
+            AccessDecision.Deny(DenialReason.DEVICE_LOCKED, "Unlock phone first")
+        }
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = denyingPolicy)
+        registry.register(DummyTool())
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val result = registry.execute(dummyContext, "dummy_tool", mapOf("param1" to "val"))
+        assertFalse(result.success)
+        assertEquals(ToolErrorCode.ACCESS_DENIED.name, result.errorCode)
+        assertEquals("Unlock phone first", result.error)
+    }
+
+    @Test
+    fun `access policy denial short-circuits parameter validation and permission checks`() = runTest {
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val denyingPolicy = ToolAccessPolicy { _, _, _ ->
+            AccessDecision.Deny(DenialReason.DEVICE_LOCKED, "Locked")
+        }
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = denyingPolicy)
+        // DummyTool requires "param1". We pass emptyMap() which normally triggers VALIDATION_ERROR.
+        registry.register(DummyTool())
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        val detailedResult = registry.executeDetailed(dummyContext, "dummy_tool", emptyMap())
+        // Must be AccessDenied, NOT Error(VALIDATION_ERROR)
+        assertTrue(detailedResult is ToolExecutionResult.AccessDenied)
+    }
+
+    @Test
+    fun `access policy receives execution arguments and dynamic lock state`() = runTest {
+        var capturedArguments: Map<String, Any?>? = null
+        var capturedLockState: DeviceLockState? = null
+
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val trackingPolicy = ToolAccessPolicy { _, args, state ->
+            capturedArguments = args
+            capturedLockState = state
+            if (state == DeviceLockState.LOCKED) {
+                AccessDecision.Deny(DenialReason.DEVICE_LOCKED)
+            } else {
+                AccessDecision.Allow
+            }
+        }
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = trackingPolicy)
+        registry.register(DummyTool())
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        // Execution 1: Device is LOCKED
+        val res1 = registry.executeDetailed(dummyContext, "dummy_tool", mapOf("param1" to "arg123"))
+        assertTrue(res1 is ToolExecutionResult.AccessDenied)
+        assertEquals("arg123", capturedArguments?.get("param1"))
+        assertEquals(DeviceLockState.LOCKED, capturedLockState)
+
+        // Dynamically unlock device
+        lockProvider.setState(DeviceLockState.UNLOCKED)
+
+        // Execution 2: Device is UNLOCKED
+        val res2 = registry.executeDetailed(dummyContext, "dummy_tool", mapOf("param1" to "arg456"))
+        assertTrue(res2 is ToolExecutionResult.Success)
+        assertEquals("arg456", capturedArguments?.get("param1"))
+        assertEquals(DeviceLockState.UNLOCKED, capturedLockState)
+    }
+
+    @Test
+    fun `AndroidDeviceLockStateProvider fails closed to LOCKED when KeyguardManager is unavailable`() {
+        val dummyContext = object : android.content.ContextWrapper(null) {
+            override fun getSystemService(name: String): Any? = null
+        }
+        val provider = AndroidDeviceLockStateProvider(dummyContext)
+        assertEquals(DeviceLockState.LOCKED, provider.currentState())
+    }
+
+    @Test
+    fun `ToolRegistry with LockScreenActionMatrixPolicy denies open_app and allows call_contact when LOCKED`() = runTest {
+        class MockOpenAppTool : LocalTool {
+            override val name: String = "open_app"
+            override val capability: String = "apps"
+            override val description: String = "Open an app"
+            override val parameters: Map<String, ToolParam> = mapOf("app_name" to ToolParam(ToolParamType.STRING, "App", required = true))
+            override val requiredPermissions: List<String> = emptyList()
+            override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult = ToolResult.success(emptyMap())
+        }
+
+        class MockCallContactTool : LocalTool {
+            override val name: String = "call_contact"
+            override val capability: String = "calling"
+            override val description: String = "Call contact"
+            override val parameters: Map<String, ToolParam> = emptyMap()
+            override val requiredPermissions: List<String> = emptyList()
+            override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult = ToolResult.success(emptyMap())
+        }
+
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val matrixPolicy = LockScreenActionMatrixPolicy()
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = matrixPolicy)
+        registry.register(MockOpenAppTool())
+        registry.register(MockCallContactTool())
+
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        // open_app on LOCKED -> AccessDenied
+        val openAppResult = registry.executeDetailed(dummyContext, "open_app", mapOf("app_name" to "YouTube"))
+        assertTrue(openAppResult is ToolExecutionResult.AccessDenied)
+        val denied = openAppResult as ToolExecutionResult.AccessDenied
+        assertEquals("Please unlock your phone to open YouTube.", denied.decision.message)
+
+        // call_contact on LOCKED -> Success
+        val callResult = registry.executeDetailed(dummyContext, "call_contact", emptyMap())
+        assertTrue(callResult is ToolExecutionResult.Success)
+
+        // simple execute() mapping returns ToolResult.error with ACCESS_DENIED
+        val simpleOpenAppResult = registry.execute(dummyContext, "open_app", mapOf("app_name" to "YouTube"))
+        assertFalse(simpleOpenAppResult.success)
+        assertEquals(ToolErrorCode.ACCESS_DENIED.name, simpleOpenAppResult.errorCode)
+        assertEquals("Please unlock your phone to open YouTube.", simpleOpenAppResult.error)
+    }
 }
+
+
 

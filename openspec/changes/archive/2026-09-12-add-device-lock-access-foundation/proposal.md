@@ -7,8 +7,8 @@ Establishing a reliable, centralized security and capability foundation now prev
 ## What Changes
 
 - Introduce `DeviceLockState` enum (`LOCKED`, `UNLOCKED`) and pure `DeviceLockStateProvider` abstraction in `core:tools`.
-- Introduce `ToolAccessPolicy` interface and `AccessDecision` (`Allow`, `Deny(reason, message)`) with `DenialReason` enum (`DEVICE_LOCKED`, `USER_NOT_AUTHORIZED`, `CAPABILITY_UNSUPPORTED`).
-- Add `AndroidDeviceLockStateProvider` in `core:assistant` (wrapping `KeyguardManager.isKeyguardLocked`) and `FakeDeviceLockStateProvider` for testing.
+- Introduce `ToolAccessPolicy` interface (accepting `Tool`, execution `arguments`, and `DeviceLockState`) and `AccessDecision` (`Allow`, `Deny(reason, message)`) with `DenialReason` enum (`DEVICE_LOCKED`, `USER_NOT_AUTHORIZED`, `CAPABILITY_UNSUPPORTED`).
+- Add `AndroidDeviceLockStateProvider` in `core:tools` (wrapping `KeyguardManager.isKeyguardLocked` with fail-closed fallback) and `FakeDeviceLockStateProvider` for testing.
 - Introduce centralized access gating in `ToolRegistry.executeDetailed()`: evaluates `ToolAccessPolicy` against current `DeviceLockState` before checking permissions, validating arguments, or invoking `Tool.execute()`.
 - Add `ToolExecutionResult.AccessDenied(val decision: AccessDecision.Deny)` to the execution result hierarchy.
 - Add `ACCESS_DENIED` to `ToolErrorCode`.
@@ -25,7 +25,7 @@ Establishing a reliable, centralized security and capability foundation now prev
 
 ## Impact
 
-- `core:tools`: New classes `DeviceLockState`, `DeviceLockStateProvider`, `ToolAccessPolicy`, `AccessDecision`, `DenialReason`. Modified `ToolRegistry` and `ToolResult.kt`.
-- `core:assistant`: `AndroidDeviceLockStateProvider` implementation wrapping Android `KeyguardManager`. Updated `AssistantSession` to handle `ACCESS_DENIED`.
-- `core:conversation`: `ConversationSession` updated to handle `ToolExecutionResult.AccessDenied`.
+- `core:tools`: New classes `DeviceLockState`, `DeviceLockStateProvider`, `AndroidDeviceLockStateProvider`, `ToolAccessPolicy`, `AccessDecision`, `DenialReason`. Modified `ToolRegistry` and `ToolResult.kt`.
+- `core:assistant`: Updated `AssistantSession` to handle `ACCESS_DENIED` cleanly by completing the turn with speech output and without re-arming microphone or opening settings.
+- `core:conversation`: `ConversationSession` updated to handle `ToolExecutionResult.AccessDenied` with immediate loop break, deterministic guidance, and defensive pre-lookup handling.
 - `app`: `AppModule` updated to provide `AndroidDeviceLockStateProvider` and default `ToolAccessPolicy` when instantiating `ToolRegistry`.
