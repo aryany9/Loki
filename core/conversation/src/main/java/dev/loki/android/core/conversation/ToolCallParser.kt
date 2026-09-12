@@ -2,10 +2,11 @@ package dev.loki.android.core.conversation
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 sealed interface ParsedLlmResponse {
-    data class ToolCall(val tool: String, val arguments: Map<String, Any?>) : ParsedLlmResponse
+    data class ToolCall(val tool: String, val arguments: Map<String, Any?>, val language: String? = null) : ParsedLlmResponse
     data class DirectResponse(val text: String) : ParsedLlmResponse
     data class Malformed(val raw: String, val error: String) : ParsedLlmResponse
 }
@@ -120,7 +121,10 @@ object ToolCallParser {
                 } catch (_: Throwable) {}
             }
 
-            return ParsedLlmResponse.ToolCall(toolName, argsMap)
+            val lang = element["language"]?.jsonPrimitive?.contentOrNull
+                ?: (argsElement as? JsonObject)?.get("language")?.jsonPrimitive?.contentOrNull
+
+            return ParsedLlmResponse.ToolCall(toolName, argsMap, language = lang)
         } else if (element.containsKey("response")) {
             val resp = element["response"]?.jsonPrimitive?.content ?: ""
             return ParsedLlmResponse.DirectResponse(resp)

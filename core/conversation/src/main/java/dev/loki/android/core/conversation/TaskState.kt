@@ -13,6 +13,8 @@ enum class ConfirmationOutcome {
     CONFIRMED,
     /** User clearly declined the action. */
     DECLINED,
+    /** User declined or redirected with a new command/request. */
+    REDIRECT,
     /** Response was ambiguous, unclear, or unrelated. */
     UNKNOWN;
 
@@ -26,7 +28,7 @@ enum class ConfirmationOutcome {
          *
          * Accepted formats (in priority order):
          * 1. Bare token (exact match, case-insensitive, after trim):
-         *    `CONFIRMED`, `DECLINED`, `UNKNOWN`
+         *    `CONFIRMED`, `DECLINED`, `REDIRECT`, `UNKNOWN`
          * 2. Known JSON label envelope produced by the LiteRT audio model
          *    when grammar isn't sampler-enforced:
          *    `{"label": "CONFIRMED"}`, `{"label":"DECLINED"}`, etc.
@@ -40,6 +42,7 @@ enum class ConfirmationOutcome {
             when (trimmed.uppercase()) {
                 "CONFIRMED" -> return CONFIRMED
                 "DECLINED"  -> return DECLINED
+                "REDIRECT"  -> return REDIRECT
                 "UNKNOWN"   -> return UNKNOWN
             }
 
@@ -54,6 +57,7 @@ enum class ConfirmationOutcome {
                     return when (labelValue.uppercase()) {
                         "CONFIRMED" -> CONFIRMED
                         "DECLINED"  -> DECLINED
+                        "REDIRECT"  -> REDIRECT
                         "UNKNOWN"   -> UNKNOWN
                         else        -> UNKNOWN
                     }

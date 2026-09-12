@@ -32,11 +32,11 @@ object ConfirmationResolver {
      * Note: the LlmEngine grammar parameter uses regex syntax (not GBNF), since the LiteRT SDK
      * exposes [ResponseFormat.regex] rather than a GBNF sampler.
      */
-    private const val GRAMMAR = "CONFIRMED|DECLINED|UNKNOWN"
+    private const val GRAMMAR = "CONFIRMED|DECLINED|REDIRECT|UNKNOWN"
 
     /**
      * Classifies the user's spoken or transcribed response to [question] as
-     * [ConfirmationOutcome.CONFIRMED], [ConfirmationOutcome.DECLINED], or
+     * [ConfirmationOutcome.CONFIRMED], [ConfirmationOutcome.DECLINED], [ConfirmationOutcome.REDIRECT], or
      * [ConfirmationOutcome.UNKNOWN].
      *
      * @param audioBytes WAV-encoded PCM bytes for DirectAudio devices; null on STT-Transcribe path.
@@ -55,6 +55,9 @@ object ConfirmationResolver {
 
         Log.d(TAG, "resolve() — audioBytes=${audioBytes?.size ?: 0}b, " +
                 "transcript=${transcript?.let { "\"${it.take(50)}\"" } ?: "null"}")
+
+        // Release KV cache before confirmation inference to compact context and release tokens (stateless per spec)
+        llmEngine.resetConversation()
 
         val result = llmEngine.generate(
             prompt = prompt,
@@ -98,17 +101,21 @@ You asked the user: "$question"
 
 $responseSection
 
-Classify the user's response. Reply with ONLY one of these exact labels: CONFIRMED, DECLINED, or UNKNOWN.
+Classify the user's response. Reply with ONLY one of these exact labels: CONFIRMED, DECLINED, REDIRECT, or UNKNOWN.
 
 CONFIRMED — The user clearly agreed or affirmed (examples: "yes", "sure", "go ahead", "do it",
   "haan", "haan karo", "theek hai", "karo", "okay", "yep", "absolutely").
 
-DECLINED — The user clearly refused or cancelled (examples: "no", "nahi", "cancel", "don't",
+DECLINED — The user purely refused or cancelled with no new request (examples: "no", "nahi", "cancel", "don't",
   "mat karo", "ruk ja", "stop", "nevermind", "nope", "nahi chahiye").
+
+REDIRECT — The user rejected the current target and provided a new command or different action (examples:
+  "no, call Mom", "nahi, Mom ko phone lagao", "cancel that, set a timer", "don't call him, message him",
+  "call someone else").
 
 UNKNOWN — The response is ambiguous, unclear, unrelated, or you cannot determine the intent.
 
-Respond with exactly one label: CONFIRMED, DECLINED, or UNKNOWN.
+Respond with exactly one label: CONFIRMED, DECLINED, REDIRECT, or UNKNOWN.
         """.trimIndent()
     }
 }

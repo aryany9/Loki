@@ -438,7 +438,7 @@ class AudioRecorderTest {
         val silenceChunk = ShortArray(800) { 50 }
 
         val chunks = mutableListOf<ShortArray>().apply {
-            repeat(2) { add(speechChunk) }   // 200ms speech (< 350ms min utterance threshold)
+            repeat(1) { add(speechChunk) }   // 100ms speech (< 200ms min utterance threshold)
             repeat(15) { add(silenceChunk) }
         }
 
@@ -458,7 +458,36 @@ class AudioRecorderTest {
 
         val audioFloats = recorder.recordGatedUtterance(isCommitGated = { false })
 
-        assertTrue("Sub-minimum utterance (< 350ms) must return empty audio", audioFloats.isEmpty())
+        assertTrue("Sub-minimum utterance (< 200ms) must return empty audio", audioFloats.isEmpty())
+    }
+
+    @Test
+    fun `short affirmative utterance below 350ms passes minimum utterance filter`() = runTest {
+        val speechChunk = ShortArray(800) { 3000 }
+        val silenceChunk = ShortArray(800) { 50 }
+
+        val chunks = mutableListOf<ShortArray>().apply {
+            repeat(3) { add(speechChunk) }   // 300ms speech (< 350ms old threshold, >= 200ms new threshold)
+            repeat(15) { add(silenceChunk) }
+        }
+
+        var currentTime = 1_000_000L
+        val fakeReader = FakeAudioSourceReader(
+            chunks = chunks,
+            onChunkRead = { currentTime += 100L }
+        )
+
+        val recorder = AudioRecorder(
+            sampleRate = 16000,
+            silenceDurationMs = 700L,
+            customSourceReader = fakeReader
+        ).apply {
+            timeProvider = { currentTime }
+        }
+
+        val audioFloats = recorder.recordGatedUtterance(isCommitGated = { false })
+
+        assertTrue("Short affirmative utterance (300ms) must return non-empty audio", audioFloats.isNotEmpty())
     }
 
     @Test
@@ -467,7 +496,7 @@ class AudioRecorderTest {
         val silenceChunk = ShortArray(800) { 50 }
 
         val chunks = mutableListOf<ShortArray>().apply {
-            repeat(4) { add(speechChunk) }   // 400ms speech (>= 350ms min utterance threshold)
+            repeat(4) { add(speechChunk) }   // 400ms speech (>= 200ms min utterance threshold)
             repeat(15) { add(silenceChunk) }
         }
 
@@ -487,7 +516,7 @@ class AudioRecorderTest {
 
         val audioFloats = recorder.recordGatedUtterance(isCommitGated = { false })
 
-        assertTrue("400ms utterance (>= 350ms) must return non-empty audio", audioFloats.isNotEmpty())
+        assertTrue("400ms utterance (>= 200ms) must return non-empty audio", audioFloats.isNotEmpty())
     }
 
     @Test

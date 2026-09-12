@@ -17,6 +17,14 @@ object GrammarBuilder {
 
     private val grammarCache = ConcurrentHashMap<String, String>()
 
+    const val RESPONSE_ONLY_REGEX = """\{\s*"response"\s*:\s*"([^"\\]|\\.)*"\s*\}"""
+
+    fun buildResponseOnlyRegex(): String = RESPONSE_ONLY_REGEX
+
+    fun buildResponseOnly(useRegex: Boolean = true): String {
+        return if (useRegex) RESPONSE_ONLY_REGEX else buildFrom(emptyList())
+    }
+
     fun buildFrom(
         toolRegistry: ToolRegistry,
         context: Context? = null,
@@ -83,7 +91,7 @@ object GrammarBuilder {
         val sb = StringBuilder()
         sb.append("root ::= tool_call | response\n")
         sb.append("response ::= \"{\" space \"\\\"response\\\"\" space \":\" space string space \"}\"\n")
-        sb.append("tool_call ::= \"{\" space \"\\\"tool\\\"\" space \":\" space tool_name space \",\" space \"\\\"arguments\\\"\" space \":\" space \"{\" space tool_args space \"}\" space \"}\"\n")
+        sb.append("tool_call ::= \"{\" space \"\\\"tool\\\"\" space \":\" space tool_name space \",\" space \"\\\"arguments\\\"\" space \":\" space \"{\" space tool_args space \"}\" (space \",\" space \"\\\"language\\\"\" space \":\" space string)? space \"}\"\n")
         sb.append("tool_name ::= $toolNameLiterals\n")
         sb.append("tool_args ::= (arg_pair (\",\" space arg_pair)*)?\n")
         sb.append("arg_pair ::= string space \":\" space value\n")

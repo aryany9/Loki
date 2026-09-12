@@ -410,10 +410,10 @@ open class AudioRecorder(
             Log.i(TAG, "Audio capture finished, captured ${outputStream.size()} bytes (speechDetected=$speechDetected)")
         }
 
-        // Minimum utterance duration check: speech duration must be at least ~350ms (Section 14.5)
+        // Minimum utterance duration check: speech duration must be at least MIN_SPEECH_DURATION_MS (Section 14.5)
         val totalSpeechDuration = if (speechDetected) (lastSpeechTime - speechStartTime + 100L) else 0L
-        if (!speechDetected || totalSpeechDuration < 350L) {
-            Log.i(TAG, "Speech not detected or too short (${totalSpeechDuration}ms < 350ms), returning empty audio")
+        if (!speechDetected || totalSpeechDuration < MIN_SPEECH_DURATION_MS) {
+            Log.i(TAG, "Speech not detected or too short (${totalSpeechDuration}ms < ${MIN_SPEECH_DURATION_MS}ms), returning empty audio")
             return@withContext FloatArray(0)
         }
 
@@ -433,5 +433,6 @@ open class AudioRecorder(
 
     companion object {
         private const val TAG = "AudioRecorder"
+        const val MIN_SPEECH_DURATION_MS = 200L
     }
 }

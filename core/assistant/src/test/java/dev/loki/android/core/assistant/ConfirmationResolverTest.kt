@@ -81,6 +81,17 @@ class ConfirmationResolverTest {
     }
 
     @Test
+    fun `engine output REDIRECT maps to ConfirmationOutcome REDIRECT`() = runTest {
+        val outcome = ConfirmationResolver.resolve(
+            audioBytes = null,
+            transcript = "no call Mom instead",
+            question = "Shall I call Alice?",
+            llmEngine = mockEngine("REDIRECT")
+        )
+        assertEquals(ConfirmationOutcome.REDIRECT, outcome)
+    }
+
+    @Test
     fun `malformed engine output maps to UNKNOWN as safe default`() = runTest {
         val outcome = ConfirmationResolver.resolve(
             audioBytes = null,
@@ -234,5 +245,40 @@ class ConfirmationResolverTest {
         assertFalse(prompt.contains("\"arguments\""))
         assertFalse(prompt.contains("system"))
         assertFalse(prompt.contains("<turn>"))
+    }
+
+    @Test
+    fun `resolve resets conversation before generating to release tokens`() = runTest {
+        var resetCalled = false
+        val engine = object : LlmEngine {
+            private val _state = MutableStateFlow<LlmModelState>(LlmModelState.Ready())
+            override val modelState: StateFlow<LlmModelState> = _state
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override fun resetConversation() {
+                resetCalled = true
+            }
+            override suspend fun generate(
+                prompt: String,
+                audioBytes: ByteArray?,
+                grammar: String?,
+                maxTokens: Int,
+                onToken: ((String) -> Unit)?
+            ): Result<String> {
+                assertTrue("resetConversation must be called before generate to release tokens", resetCalled)
+                return Result.success("CONFIRMED")
+            }
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        val outcome = ConfirmationResolver.resolve(
+            audioBytes = null,
+            transcript = "yes",
+            question = "Shall I call Alice?",
+            llmEngine = engine
+        )
+        assertEquals(ConfirmationOutcome.CONFIRMED, outcome)
+        assertTrue(resetCalled)
     }
 }

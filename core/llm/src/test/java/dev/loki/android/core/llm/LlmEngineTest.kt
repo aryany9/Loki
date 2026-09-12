@@ -366,4 +366,14 @@ class LlmEngineTest {
         assertEquals("chat turn", compactionReplay[1].promptText)
         assertEquals("voice action turn", compactionReplay[2].promptText)
     }
+
+    @Test
+    fun `compactConversation returns false gracefully when native engine is null`() = runBlocking {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val dummyModelManager = ModelManager(dummyContext)
+        val engine = LiteRtLlmEngine(dummyContext, dummyModelManager)
+
+        val result = engine.compactConversation()
+        assertFalse(result)
+    }
 }

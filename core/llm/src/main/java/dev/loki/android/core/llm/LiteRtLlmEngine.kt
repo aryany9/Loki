@@ -389,6 +389,48 @@ class LiteRtLlmEngine(
         closeConversationInternal()
     }
 
+    override suspend fun compactConversation(maxTokensToRetain: Int?): Boolean = withContext(Dispatchers.IO) {
+        val currentEngine = engine ?: return@withContext false
+        val currentConfig = lastAgentConfig ?: AgentConfig()
+        val systemPromptEst = (currentConfig.systemInstruction.length / 4) + 32
+        val budget = maxTokensToRetain ?: (activeKvCapacity / 2)
+        val replayBudget = (budget - systemPromptEst).coerceAtLeast(0)
+
+        val selectedReplayTurns = computeReplayTurns(recentTurns, replayBudget)
+        val replayMessages = mutableListOf<Message>()
+        for (turn in selectedReplayTurns) {
+            // Strip heavy audio byte payloads from prior turns to release tokens
+            val textOnlyUserMessage = Message.user(turn.promptText)
+            replayMessages.add(textOnlyUserMessage)
+            if (turn.assistantResponse.isNotBlank()) {
+                replayMessages.add(Message.model(turn.assistantResponse))
+            }
+        }
+
+        if (selectedReplayTurns.isNotEmpty()) {
+            Log.i(TAG, "[Loki] Context compacted: replaying ${selectedReplayTurns.size} turns (audio stripped) with preserved AgentConfig")
+        } else if (recentTurns.isNotEmpty()) {
+            Log.w(TAG, "[Loki] Context compacted: replay did not fit in budget ($replayBudget tokens); context dropped, reset with AgentConfig only")
+        } else {
+            Log.i(TAG, "[Loki] Context compacted: resetting with preserved AgentConfig")
+        }
+
+        closeConversationInternal()
+        val convConfig = buildConversationConfig(currentConfig, replayMessages, activeExecutionBackend)
+        return@withContext try {
+            activeConversation = currentEngine.createConversation(convConfig)
+            recentTurns.clear()
+            recentTurns.addAll(selectedReplayTurns)
+            val tokensUsed = try { activeConversation?.getTokenCount() } catch (_: Exception) { -1 }
+            Log.i(TAG, "[Loki] compactConversation completed: tokens now $tokensUsed / $activeKvCapacity")
+            onContextCompacted?.invoke("Context compacted: released KV cache tokens ($tokensUsed / $activeKvCapacity)")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "[Loki] Failed to create compacted conversation: ${e.message}", e)
+            false
+        }
+    }
+
     private fun isModelArtifactError(throwable: Throwable?): Boolean {
         if (throwable == null) return false
         val msg = throwable.message?.lowercase() ?: ""
@@ -440,7 +482,7 @@ class LiteRtLlmEngine(
             }
 
             var conversation = activeConversation!!
-            val conversationTokensUsed = try { conversation.getTokenCount() } catch (e: Exception) { -1 }
+            var conversationTokensUsed = try { conversation.getTokenCount() } catch (e: Exception) { -1 }
             val newPromptTokensEst = (prompt.length / 4) + 16
 
             if (conversationTokensUsed >= 0 && (conversationTokensUsed + maxTokens + newPromptTokensEst + 128 > activeKvCapacity)) {
@@ -449,32 +491,9 @@ class LiteRtLlmEngine(
                 val systemPromptEst = (currentConfig.systemInstruction.length / 4) + 32
                 val tokensReserved = newPromptTokensEst + maxTokens + 128
                 val replayBudget = activeKvCapacity - (systemPromptEst + tokensReserved)
-
-                val selectedReplayTurns = computeReplayTurns(recentTurns, replayBudget)
-                val replayMessages = mutableListOf<Message>()
-                for (turn in selectedReplayTurns) {
-                    replayMessages.add(turn.userMessage)
-                    if (turn.assistantResponse.isNotBlank()) {
-                        replayMessages.add(Message.model(turn.assistantResponse))
-                    }
-                }
-
-                if (selectedReplayTurns.isNotEmpty()) {
-                    Log.i(TAG, "[Loki] Context compacted: replaying ${selectedReplayTurns.size} turns with preserved AgentConfig")
-                } else if (recentTurns.isNotEmpty()) {
-                    Log.w(TAG, "[Loki] Context compacted: replay did not fit in budget ($replayBudget tokens); context dropped, reset with AgentConfig only")
-                } else {
-                    Log.i(TAG, "[Loki] Context compacted: resetting with preserved AgentConfig")
-                }
-
-                closeConversationInternal()
-                val convConfig = buildConversationConfig(currentConfig, replayMessages, activeExecutionBackend)
-                activeConversation = currentEngine.createConversation(convConfig)
-                conversation = activeConversation!!
-                recentTurns.clear()
-                recentTurns.addAll(selectedReplayTurns)
-
-                onContextCompacted?.invoke("Context compacted: KV cache nearing capacity ($conversationTokensUsed / $activeKvCapacity)")
+                compactConversation(replayBudget + systemPromptEst)
+                conversation = activeConversation ?: return@withContext Result.failure(IllegalStateException("Failed to compact conversation"))
+                conversationTokensUsed = try { conversation.getTokenCount() } catch (e: Exception) { -1 }
             }
             val available = if (conversationTokensUsed >= 0) activeKvCapacity - conversationTokensUsed else -1
             Log.i(TAG, "[Loki/Diagnostic] Before generation:")
@@ -533,6 +552,9 @@ class LiteRtLlmEngine(
             }
 
             val resultText = fullResponse.toString()
+            if (audioBytes != null && audioBytes.isNotEmpty()) {
+                Log.i(TAG, "[LokiVoice/DirectAudio] Audio bytes (${audioBytes.size} bytes) processed directly by multimodal LLM. Raw output generated: '$resultText'")
+            }
             val turnEstTokens = ((prompt.length + resultText.length) / 4) + 16
             val executedAction = isActionExecution(resultText)
             recentTurns.add(TurnEntry(userMessage, prompt, resultText, turnEstTokens, executedAction = executedAction, source = source))

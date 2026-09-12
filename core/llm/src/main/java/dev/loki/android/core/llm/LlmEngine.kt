@@ -90,6 +90,13 @@ interface LlmEngine {
     fun resetConversation() {}
 
     /**
+     * Compacts the persistent native Conversation to release KV-cache tokens.
+     * Preserves recent turns within [maxTokensToRetain] (or engine default) while stripping
+     * raw audio byte payloads to free token capacity.
+     */
+    suspend fun compactConversation(maxTokensToRetain: Int? = null): Boolean = true
+
+    /**
      * Generates a model response.
      *
      * **For LiteRT-LM**: after [startConversation] has been called, [prompt] MUST be only the new

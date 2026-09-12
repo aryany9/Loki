@@ -134,6 +134,8 @@ class AssistantSession(
                         resetAmplitude()
                         _state.value = AssistantState.Error(e.message ?: "Error processing request")
                     } finally {
+                        conversationManager.clearVoiceTask()
+                        conversationManager.llmEngine.resetConversation()
                         when {
                             _state.value is AssistantState.Error -> {
                                 delay(1500)
@@ -189,6 +191,8 @@ class AssistantSession(
                         resetAmplitude()
                         _state.value = AssistantState.Error(e.message ?: "Error processing request")
                     } finally {
+                        conversationManager.clearVoiceTask()
+                        conversationManager.llmEngine.resetConversation()
                         when {
                             _state.value is AssistantState.Error -> {
                                 delay(1500)
@@ -251,20 +255,31 @@ class AssistantSession(
             return TurnOutcome.EMPTY_SPEECH
         }
 
-        _state.value = AssistantState.Processing(query = "")
+        val language = conversationManager.getAgentConfig().conversationLanguage
+        val transcript = if (sttEngine != null && modelManager?.isRuntimeReady(ModelRuntime.LITERT_ASR) == true) {
+            try {
+                sttEngine.transcribeAudio(audioFloats, language).trim()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to transcribe direct audio for conversation context", e)
+                ""
+            }
+        } else {
+            ""
+        }
+
+        _state.value = AssistantState.Processing(query = transcript)
         val wavBytes = dev.loki.android.core.voice.stt.WavEncoder.pcmFloatsToWav(audioFloats)
 
         var turnError: String? = null
         var turnOutcome = TurnOutcome.SUCCESS
         var finalResponseText = ""
         var turnEndedInAskUser = false
-        val language = conversationManager.getAgentConfig().conversationLanguage
 
         val voiceSession = conversationManager.newVoiceSession()
         activeVoiceSession = voiceSession
 
         voiceSession.processUtterance(
-            userInput = "",
+            userInput = transcript,
             audioBytes = wavBytes,
             enableTts = false,
             source = "DIRECT_AUDIO"
@@ -272,11 +287,6 @@ class AssistantSession(
             when (event) {
                 is ConversationEvent.ToolExecuted -> {
                     if (event.result.errorCode == ToolErrorCode.PERMISSION_DENIED.name) {
-                        val permRaw = event.result.error?.substringAfter("Missing permission: ")?.trim() ?: "required"
-                        val permName = permRaw.substringAfterLast('.')
-                        val permMsg = "To do that, I need the $permName permission. Opening permissions."
-                        speakAndAwait(conversationManager.ttsEngine, permMsg)
-                        openPermissionsScreen(null)
                         turnOutcome = TurnOutcome.PERMISSION_OPENED
                     }
                 }
@@ -323,11 +333,6 @@ class AssistantSession(
                     when (event) {
                         is ConversationEvent.ToolExecuted -> {
                             if (event.result.errorCode == ToolErrorCode.PERMISSION_DENIED.name) {
-                                val permRaw = event.result.error?.substringAfter("Missing permission: ")?.trim() ?: "required"
-                                val permName = permRaw.substringAfterLast('.')
-                                val permMsg = "To do that, I need the $permName permission. Opening permissions."
-                                speakAndAwait(conversationManager.ttsEngine, permMsg)
-                                openPermissionsScreen(null)
                                 turnOutcome = TurnOutcome.PERMISSION_OPENED
                             }
                         }
@@ -359,8 +364,8 @@ class AssistantSession(
             }
         }
 
-        if (turnOutcome == TurnOutcome.SUCCESS && finalResponseText.isNotEmpty()) {
-            if (turnEndedInAskUser) {
+        if (finalResponseText.isNotEmpty()) {
+            if (turnOutcome == TurnOutcome.SUCCESS && turnEndedInAskUser) {
                 finalResponseText = handleFollowUpLoop(
                     conversationManager = conversationManager,
                     voiceSession = activeVoiceSession ?: voiceSession,
@@ -375,6 +380,10 @@ class AssistantSession(
                 }
                 speakAndAwait(conversationManager.ttsEngine, finalResponseText)
             }
+        }
+
+        if (turnOutcome == TurnOutcome.PERMISSION_OPENED) {
+            openPermissionsScreen(null)
         }
 
         return turnOutcome
@@ -440,11 +449,6 @@ class AssistantSession(
             when (event) {
                 is ConversationEvent.ToolExecuted -> {
                     if (event.result.errorCode == ToolErrorCode.PERMISSION_DENIED.name) {
-                        val permRaw = event.result.error?.substringAfter("Missing permission: ")?.trim() ?: "required"
-                        val permName = permRaw.substringAfterLast('.')
-                        val permMsg = "To do that, I need the $permName permission. Opening permissions."
-                        speakAndAwait(conversationManager.ttsEngine, permMsg)
-                        openPermissionsScreen(null)
                         turnOutcome = TurnOutcome.PERMISSION_OPENED
                     }
                 }
@@ -471,8 +475,8 @@ class AssistantSession(
             }
         }
 
-        if (turnOutcome == TurnOutcome.SUCCESS && finalResponseText.isNotEmpty()) {
-            if (turnEndedInAskUser) {
+        if (finalResponseText.isNotEmpty()) {
+            if (turnOutcome == TurnOutcome.SUCCESS && turnEndedInAskUser) {
                 finalResponseText = handleFollowUpLoop(
                     conversationManager = conversationManager,
                     voiceSession = activeVoiceSession ?: voiceSession,
@@ -487,6 +491,10 @@ class AssistantSession(
                 }
                 speakAndAwait(conversationManager.ttsEngine, finalResponseText)
             }
+        }
+
+        if (turnOutcome == TurnOutcome.PERMISSION_OPENED) {
+            openPermissionsScreen(null)
         }
 
         return turnOutcome
@@ -702,10 +710,20 @@ class AssistantSession(
                         ConfirmationOutcome.DECLINED -> {
                             // 4.4 Clear task state, speak cancellation, exit loop
                             conversationManager.clearVoiceTask()
-                            val cancelText = "Okay, I've cancelled that."
+                            conversationManager.llmEngine.resetConversation()
+                            val cancelText = getLocalizedCancelledText(conversationManager.conversationLanguage)
                             currentTurnEndedInAskUser = false
                             speakAndAwait(ttsEngine, cancelText)
                             return cancelText
+                        }
+                        ConfirmationOutcome.REDIRECT -> {
+                            // User declined previous action and provided a new command/target:
+                            // Discard old pending action, reset model KV cache, but keep follow-up loop
+                            // alive so the new request is processed immediately in the current turn.
+                            Log.i(TAG, "handleFollowUpLoop: ConfirmationResolver outcome=REDIRECT — starting new task from user input")
+                            conversationManager.clearVoiceTask()
+                            conversationManager.llmEngine.resetConversation()
+                            // Fall through to create fresh ConversationSession and process the audio/transcript!
                         }
                         ConfirmationOutcome.UNKNOWN -> {
                             // 4.5 Leave state unchanged; currentTurnEndedInAskUser stays true;
@@ -726,6 +744,7 @@ class AssistantSession(
                 var nextResponseText = ""
                 var followUpError = false
                 var nextTurnEndedInAskUser = false
+                var pendingPermissionOpen = false
 
                 followUpSession.processUtterance(
                     userInput = promptText,
@@ -736,11 +755,17 @@ class AssistantSession(
                     when (event) {
                         is ConversationEvent.ToolExecuted -> {
                             if (event.result.errorCode == ToolErrorCode.PERMISSION_DENIED.name) {
+<<<<<<< Updated upstream
                                 val permRaw = event.result.error?.substringAfter("Missing permission: ")?.trim() ?: "required"
                                 val permName = permRaw.substringAfterLast('.')
                                 val permMsg = "To do that, I need the $permName permission. Opening permissions."
                                 speakAndAwait(ttsEngine, permMsg)
                                 openPermissionsScreen(null)
+=======
+                                pendingPermissionOpen = true
+                            } else if (event.result.errorCode == ToolErrorCode.ACCESS_DENIED.name) {
+                                Log.i(TAG, "Tool execution denied by policy: ${event.result.error}")
+>>>>>>> Stashed changes
                             }
                         }
                         is ConversationEvent.AskUser -> {
@@ -765,6 +790,14 @@ class AssistantSession(
                     }
                 }
 
+                if (pendingPermissionOpen) {
+                    if (nextResponseText.isNotEmpty()) {
+                        speakAndAwait(ttsEngine, nextResponseText)
+                    }
+                    openPermissionsScreen(null)
+                    return nextResponseText
+                }
+
                 if (followUpError || nextResponseText.isBlank()) {
                     conversationManager.pendingVoiceAsk = null
                     break
@@ -778,6 +811,8 @@ class AssistantSession(
                         Log.d("LokiTurn", "[LokiTurn] turn ended with question prose but no ask_user — mic stays off")
                     }
                     conversationManager.pendingVoiceAsk = null
+                    conversationManager.clearVoiceTask()
+                    conversationManager.llmEngine.resetConversation()
                     speakAndAwait(ttsEngine, currentResponse)
                     return currentResponse
                 }
@@ -788,6 +823,7 @@ class AssistantSession(
                 val exitText = "Let's stop here."
                 conversationManager.pendingVoiceAsk = null
                 conversationManager.clearVoiceTask()
+                conversationManager.llmEngine.resetConversation()
                 conversationManager.clearVoiceCandidates()
                 speakAndAwait(ttsEngine, exitText)
                 return exitText
@@ -809,6 +845,24 @@ class AssistantSession(
         _state.value = AssistantState.Speaking(responseText = text)
         if (!ttsEngine.isReady) return
         ttsEngine.speakAndAwait(text)
+    }
+
+    internal fun getLocalizedCancelledText(language: String?): String {
+        val fallback = "Okay, I've cancelled that."
+        val ctx = context ?: return fallback
+        return try {
+            val lang = language?.trim()?.lowercase()
+            if (lang == "hindi" || lang == "hi") {
+                val config = android.content.res.Configuration(ctx.resources.configuration).apply {
+                    setLocale(java.util.Locale("hi", "IN"))
+                }
+                ctx.createConfigurationContext(config).resources.getString(R.string.action_cancelled)
+            } else {
+                ctx.getString(R.string.action_cancelled)
+            }
+        } catch (_: Throwable) {
+            fallback
+        }
     }
 
     internal fun openPermissionsScreen(context: Context?) {
@@ -859,7 +913,10 @@ class AssistantSession(
             }
 
             try {
-                provider?.getConversationManager()?.cancel()
+                val cm = provider?.getConversationManager()
+                cm?.cancel()
+                cm?.clearVoiceTask()
+                cm?.llmEngine?.resetConversation()
             } catch (e: Exception) {
                 Log.w(TAG, "Error cancelling ConversationManager", e)
             }

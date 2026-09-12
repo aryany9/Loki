@@ -18,9 +18,9 @@ enum class PermissionState {
 /**
  * Manages runtime Android permission checking, resolution, and state queries across Loki.
  */
-class PermissionManager {
+open class PermissionManager {
 
-    fun checkPermission(context: Context, permission: String): PermissionState {
+    open fun checkPermission(context: Context, permission: String): PermissionState {
         val isGranted = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
         if (isGranted) {
             return PermissionState.GRANTED
@@ -38,11 +38,11 @@ class PermissionManager {
         return PermissionState.REQUESTABLE
     }
 
-    fun isPermissionGranted(context: Context, permission: String): Boolean {
+    open fun isPermissionGranted(context: Context, permission: String): Boolean {
         return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
     }
 
-    fun arePermissionsGranted(context: Context, permissions: List<String>): Boolean {
+    open fun arePermissionsGranted(context: Context, permissions: List<String>): Boolean {
         return permissions.all { isPermissionGranted(context, it) }
     }
 

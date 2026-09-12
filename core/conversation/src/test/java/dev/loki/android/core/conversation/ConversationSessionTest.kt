@@ -7,6 +7,8 @@ import dev.loki.android.core.tools.LocalTool
 import dev.loki.android.core.tools.TaskStateGate
 import dev.loki.android.core.tools.ToolParam
 import dev.loki.android.core.tools.ToolParamType
+import dev.loki.android.core.tools.PermissionManager
+import dev.loki.android.core.tools.PermissionState
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.ToolResult
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -273,7 +275,8 @@ class ConversationSessionTest {
             "{\"response\": \"Do you want me to call Mom?\"}",
 
             // Turn 3: user says "yes", model invokes call_contact with candidate_id
-            "{\"tool\": \"call_contact\", \"arguments\": {\"candidate_id\": \"c1\"}}"
+            "{\"tool\": \"call_contact\", \"arguments\": {\"candidate_id\": \"c1\"}}",
+            "{\"response\": \"Calling Mom Home now.\"}"
         )
         val engine = SequentialLlmEngine(llmResponses)
         val session = ConversationSession(
@@ -316,9 +319,8 @@ class ConversationSessionTest {
         assertEquals("1234567890", callTool.executedArgs?.get("phone_number"))
         assertEquals("Mom Home", callTool.executedArgs?.get("name"))
 
-        // Fast-path announcement uses contact name
         val completed3 = eventsRound3.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
-        assertEquals("Calling Mom Home", completed3?.finalResponse)
+        assertEquals("Calling Mom Home now.", completed3?.finalResponse)
 
         // Capability and task state cleared upon successful completion
         assertNull(session.activeCapability)
@@ -336,7 +338,8 @@ class ConversationSessionTest {
         val llmResponses = mutableListOf(
             "{\"tool\": \"call_contact\", \"arguments\": {\"name\": \"Mom\"}}",
             "{\"response\": \"Do you want me to call Mom?\"}",
-            "{\"tool\": \"call_contact\", \"arguments\": {\"name\": \"Mom\"}}"
+            "{\"tool\": \"call_contact\", \"arguments\": {\"name\": \"Mom\"}}",
+            "{\"response\": \"Calling Mom now.\"}"
         )
         val engine = SequentialLlmEngine(llmResponses)
         val session = ConversationSession(
@@ -371,7 +374,7 @@ class ConversationSessionTest {
 
         assertTrue(tool.executed)
         val completed2 = eventsRound2.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
-        assertEquals("Calling Mom", completed2?.finalResponse)
+        assertEquals("Calling Mom now.", completed2?.finalResponse)
     }
 
     @Test
@@ -769,7 +772,8 @@ class ConversationSessionTest {
     @Test
     fun `completed call_contact clears contactCandidateRegistry`() = runTest {
         val dummyContext = object : android.content.ContextWrapper(null) {}
-        val lookupTool = DummyLookupTool()
+        // Use "Mom Home" and "Mom Mobile" so query "Mom" doesn't trigger exact-match auto-selection
+        val lookupTool = DummyLookupTool(contactsJson = """[{"id":"c1","name":"Mom Home","number":"1234567890"},{"id":"c2","name":"Mom Mobile","number":"9876543210"}]""")
         val callTool = DummyCallTool()
         val registry = ToolRegistry().apply {
             register(lookupTool)
@@ -1598,6 +1602,88 @@ class ConversationSessionTest {
     }
 
     @Test
+    fun `call_contact with unique exact name match auto-selects and enters confirmation without disambiguation`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        // "Call Mom" — contacts: "Mom", "Suraj's Mom", "Prashik's Mom"
+        val contactsJson = """[
+            {"id":"c1","name":"Mom","number":"1234567890"},
+            {"id":"c2","name":"Suraj's Mom","number":"9876543210"},
+            {"id":"c3","name":"Prashik's Mom","number":"1122334455"}
+        ]"""
+        val lookupTool = DummyLookupTool(contactsJson = contactsJson)
+        val callTool = DummyCallTool()
+        val registry = ToolRegistry().apply {
+            register(lookupTool)
+            register(callTool)
+        }
+
+        val engine = SequentialLlmEngine(
+            responses = listOf(
+                // Turn 1 Iteration 1: model tries call_contact directly with name="Mom"
+                """{"tool": "call_contact", "arguments": {"name": "Mom"}}""",
+                // Turn 1 Iteration 2: confirmation prompt coached, model asks verbal confirmation
+                """{"tool": "ask_user", "arguments": {"text": "Shall I call Mom, the number ending in 90?"}}"""
+            )
+        )
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = mutableListOf<ConversationEvent>()
+        session.processUtterance("Call Mom", source = "VOICE").collect { events.add(it) }
+
+        val resolution = session.taskState as? ContactResolution
+        assertNotNull("taskState must be ContactResolution", resolution)
+        assertEquals("c1", resolution!!.selectedId)  // Unique exact match "Mom" auto-selected
+        assertFalse("confirmed must be false before verbal confirmation", resolution.confirmed)
+        assertNotNull("pendingVoiceConfirmation must be set", session.pendingVoiceConfirmation)
+        assertEquals("Mom", session.pendingVoiceConfirmation!!.candidate.name)
+        assertEquals("calling", session.activeCapability)
+    }
+
+    @Test
+    fun `call_contact with duplicate exact names does NOT auto-select, enters disambiguation`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+
+        // Two contacts both named "Mom"
+        val contactsJson = """[
+            {"id":"c1","name":"Mom","number":"1234567890"},
+            {"id":"c2","name":"Mom","number":"9876543210"}
+        ]"""
+        val lookupTool = DummyLookupTool(contactsJson = contactsJson)
+        val callTool = DummyCallTool()
+        val registry = ToolRegistry().apply {
+            register(lookupTool)
+            register(callTool)
+        }
+
+        val engine = SequentialLlmEngine(
+            responses = listOf(
+                // Iteration 1: call_contact with duplicate exact matches
+                """{"tool": "call_contact", "arguments": {"name": "Mom"}}""",
+                // Iteration 2: model must ask disambiguation question
+                """{"tool": "ask_user", "arguments": {"text": "Which Mom would you like to call?"}}"""
+            )
+        )
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = mutableListOf<ConversationEvent>()
+        session.processUtterance("Call Mom", source = "VOICE").collect { events.add(it) }
+
+        val resolution = session.taskState as? ContactResolution
+        assertNotNull("taskState must be ContactResolution", resolution)
+        assertNull("selectedId must be null when multiple exact matches exist", resolution!!.selectedId)
+        assertNull("pendingVoiceConfirmation must be null during disambiguation", session.pendingVoiceConfirmation)
+    }
+
+    @Test
     fun `two-turn voice flow - exact-match to confirmation question to Yes to call_contact`() = runTest {
         val dummyContext = object : android.content.ContextWrapper(null) {}
 
@@ -1665,7 +1751,8 @@ class ConversationSessionTest {
 
         val engineTurn2 = SequentialLlmEngine(
             responses = listOf(
-                """{"tool": "call_contact", "arguments": {"candidate_id": "c1", "name": "Mom"}}"""
+                """{"tool": "call_contact", "arguments": {"candidate_id": "c1", "name": "Mom"}}""",
+                """{"response": "Calling Mom now."}"""
             )
         )
         val session2 = ConversationSession(
@@ -1687,7 +1774,7 @@ class ConversationSessionTest {
 
         val completedTurn2 = eventsTurn2.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
         assertNotNull("Turn 2 must complete", completedTurn2)
-        assertEquals("Calling Mom", completedTurn2!!.finalResponse)
+        assertEquals("Calling Mom now.", completedTurn2!!.finalResponse)
 
         // Verify state is cleared on successful completion
         assertNull("activeCapability must be cleared", session2.activeCapability)
@@ -1835,7 +1922,8 @@ class ConversationSessionTest {
                 """{"response": "Shall I call Mom Home?"}""",
 
                 // Turn 3: user says "yes" → model invokes call_contact
-                """{"tool": "call_contact", "arguments": {"candidate_id": "c1"}}"""
+                """{"tool": "call_contact", "arguments": {"candidate_id": "c1"}}""",
+                """{"response": "Calling Mom Home now."}"""
             )
         )
         val session = ConversationSession(
@@ -1874,7 +1962,7 @@ class ConversationSessionTest {
         assertEquals("Mom Home", callTool.executedArgs?.get("name"))
 
         val completed3 = events3.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
-        assertEquals("Calling Mom Home", completed3?.finalResponse)
+        assertEquals("Calling Mom Home now.", completed3?.finalResponse)
 
         assertNull("activeCapability must be cleared on call completion", session.activeCapability)
         assertNull("taskState must be cleared on call completion", session.taskState)
@@ -1983,5 +2071,336 @@ class ConversationSessionTest {
         assertTrue(capturedPrompt!!.contains("lookup_contact"))
         assertFalse(capturedPrompt!!.contains("ask_user"))
     }
+<<<<<<< Updated upstream
+=======
+
+    @Test
+    fun `tool execution denied by policy halts ReAct loop and outputs guidance`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val denyingPolicy = ToolAccessPolicy { tool, _, state ->
+            if (tool.name == "restricted_tool" && state == DeviceLockState.LOCKED) {
+                AccessDecision.Deny(DenialReason.DEVICE_LOCKED, "Unlock phone to use restricted tool.")
+            } else {
+                AccessDecision.Allow
+            }
+        }
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = denyingPolicy)
+        registry.register(MockScopedTool("restricted_tool", "general"))
+
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "restricted_tool", "arguments": {}}""",
+            """{"response": "Please unlock your phone to use restricted tool."}"""
+        ))
+
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = session.processUtterance("run restricted tool").toList()
+
+        val toolExecuted = events.filterIsInstance<ConversationEvent.ToolExecuted>().firstOrNull()
+        assertNotNull(toolExecuted)
+        assertEquals("restricted_tool", toolExecuted!!.toolName)
+        assertFalse(toolExecuted.result.success)
+        assertEquals(ToolErrorCode.ACCESS_DENIED.name, toolExecuted.result.errorCode)
+
+        val completed = events.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
+        assertNotNull(completed)
+        assertEquals("Please unlock your phone to use restricted tool.", completed!!.finalResponse)
+
+        // Engine queried twice: Turn 1 tool call, Turn 2 response synthesis with response-only grammar
+        assertEquals(2, engine.prompts.size)
+        assertEquals(GrammarBuilder.RESPONSE_ONLY_REGEX, engine.grammars.last())
+    }
+
+    @Test
+    fun `lookup_contact denied by policy in pre-lookup halts turn and does not execute call_contact`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val denyingPolicy = ToolAccessPolicy { tool, _, state ->
+            if (tool.name == "lookup_contact" && state == DeviceLockState.LOCKED) {
+                AccessDecision.Deny(DenialReason.DEVICE_LOCKED)
+            } else {
+                AccessDecision.Allow
+            }
+        }
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = denyingPolicy)
+        val lookupTool = DummyLookupTool()
+        val callTool = DummyCallTool()
+        registry.register(lookupTool)
+        registry.register(callTool)
+
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "call_contact", "arguments": {"name": "Mom"}}""",
+            """{"response": "Should never be reached"}"""
+        ))
+
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = session.processUtterance("call Mom").toList()
+
+        assertFalse("lookupTool must not execute when policy denies", lookupTool.executed)
+        assertFalse("callTool must not execute when pre-lookup is denied", callTool.executed)
+
+        val completed = events.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
+        assertNotNull(completed)
+        assertEquals("You'll need to unlock your phone to access your contacts.", completed!!.finalResponse)
+        assertEquals(1, engine.prompts.size)
+    }
+
+    @Test
+    fun `successful tool execution synthesizes response in user language`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val registry = ToolRegistry()
+        val appTool = object : LocalTool {
+            override val name: String = "open_app"
+            override val description: String = "Open an application"
+            override val parameters: Map<String, ToolParam> = mapOf(
+                "app_name" to ToolParam(ToolParamType.STRING, "App name", required = true)
+            )
+            override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult {
+                return ToolResult.success(mapOf("app_name" to (arguments["app_name"]?.toString() ?: "")))
+            }
+        }
+        registry.register(appTool)
+
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "open_app", "arguments": {"app_name": "YouTube"}}""",
+            """{"response": "यूट्यूब खोल रहा हूँ।"}"""
+        ))
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = session.processUtterance("यूट्यूब खोलो").toList()
+        val completed = events.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
+        assertNotNull(completed)
+        assertEquals("यूट्यूब खोल रहा हूँ।", completed!!.finalResponse)
+        assertEquals(2, engine.prompts.size)
+        assertTrue(engine.prompts[1].contains("Tool result for open_app"))
+        assertEquals(GrammarBuilder.RESPONSE_ONLY_REGEX, engine.grammars.last())
+    }
+
+    @Test
+    fun `tool error synthesizes explanation in user language`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val registry = ToolRegistry()
+        val failingTool = object : LocalTool {
+            override val name: String = "find_file"
+            override val description: String = "Find file"
+            override val parameters: Map<String, ToolParam> = emptyMap()
+            override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult {
+                return ToolResult.error("File does not exist", ToolErrorCode.NOT_FOUND)
+            }
+        }
+        registry.register(failingTool)
+
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "find_file", "arguments": {}}""",
+            """{"response": "फ़ाइल नहीं मिली।"}"""
+        ))
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = session.processUtterance("मेरी फ़ाइल ढूँढो").toList()
+        val completed = events.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
+        assertNotNull(completed)
+        assertEquals("फ़ाइल नहीं मिली।", completed!!.finalResponse)
+        assertEquals(2, engine.prompts.size)
+        assertTrue(engine.prompts[1].contains("NOT_FOUND"))
+        assertEquals(GrammarBuilder.RESPONSE_ONLY_REGEX, engine.grammars.last())
+    }
+
+    @Test
+    fun `tool permission required synthesizes localized permission rationale`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val permManager = object : PermissionManager() {
+            override fun checkPermission(context: Context, permission: String): PermissionState = PermissionState.REQUESTABLE
+            override fun isPermissionGranted(context: Context, permission: String): Boolean = false
+            override fun arePermissionsGranted(context: Context, permissions: List<String>): Boolean = false
+        }
+        val registry = ToolRegistry()
+        val permTool = object : LocalTool {
+            override val name: String = "read_sms"
+            override val description: String = "Read SMS"
+            override val requiredPermissions: List<String> = listOf("android.permission.READ_SMS")
+            override val parameters: Map<String, ToolParam> = emptyMap()
+            override suspend fun execute(context: Context, arguments: Map<String, Any?>): ToolResult =
+                ToolResult.success()
+        }
+        registry.register(permTool)
+
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "read_sms", "arguments": {}}""",
+            """{"response": "एसएमएस पढ़ने के लिए कृपया सेटिंग्स में अनुमति दें।"}"""
+        ))
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry,
+            permissionManager = permManager
+        )
+
+        val events = session.processUtterance("संदेश पढ़ो").toList()
+        val completed = events.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
+        assertNotNull(completed)
+        assertEquals("एसएमएस पढ़ने के लिए कृपया सेटिंग्स में अनुमति दें।", completed!!.finalResponse)
+        assertEquals(2, engine.prompts.size)
+        assertTrue(engine.prompts[1].contains("Permission required: android.permission.READ_SMS"))
+        assertEquals(GrammarBuilder.RESPONSE_ONLY_REGEX, engine.grammars.last())
+    }
+
+    @Test
+    fun `turn 2 generation failure gracefully falls back to deterministic denial message`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val lockProvider = FakeDeviceLockStateProvider(DeviceLockState.LOCKED)
+        val denyingPolicy = ToolAccessPolicy { tool, _, state ->
+            if (tool.name == "locked_action" && state == DeviceLockState.LOCKED) {
+                AccessDecision.Deny(DenialReason.DEVICE_LOCKED, "Unlock phone to proceed.")
+            } else {
+                AccessDecision.Allow
+            }
+        }
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = denyingPolicy)
+        registry.register(MockScopedTool("locked_action", "general"))
+
+        val engine = object : LlmEngine {
+            var calls = 0
+            override val modelState: StateFlow<LlmModelState> = MutableStateFlow(LlmModelState.Ready())
+            override var onContextCompacted: ((String) -> Unit)? = null
+            override fun isReady(): Boolean = true
+            override suspend fun initializeAsync(modelPath: String?): Boolean = true
+            override suspend fun generate(prompt: String, audioBytes: ByteArray?, grammar: String?, maxTokens: Int, onToken: ((String) -> Unit)?): Result<String> {
+                calls++
+                return if (calls == 1) {
+                    Result.success("""{"tool": "locked_action", "arguments": {}}""")
+                } else {
+                    Result.failure(RuntimeException("NPU Out of Memory"))
+                }
+            }
+            override fun cancel() {}
+            override fun release() {}
+        }
+
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = session.processUtterance("run action").toList()
+        val completed = events.filterIsInstance<ConversationEvent.Completed>().firstOrNull()
+        assertNotNull(completed)
+        assertEquals("Unlock phone to proceed.", completed!!.finalResponse)
+    }
+
+    @Test
+    fun `informal candidate_id in call_contact triggers lookup_contact and preserves user request in follow-up turn`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val lookupTool = DummyLookupTool(
+            contactsJson = """[{"id":"c1","name":"Mom","number":"1234567890"}]"""
+        )
+        val callTool = DummyCallTool()
+        val registry = ToolRegistry().apply {
+            register(lookupTool)
+            register(callTool)
+        }
+
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "call_contact", "arguments": {"candidate_id": "mam", "name": "Mam"}}""",
+            """{"tool": "ask_user", "arguments": {"text": "क्या मैं माँ को कॉल करूँ?"}}"""
+        ))
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry
+        )
+
+        val events = session.processUtterance("माँ को कॉल करो", source = "VOICE").toList()
+        assertTrue("lookupTool should be executed when candidate_id is informal name", lookupTool.executed)
+        assertEquals(2, engine.prompts.size)
+        assertTrue(engine.prompts[1].contains("User request: माँ को कॉल करो"))
+        assertFalse(engine.prompts[1].contains("(e.g."))
+        val askUserEvent = events.filterIsInstance<ConversationEvent.AskUser>().firstOrNull()
+        assertNotNull(askUserEvent)
+        assertEquals("क्या मैं माँ को कॉल करूँ?", askUserEvent!!.question)
+    }
+
+    @Test
+    fun `iteration 2 confirmation gate does not include English few-shot templates and preserves user request`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val candidate = ContactCandidate(id = "c1", name = "Mom", phoneNumber = "+919876543210")
+        val callTool = DummyCallTool()
+        val registry = ToolRegistry().apply { register(callTool) }
+
+        val candidatesMap = mutableMapOf("c1" to candidate, "mom" to candidate)
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "call_contact", "arguments": {"candidate_id": "c1", "name": "Mom"}}""",
+            """{"tool": "ask_user", "arguments": {"text": "क्या मैं माँ को कॉल करूँ?"}}"""
+        ))
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry,
+            contactCandidateRegistry = candidatesMap
+        )
+
+        val events = session.processUtterance("Mom ko phone lagao", source = "VOICE").toList()
+        assertEquals(2, engine.prompts.size)
+        // Iteration 2 prompt must contain the original user request
+        assertTrue(engine.prompts[1].contains("User request: Mom ko phone lagao"))
+        // Must NOT contain English few-shot example like (e.g. 'Shall I call...')
+        assertFalse(engine.prompts[1].contains("(e.g."))
+        assertFalse(engine.prompts[1].contains("Shall I call"))
+        // Gating coach message must still indicate verbal confirmation is required
+        assertTrue(engine.prompts[1].contains("Action requires verbal confirmation"))
+
+        val askUserEvent = events.filterIsInstance<ConversationEvent.AskUser>().firstOrNull()
+        assertNotNull(askUserEvent)
+        assertEquals("क्या मैं माँ को कॉल करूँ?", askUserEvent!!.question)
+    }
+
+    @Test
+    fun `session language pinned from tool call guides iteration 2 prompt to user language`() = runTest {
+        val dummyContext = object : android.content.ContextWrapper(null) {}
+        val candidate = ContactCandidate(id = "c1", name = "Mom", phoneNumber = "+919876543210")
+        val callTool = DummyCallTool()
+        val registry = ToolRegistry().apply { register(callTool) }
+
+        val candidatesMap = mutableMapOf("c1" to candidate, "mom" to candidate)
+        val engine = SequentialLlmEngine(listOf(
+            """{"tool": "call_contact", "arguments": {"candidate_id": "c1", "name": "Mom"}, "language": "Hindi"}""",
+            """{"tool": "ask_user", "arguments": {"text": "क्या मैं माँ को कॉल करूँ?"}}"""
+        ))
+        var updatedLang: String? = null
+        val session = ConversationSession(
+            context = dummyContext,
+            llmEngine = engine,
+            toolRegistry = registry,
+            contactCandidateRegistry = candidatesMap,
+            onConversationLanguageUpdated = { updatedLang = it }
+        )
+
+        session.processUtterance("Mom ko phone lagao", source = "VOICE").toList()
+        assertEquals("Hindi", updatedLang)
+        assertEquals("Hindi", session.conversationLanguage)
+        assertEquals(2, engine.prompts.size)
+        assertTrue(engine.prompts[1].contains("The user is speaking in Hindi. When speaking to the user, you MUST respond in Hindi."))
+        assertTrue(engine.prompts[1].contains("First ask the user for confirmation via ask_user in Hindi."))
+    }
+>>>>>>> Stashed changes
 }
+
 

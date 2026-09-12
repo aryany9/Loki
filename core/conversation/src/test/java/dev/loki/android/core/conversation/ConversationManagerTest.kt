@@ -112,7 +112,10 @@ class ConversationManagerTest {
         val toolRegistry = ToolRegistry()
         toolRegistry.register(TestTimeTool())
 
-        val mockLlm = MockLlmEngine(listOf("""{"tool": "get_current_time", "arguments": {}}"""))
+        val mockLlm = MockLlmEngine(listOf(
+            """{"tool": "get_current_time", "arguments": {}}""",
+            """{"response": "The time is 3:00 PM on Monday."}"""
+        ))
         val dummyContext = object : android.content.ContextWrapper(null) {}
         val manager = ConversationManager(dummyContext, mockLlm, toolRegistry, ttsEngine = null)
 
@@ -120,7 +123,7 @@ class ConversationManagerTest {
         assertTrue(events.any { it is ConversationEvent.ToolExecuting })
         assertTrue(events.any { it is ConversationEvent.ToolExecuted })
         val completed = events.last() as ConversationEvent.Completed
-        assertEquals("3:00 PM on Monday", completed.finalResponse)
+        assertEquals("The time is 3:00 PM on Monday.", completed.finalResponse)
     }
 
     @Test

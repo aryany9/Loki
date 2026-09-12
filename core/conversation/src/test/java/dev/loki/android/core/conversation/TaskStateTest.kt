@@ -58,4 +58,16 @@ class TaskStateTest {
         assertEquals("call_contact", state.advancingTool)
         assertFalse(state.resolved)
     }
+
+    @Test
+    fun `ConfirmationOutcome from decodes tokens and JSON envelopes correctly`() {
+        assertEquals(ConfirmationOutcome.CONFIRMED, ConfirmationOutcome.from("CONFIRMED"))
+        assertEquals(ConfirmationOutcome.DECLINED, ConfirmationOutcome.from("DECLINED"))
+        assertEquals(ConfirmationOutcome.REDIRECT, ConfirmationOutcome.from("REDIRECT"))
+        assertEquals(ConfirmationOutcome.UNKNOWN, ConfirmationOutcome.from("UNKNOWN"))
+
+        assertEquals(ConfirmationOutcome.REDIRECT, ConfirmationOutcome.from("""{"label": "REDIRECT"}"""))
+        assertEquals(ConfirmationOutcome.CONFIRMED, ConfirmationOutcome.from("""{"label": "CONFIRMED"}"""))
+        assertEquals(ConfirmationOutcome.DECLINED, ConfirmationOutcome.from("""{"label": "DECLINED"}"""))
+    }
 }

@@ -88,6 +88,7 @@ open class ConversationManager(
     private val chatContactCandidates = mutableMapOf<String, ContactCandidate>()
     var pendingVoiceAsk: PendingAsk? = null
     var pendingVoiceConfirmation: PendingVoiceConfirmation? = null
+    var conversationLanguage: String? = null
 
     val currentConversationId: String?
         get() = activeConversationId
@@ -99,6 +100,7 @@ open class ConversationManager(
         pendingVoiceAsk = null
         pendingVoiceConfirmation = null
         confirmedResolution = null
+        conversationLanguage = null
     }
 
     fun clearContactCandidates() {
@@ -106,6 +108,7 @@ open class ConversationManager(
         chatContactCandidates.clear()
         pendingVoiceAsk = null
         pendingVoiceConfirmation = null
+        conversationLanguage = null
     }
 
     /** Backing store for confirmed resolution — set by [confirmContactResolution], cleared by [clearVoiceTask]. */
@@ -274,7 +277,9 @@ open class ConversationManager(
             pendingAsk = pendingVoiceAsk,
             onPendingAskUpdated = { updated -> pendingVoiceAsk = updated },
             pendingVoiceConfirmation = pendingVoiceConfirmation,
-            onPendingVoiceConfirmationUpdated = { updated -> pendingVoiceConfirmation = updated }
+            onPendingVoiceConfirmationUpdated = { updated -> pendingVoiceConfirmation = updated },
+            conversationLanguage = conversationLanguage,
+            onConversationLanguageUpdated = { updated -> conversationLanguage = updated }
         )
         // If confirmContactResolution() was called before this session, apply the confirmed
         // state now. ConversationSession.init{} always re-synthesizes taskState from

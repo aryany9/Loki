@@ -58,7 +58,9 @@ open class ConversationSession(
     var pendingAsk: PendingAsk? = null,
     val onPendingAskUpdated: ((PendingAsk?) -> Unit)? = null,
     var pendingVoiceConfirmation: PendingVoiceConfirmation? = null,
-    val onPendingVoiceConfirmationUpdated: ((PendingVoiceConfirmation?) -> Unit)? = null
+    val onPendingVoiceConfirmationUpdated: ((PendingVoiceConfirmation?) -> Unit)? = null,
+    var conversationLanguage: String? = null,
+    val onConversationLanguageUpdated: ((String?) -> Unit)? = null
 ) {
 
     var activeCapability: String? = null
@@ -193,6 +195,8 @@ open class ConversationSession(
         var correctiveRetryUsed = false
         var isActivationTurn = false
         var endedInAskUser = false
+        var isResponseOnlyTurn = false
+        var pendingFallbackResponse: String? = null
 
         // Initialize persistent native conversation with KV-prefilled CORE prompt ONCE per logical conversation session
         if (conversationContext.getTurns().size <= 1) {
@@ -258,9 +262,27 @@ open class ConversationSession(
                 }
                 isActivationTurn = false
 
-                val content = if (iterations == 1) userInput else currentTurnPrompt
+                val content = if (iterations == 1) {
+                    userInput
+                } else {
+                    buildString {
+                        if (userInput.isNotBlank()) {
+                            append("User request: $userInput\n\n")
+                        }
+                        append(currentTurnPrompt)
+                    }
+                }
 
                 val promptToSend = buildString {
+                    if (iterations > 1 || source == "VOICE_FOLLOW_UP") {
+                        append("The following information is internal tool/task state. Do not expose or repeat it as system-style prose.\n")
+                        append("This is a continuation of the user's original spoken request.\n")
+                        if (!conversationLanguage.isNullOrBlank()) {
+                            append("The user is speaking in $conversationLanguage. When speaking to the user, you MUST respond in $conversationLanguage.\n\n")
+                        } else {
+                            append("When responding to the user, preserve the language and conversational style established by the original request, even if the current user utterance is only a contact name, short answer, or confirmation.\n\n")
+                        }
+                    }
                     if (perTurnPrompt.isNotBlank()) {
                         append(perTurnPrompt)
                         if (content.isNotBlank()) {
@@ -289,7 +311,11 @@ open class ConversationSession(
                 }
                 val maxTokens = agentConfig.generationConfig.maxOutputTokens ?: defaultBudget
                 val cumulativePartial = StringBuilder()
-                val scopedGrammar = GrammarBuilder.buildFrom(currentAvailableTools)
+                val scopedGrammar = if (isResponseOnlyTurn) {
+                    GrammarBuilder.RESPONSE_ONLY_REGEX
+                } else {
+                    GrammarBuilder.buildFrom(currentAvailableTools)
+                }
                 val llmResult = llmEngine.generate(
                     prompt = promptToSend,
                     audioBytes = if (iterations == 1) audioBytes else null,
@@ -303,6 +329,11 @@ open class ConversationSession(
                 )
 
                 if (llmResult.isFailure) {
+                    if (isResponseOnlyTurn && pendingFallbackResponse != null) {
+                        finalResponseText = pendingFallbackResponse!!
+                        recordTurn(ConversationTurn.Assistant(finalResponseText))
+                        break
+                    }
                     val errorMsg = llmResult.exceptionOrNull()?.message ?: "LLM inference failed"
                     TurnLogger.logError(turnId, errorMsg, llmResult.exceptionOrNull())
                     send(ConversationEvent.Error(errorMsg))
@@ -315,8 +346,27 @@ open class ConversationSession(
                 val parsed = ToolCallParser.parse(rawOutput)
                 TurnLogger.logParse(turnId, parsed)
 
+                if (hasAudio && iterations == 1) {
+                    val parsedSummary = when (parsed) {
+                        is ParsedLlmResponse.ToolCall -> "tool='${parsed.tool}', args=${parsed.arguments}"
+                        is ParsedLlmResponse.DirectResponse -> "response='${parsed.text}'"
+                        is ParsedLlmResponse.Malformed -> "malformed='${parsed.raw}'"
+                    }
+                    android.util.Log.i("LokiVoice", "[DirectAudio] Voice input processed directly by LLM. LLM fetched: $parsedSummary (raw='$rawOutput')")
+                }
+
                 when (parsed) {
                     is ParsedLlmResponse.ToolCall -> {
+                        if (!parsed.language.isNullOrBlank()) {
+                            conversationLanguage = parsed.language
+                            onConversationLanguageUpdated?.invoke(parsed.language)
+                            android.util.Log.i("ConversationSession", "[LanguagePin] Captured session language from tool call: '$conversationLanguage'")
+                        }
+                        if (isResponseOnlyTurn) {
+                            finalResponseText = pendingFallbackResponse ?: "Done."
+                            recordTurn(ConversationTurn.Assistant(finalResponseText))
+                            break
+                        }
                         send(ConversationEvent.ToolExecuting(parsed.tool, parsed.arguments))
                         recordTurn(
                             ConversationTurn.ToolCall(
@@ -370,8 +420,20 @@ open class ConversationSession(
                             finalResponseText = sanitized
                             recordTurn(ConversationTurn.Assistant(finalResponseText))
 
+                            if (conversationLanguage == null) {
+                                val detected = detectScriptLanguage(sanitized)
+                                if (detected != null) {
+                                    conversationLanguage = detected
+                                    onConversationLanguageUpdated?.invoke(detected)
+                                    android.util.Log.i("ConversationSession", "[LanguagePin] Captured session language from ask_user script: '$conversationLanguage'")
+                                }
+                            }
+
                             if (hasPendingConfirm && (isRawValid || wasAppRenderedConfirm)) {
-                                val updatedConfirm = pendingVoiceConfirmation!!.copy(isAsked = true)
+                                val updatedConfirm = pendingVoiceConfirmation!!.copy(
+                                    isAsked = true,
+                                    repeatBack = sanitized
+                                )
                                 pendingVoiceConfirmation = updatedConfirm
                                 onPendingVoiceConfirmationUpdated?.invoke(updatedConfirm)
                                 taskState = (taskState as? ContactResolution)?.copy(isAsked = true)
@@ -400,7 +462,7 @@ open class ConversationSession(
                                 lastToolResult = coachedResult
                                 send(ConversationEvent.ToolExecuted(parsed.tool, coachedResult))
                                 recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, coachedResult))
-                                currentTurnPrompt = "Tool result for select_contact: $coachMessage"
+                                currentTurnPrompt = "Tool result for select_contact: $coachMessage. Inform the user in their language."
                                 continue
                             }
 
@@ -413,7 +475,7 @@ open class ConversationSession(
                                 lastToolResult = errorResult
                                 send(ConversationEvent.ToolExecuted(parsed.tool, errorResult))
                                 recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, errorResult))
-                                currentTurnPrompt = "Tool result for select_contact: $coachMessage"
+                                currentTurnPrompt = "Tool result for select_contact: $coachMessage. Inform or ask the user in their language."
                                 continue
                             }
 
@@ -443,7 +505,8 @@ open class ConversationSession(
                             lastToolResult = successResult
                             send(ConversationEvent.ToolExecuted(parsed.tool, successResult))
                             recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, successResult))
-                            currentTurnPrompt = "Tool result for select_contact: Selected ${matchedCandidate.name} (${matchedCandidate.id}). Ask the user for confirmation before calling."
+                            val langClause = if (!conversationLanguage.isNullOrBlank()) "in $conversationLanguage" else "in their language"
+                            currentTurnPrompt = "Tool result for select_contact: Selected ${matchedCandidate.name} (${matchedCandidate.id}). Ask the user for confirmation $langClause before calling."
                             continue
                         }
                         // ─────────────────────────────────────────────────────────────────
@@ -454,7 +517,7 @@ open class ConversationSession(
                             lastToolResult = notFoundResult
                             send(ConversationEvent.ToolExecuted(parsed.tool, notFoundResult))
                             recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, notFoundResult))
-                            currentTurnPrompt = "Tool result for ${parsed.tool}: Tool '${parsed.tool}' not found."
+                            currentTurnPrompt = "Tool result for ${parsed.tool}: Tool '${parsed.tool}' not found. Inform the user in their language."
                             continue
                         }
 
@@ -474,7 +537,7 @@ open class ConversationSession(
                             lastToolResult = coachedResult
                             send(ConversationEvent.ToolExecuted(parsed.tool, coachedResult))
                             recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, coachedResult))
-                            currentTurnPrompt = "Tool result for ${parsed.tool}: $coachMessage"
+                            currentTurnPrompt = "Tool result for ${parsed.tool}: $coachMessage. Inform the user in their language."
                             continue
                         }
 
@@ -544,16 +607,20 @@ open class ConversationSession(
                                 if (!nameArg.isNullOrBlank() || cand.name != "the contact") {
                                     contactCandidateRegistry[cand.name.lowercase()] = cand
                                 }
-                            } else if (!candId.isNullOrBlank()) {
-                                val staleMessage = "Contact selection '$candId' is stale or invalid. Please search contacts using lookup_contact first."
-                                val staleResult = ToolResult.error(staleMessage, ToolErrorCode.EXECUTION_ERROR)
-                                lastToolResult = staleResult
-                                send(ConversationEvent.ToolExecuted(parsed.tool, staleResult))
-                                recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, staleResult))
-                                currentTurnPrompt = "Tool result for call_contact: $staleMessage"
-                                continue
                             } else {
+                                val isFormalCandidateId = !candId.isNullOrBlank() && candId.matches(Regex("^c\\d+$", RegexOption.IGNORE_CASE))
+                                if (isFormalCandidateId) {
+                                    val staleMessage = "Contact selection '$candId' is stale or invalid. Please search contacts using lookup_contact first."
+                                    val staleResult = ToolResult.error(staleMessage, ToolErrorCode.EXECUTION_ERROR)
+                                    lastToolResult = staleResult
+                                    send(ConversationEvent.ToolExecuted(parsed.tool, staleResult))
+                                    recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, staleResult))
+                                    currentTurnPrompt = "Tool result for call_contact: $staleMessage. Inform or ask the user in their language."
+                                    continue
+                                }
+
                                 val searchQuery = nameArg?.takeIf { it.isNotBlank() && !it.equals("N/A", ignoreCase = true) }
+                                    ?: candId?.takeIf { it.isNotBlank() && !it.equals("N/A", ignoreCase = true) }
 
                                 if (!searchQuery.isNullOrBlank() && toolRegistry.get("lookup_contact") != null) {
                                     val lookupExec = toolRegistry.executeDetailed(
@@ -578,17 +645,23 @@ open class ConversationSession(
                                             contactCandidateRegistry[c.name.lowercase()] = c
                                         }
 
-                                        if (candidates.size == 1) {
-                                            val resolved = candidates[0]
+                                        val resolved = if (candidates.size == 1) {
+                                            candidates[0]
+                                        } else {
+                                            resolveUniqueExactMatch(candidates, searchQuery ?: "")
+                                        }
+
+                                        if (resolved != null) {
                                             cand = resolved
                                             resolvedContactCandidate = resolved
                                             resolvedArguments["phone_number"] = resolved.phoneNumber
                                             resolvedArguments["name"] = resolved.name
                                             resolvedArguments["candidate_id"] = resolved.id
                                             taskState = ContactResolution(candidates = candidates, selectedId = resolved.id)
+                                            android.util.Log.d("ConversationSession", "[ExactMatch] Auto-selected '${resolved.name}' (${resolved.id}) in call_contact, skipping disambiguation.")
                                         } else if (candidates.size > 1) {
                                             taskState = ContactResolution(candidates = candidates)
-                                            val coachMessage = buildDuplicateDisambiguationCoachMessage(candidates, searchQuery)
+                                            val coachMessage = buildDuplicateDisambiguationCoachMessage(candidates, searchQuery, conversationLanguage)
                                             val coachedResult = ToolResult.error(coachMessage, ToolErrorCode.EXECUTION_ERROR)
                                             lastToolResult = coachedResult
                                             send(ConversationEvent.ToolExecuted(parsed.tool, coachedResult))
@@ -601,7 +674,7 @@ open class ConversationSession(
                                             lastToolResult = errorResult
                                             send(ConversationEvent.ToolExecuted(parsed.tool, errorResult))
                                             recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, errorResult))
-                                            currentTurnPrompt = "Tool result for call_contact: $errorMsg"
+                                            currentTurnPrompt = "Tool result for call_contact: $errorMsg. Inform or ask the user in their language."
                                             continue
                                         }
                                     }
@@ -611,7 +684,7 @@ open class ConversationSession(
                                     lastToolResult = staleResult
                                     send(ConversationEvent.ToolExecuted(parsed.tool, staleResult))
                                     recordTurn(ConversationTurn.ToolExecutionResult(parsed.tool, staleResult))
-                                    currentTurnPrompt = "Tool result for call_contact: $staleMessage"
+                                    currentTurnPrompt = "Tool result for call_contact: $staleMessage. Inform or ask the user in their language."
                                     continue
                                 }
                             }
@@ -652,7 +725,8 @@ open class ConversationSession(
                                     val suffix = if (digits.length >= 2) digits.takeLast(2) else digits
                                     val suffixPart = if (suffix.isNotBlank()) ", the number ending in $suffix" else ""
                                     val repeatBack = "Shall I call $contactName$suffixPart?"
-                                    val coachMessage = "Action requires verbal confirmation. Do not execute yet. First ask the user for confirmation via ask_user (e.g. '$repeatBack'). Only execute this tool after the user verbally confirms."
+                                    val langClause = if (!conversationLanguage.isNullOrBlank()) "in $conversationLanguage" else "in the user's language"
+                                    val coachMessage = "Action requires verbal confirmation for '$contactName$suffixPart'. Do not execute yet. First ask the user for confirmation via ask_user $langClause. Only execute this tool after the user verbally confirms."
 
                                     val resolvedCandForConfirm = targetCandidate ?: ContactCandidate(
                                         id = resolvedArguments["candidate_id"]?.toString()?.ifBlank { "c1" } ?: "c1",
@@ -764,13 +838,10 @@ open class ConversationSession(
                                     // that exactly matches the query (case-insensitive, trimmed),
                                     // auto-select it and skip CONTACT_DISAMBIGUATION.
                                     val query = parsed.arguments["query"]?.toString()?.trim() ?: ""
-                                    val exactMatches = if (query.isNotBlank() && candidates.size > 1) {
-                                        candidates.filter { it.name.trim().equals(query, ignoreCase = true) }
-                                    } else emptyList()
+                                    val autoSelected = resolveUniqueExactMatch(candidates, query)
 
-                                    if (exactMatches.size == 1) {
+                                    if (autoSelected != null) {
                                         // Unique exact match: auto-select and advance to CALL_CONFIRMATION
-                                        val autoSelected = exactMatches[0]
                                         taskState = ContactResolution(
                                             candidates = candidates,
                                             selectedId = autoSelected.id,
@@ -791,8 +862,9 @@ open class ConversationSession(
                                         pendingVoiceConfirmation = confirmationState
                                         onPendingVoiceConfirmationUpdated?.invoke(confirmationState)
 
+                                        val langClause = if (!conversationLanguage.isNullOrBlank()) "in $conversationLanguage" else "in their language"
                                         android.util.Log.d("ConversationSession", "[ExactMatch] Auto-selected '${autoSelected.name}' (${autoSelected.id}), skipping disambiguation.")
-                                        currentTurnPrompt = "Tool result for lookup_contact: Exact match found. Selected ${autoSelected.name} (${autoSelected.id}). Ask the user for confirmation before calling."
+                                        currentTurnPrompt = "Tool result for lookup_contact: Exact match found. Selected ${autoSelected.name} (${autoSelected.id}). Ask the user for confirmation $langClause before calling."
                                     } else {
                                         taskState = ContactResolution(
                                             candidates = candidates,
@@ -800,12 +872,13 @@ open class ConversationSession(
                                             confirmed = false
                                         )
 
+                                        val langClause = if (!conversationLanguage.isNullOrBlank()) "in $conversationLanguage" else "in their language"
                                         if (candidates.size > 1) {
-                                            val coachMessage = buildDuplicateDisambiguationCoachMessage(candidates)
-                                            currentTurnPrompt = "Tool result for lookup_contact: $coachMessage"
+                                            val coachMessage = buildDuplicateDisambiguationCoachMessage(candidates, language = conversationLanguage)
+                                            currentTurnPrompt = "Tool result for lookup_contact: $coachMessage. Ask the user $langClause which contact they meant."
                                         } else {
                                             val summary = candidates.joinToString(", ") { it.name }
-                                            currentTurnPrompt = "Tool result for lookup_contact: Found ${candidates.size} matching contacts: $summary"
+                                            currentTurnPrompt = "Tool result for lookup_contact: Found ${candidates.size} matching contacts: $summary. Ask the user $langClause which one to select."
                                         }
                                     }
                                     continue
@@ -822,18 +895,42 @@ open class ConversationSession(
                                     onPendingVoiceConfirmationUpdated?.invoke(null)
                                 }
 
-                                val fastResponse = formatFastPathResponse(parsed.tool, result)
-                                if (fastResponse != null) {
-                                    finalResponseText = fastResponse
-                                    recordTurn(ConversationTurn.Assistant(finalResponseText))
-                                    break
-                                }
-
-                                // For next ReAct iteration, send ONLY the masked tool execution result message
-                                currentTurnPrompt = "Tool result for ${parsed.tool}: ${modelResult.data}"
+                                currentTurnPrompt = "Tool result for ${parsed.tool}: ${modelResult.data}. Inform the user in their language."
+                                isResponseOnlyTurn = true
+                                pendingFallbackResponse = modelResult.data?.toString() ?: "Done."
+                                continue
                             }
+<<<<<<< Updated upstream
+=======
+                            is ToolExecutionResult.AccessDenied -> {
+                                val decision = execResult.decision
+                                val denialMsg = decision.message ?: when (decision.reason) {
+                                    DenialReason.DEVICE_LOCKED -> "You'll need to unlock your phone to do that."
+                                    DenialReason.USER_NOT_AUTHORIZED -> "You aren't authorized to perform this action."
+                                    DenialReason.CAPABILITY_UNSUPPORTED -> "This action is not supported on this device."
+                                }
+                                val toolError = ToolResult.error(denialMsg, ToolErrorCode.ACCESS_DENIED)
+                                lastToolResult = toolError
+                                TurnLogger.logToolExecution(turnId, parsed.tool, false, "Access denied: ${decision.reason}")
+                                send(ConversationEvent.ToolExecuted(parsed.tool, toolError))
+
+                                recordTurn(
+                                    ConversationTurn.ToolExecutionResult(
+                                        tool = parsed.tool,
+                                        result = toolError
+                                    )
+                                )
+
+                                currentTurnPrompt = "Tool result for ${parsed.tool}: Access denied: ${decision.reason}. Inform the user in their language that they must unlock their device to proceed."
+                                pendingFallbackResponse = denialMsg
+                                isResponseOnlyTurn = true
+                                continue
+                            }
+>>>>>>> Stashed changes
                             is ToolExecutionResult.PermissionRequired -> {
                                 TurnLogger.logPermissionCheck(turnId, execResult.permission, execResult.state.name)
+                                val permName = execResult.permission.substringAfterLast('.')
+                                val defaultPermMsg = "I need the $permName permission to do that. Please enable it in settings."
                                 val toolError = ToolResult.error(
                                     "Missing permission: ${execResult.permission}",
                                     ToolErrorCode.PERMISSION_DENIED
@@ -848,9 +945,10 @@ open class ConversationSession(
                                     )
                                 )
 
-                                finalResponseText = "I need the ${execResult.permission.substringAfterLast('.')} permission to do that. Please enable it in the permissions screen."
-                                recordTurn(ConversationTurn.Assistant(finalResponseText))
-                                break
+                                currentTurnPrompt = "Tool result for ${parsed.tool}: Permission required: ${execResult.permission}. Inform the user in their language that they need to grant the $permName permission in settings to proceed."
+                                pendingFallbackResponse = defaultPermMsg
+                                isResponseOnlyTurn = true
+                                continue
                             }
                             is ToolExecutionResult.Error -> {
                                 val result = execResult.toolResult
@@ -865,9 +963,11 @@ open class ConversationSession(
                                     )
                                 )
 
-                                finalResponseText = formatErrorResponse(parsed.tool, result)
-                                recordTurn(ConversationTurn.Assistant(finalResponseText))
-                                break
+                                val errMsg = result.error ?: "Operation failed."
+                                currentTurnPrompt = "Tool result for ${parsed.tool}: Error ${result.errorCode ?: "UNKNOWN"}: $errMsg. Inform the user in their language."
+                                pendingFallbackResponse = errMsg
+                                isResponseOnlyTurn = true
+                                continue
                             }
                         }
                     }
@@ -885,8 +985,20 @@ open class ConversationSession(
                         finalResponseText = sanitized
                         recordTurn(ConversationTurn.Assistant(finalResponseText))
 
+                        if (conversationLanguage == null) {
+                            val detected = detectScriptLanguage(sanitized)
+                            if (detected != null) {
+                                conversationLanguage = detected
+                                onConversationLanguageUpdated?.invoke(detected)
+                                android.util.Log.i("ConversationSession", "[LanguagePin] Captured session language from DirectResponse script: '$conversationLanguage'")
+                            }
+                        }
+
                         if (pendingVoiceConfirmation != null && parsed.text.trim().endsWith("?")) {
-                            val updatedConfirm = pendingVoiceConfirmation!!.copy(isAsked = true)
+                            val updatedConfirm = pendingVoiceConfirmation!!.copy(
+                                isAsked = true,
+                                repeatBack = sanitized
+                            )
                             pendingVoiceConfirmation = updatedConfirm
                             onPendingVoiceConfirmationUpdated?.invoke(updatedConfirm)
                             taskState = (taskState as? ContactResolution)?.copy(isAsked = true)
@@ -916,6 +1028,8 @@ open class ConversationSession(
                         }
                         finalResponseText = if (parsed.raw.isNotBlank() && !containsProtocolArtifacts(parsed.raw, mode) && !parsed.raw.contains("{") && !parsed.raw.contains("\"tool\"")) {
                             parsed.raw.trim()
+                        } else if (isResponseOnlyTurn && pendingFallbackResponse != null) {
+                            pendingFallbackResponse!!
                         } else {
                             try {
                                 android.util.Log.d("LokiTurn", "[LokiTurn] Sanitized malformed LLM output (contained protocol artifacts): ${parsed.raw}")
@@ -1014,11 +1128,11 @@ open class ConversationSession(
         appendScopedMemories(sb, dev.loki.android.core.models.ConversationMode.VOICE)
 
         // TOOL_PROTOCOL (Recency anchor — pinned last)
-        sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}} or {\"response\": \"conversational answer\"}.\n\n")
+        sb.append("Always output JSON: {\"tool\": \"tool_name\", \"arguments\": {...}, \"language\": \"<spoken_language>\"} or {\"response\": \"conversational answer\"}.\n\n")
 
         // TURN_PROTOCOL (Recency anchor — pinned last)
         sb.append("If the task requires more information from the user before you can continue, end your turn by invoking ask_user with your question as its text argument. Do NOT end a turn that requires user input with plain text — the user cannot reply to plain text.\n")
-        sb.append("Example — WRONG: replying with plain text \"Which Mom would you like to call?\" — RIGHT: {\"tool\": \"ask_user\", \"arguments\": {\"text\": \"Which Mom would you like to call?\"}}.")
+        sb.append("Example — WRONG: replying with plain text to ask a question — RIGHT: {\"tool\": \"ask_user\", \"arguments\": {\"text\": \"<question>\"}}.")
     }
 
     private suspend fun applyChatProfile(sb: StringBuilder) {
@@ -1079,7 +1193,7 @@ open class ConversationSession(
         val sb = StringBuilder()
 
         if (includeToolSchemas && availableTools.isNotEmpty()) {
-            sb.append("Available tools (respond with JSON {\"tool\": \"name\", \"arguments\": {...}}):\n")
+            sb.append("Available tools (respond with JSON {\"tool\": \"name\", \"arguments\": {...}, \"language\": \"<spoken_language>\"}):\n")
             for (tool in availableTools) {
                 if (compactToolSchemas) {
                     val params = if (tool.parameters.isNotEmpty()) {
@@ -1194,35 +1308,7 @@ open class ConversationSession(
         return if (perTurn.isBlank()) core else "$core\n\n$perTurn"
     }
 
-    private fun formatErrorResponse(toolName: String, result: ToolResult): String {
-        val err = result.error ?: "Operation failed."
-        return when (result.errorCode) {
-            ToolErrorCode.PERMISSION_DENIED.name ->
-                "I don't have permission to do that."
-            ToolErrorCode.VALIDATION_ERROR.name ->
-                "Please provide more details."
-            ToolErrorCode.NOT_FOUND.name ->
-                "I couldn't find the requested item."
-            else -> err
-        }
-    }
 
-    internal fun formatFastPathResponse(toolName: String, result: ToolResult): String? {
-        if (!result.success) return null
-        val data = result.data ?: return null
-
-        return when (toolName) {
-            "get_current_time" -> data["formatted"] ?: data["time"]?.let { "The time is $it" }
-            "get_battery_status" -> data["percentage"]?.let { "Battery is at $it" }
-            "open_app" -> data["app_name"]?.let { "Opening $it" }
-            "set_timer" -> data["seconds"]?.let { "Timer set for $it seconds" }
-            "set_alarm" -> "Alarm set for ${data["hour"]}:${data["minute"]}"
-            "media_control" -> "Media command sent"
-            "call_contact" -> "Calling ${data["calling"] ?: data["name"] ?: data["phone_number"]}"
-            "dial_number" -> "Opening dialer for ${data["dialed"]}"
-            else -> null
-        }
-    }
 
     fun clear() {
         conversationContext.clear()
@@ -1343,13 +1429,39 @@ open class ConversationSession(
             return formatCandidateSpeechLabel(candidate, isDuplicateName)
         }
 
-        internal fun buildDuplicateDisambiguationCoachMessage(candidates: List<ContactCandidate>, query: String? = null): String {
+        internal fun buildDuplicateDisambiguationCoachMessage(
+            candidates: List<ContactCandidate>,
+            query: String? = null,
+            language: String? = null
+        ): String {
             val nameCounts = candidates.groupingBy { it.name.trim().lowercase() }.eachCount()
             val formattedList = candidates.joinToString("; ") { c ->
                 val isDuplicate = (nameCounts[c.name.trim().lowercase()] ?: 0) > 1
                 formatCandidateModelLabel(c, isDuplicate)
             }
-            return "Multiple contacts match. Options: $formattedList. Present the options to the user via ask_user without candidate IDs (e.g. using names and distinguishers like 'the number ending in 95'). When confirmed, invoke call_contact with the resolved candidate_id."
+            val candidateNames = candidates.take(3).joinToString(", ") { c ->
+                val isDuplicate = (nameCounts[c.name.trim().lowercase()] ?: 0) > 1
+                formatCandidateSpeechLabel(c, isDuplicate)
+            }
+            val langClause = if (!language.isNullOrBlank()) "in $language" else "in the user's language"
+            return "Multiple contacts match: $formattedList. Ask the user via ask_user $langClause which contact to select, explicitly mentioning the options (for example, $candidateNames)."
+        }
+
+        internal fun detectScriptLanguage(text: String): String? {
+            if (text.any { it in '\u0900'..'\u097F' }) return "Hindi"
+            if (text.any { it in '\u0600'..'\u06FF' }) return "Arabic"
+            if (text.any { it in '\u0400'..'\u04FF' }) return "Russian"
+            if (text.any { it in '\u3040'..'\u309F' || it in '\u30A0'..'\u30FF' }) return "Japanese"
+            if (text.any { it in '\uAC00'..'\uD7AF' }) return "Korean"
+            if (text.any { it in '\u4E00'..'\u9FFF' }) return "Chinese"
+            return null
+        }
+
+        internal fun resolveUniqueExactMatch(candidates: List<ContactCandidate>, query: String): ContactCandidate? {
+            val trimmed = query.trim()
+            if (trimmed.isBlank() || candidates.size <= 1) return null
+            val exactMatches = candidates.filter { it.name.trim().equals(trimmed, ignoreCase = true) }
+            return if (exactMatches.size == 1) exactMatches[0] else null
         }
     }
 }
