@@ -27,5 +27,22 @@ class LokiApplication : Application() {
             override fun getSttEngine(): SttEngine = sttEngine
             override fun getModelLibraryManager(): ModelLibraryManager = modelLibraryManager
         }
+
+        // Task 6.3: 48-hour TTL WorkManager Job
+        val cleanupWork = androidx.work.PeriodicWorkRequestBuilder<AudioCleanupWorker>(1, java.util.concurrent.TimeUnit.DAYS)
+            .build()
+        androidx.work.WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            "AudioCleanupWork",
+            androidx.work.ExistingPeriodicWorkPolicy.KEEP,
+            cleanupWork
+        )
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level == android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            android.util.Log.w("LokiApplication", "TRIM_MEMORY_RUNNING_CRITICAL received, forcefully unloading Whisper model to protect LLM engine")
+            sttEngine.release()
+        }
     }
 }

@@ -67,6 +67,7 @@ dependencies {
     implementation(project(":core:tools:local"))
     implementation(project(":core:theme"))
     implementation(project(":core:ui"))
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

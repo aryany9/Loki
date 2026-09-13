@@ -56,6 +56,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.multiplatform.markdown.renderer.m3)
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-common:1.3.1")
 
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)

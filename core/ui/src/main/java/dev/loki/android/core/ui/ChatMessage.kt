@@ -8,6 +8,12 @@ enum class MessageSender {
     ASSISTANT
 }
 
+enum class TranscriptStatus {
+    PENDING,
+    COMPLETED,
+    FAILED
+}
+
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val sender: MessageSender,
@@ -16,7 +22,10 @@ data class ChatMessage(
     /** All tool executions for this assistant turn, in chronological order. */
     val toolInvocations: List<ToolInvocation> = emptyList(),
     val isThinking: Boolean = false,
-    val isStreaming: Boolean = false
+    val isStreaming: Boolean = false,
+    val transcriptStatus: TranscriptStatus = TranscriptStatus.COMPLETED,
+    val audioFilePath: String? = null,
+    val waveformData: ByteArray? = null
 ) {
     constructor(
         id: String = UUID.randomUUID().toString(),

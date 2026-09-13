@@ -7,6 +7,7 @@ import dev.loki.android.core.models.ModelRuntimeController
 import dev.loki.android.core.models.ModelStorage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
@@ -159,7 +160,7 @@ class LiteRtWhisperEngine(
                 return@channelFlow
             }
 
-            val transcript = withContext(Dispatchers.Default) {
+            val transcript = withContext(whisperDispatcher) {
                 transcribePcmAudio(audioFloats, language)
             }.trim()
 
@@ -183,7 +184,7 @@ class LiteRtWhisperEngine(
             ensureInitialized()
         }
         if (!isInitialized) return ""
-        return withContext(Dispatchers.Default) {
+        return withContext(whisperDispatcher) {
             transcribePcmAudio(pcmAudio, language)
         }.trim()
     }
@@ -479,6 +480,12 @@ class LiteRtWhisperEngine(
         private const val ENCODER_DIM = 384
         private const val MAX_TOKENS = 128
         private const val VOCAB_SIZE = 51865
-        private const val NUM_THREADS = 4
+        private const val NUM_THREADS = 2
+
+        val whisperDispatcher = java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
+            Thread(r, "WhisperWorker").apply {
+                priority = android.os.Process.THREAD_PRIORITY_BACKGROUND
+            }
+        }.asCoroutineDispatcher()
     }
 }

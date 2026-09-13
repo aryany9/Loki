@@ -55,6 +55,8 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Button
@@ -133,6 +135,7 @@ fun ChatScreen(
     val isRecording by viewModel.isRecording.collectAsState()
     val voiceError by viewModel.voiceError.collectAsState()
     val modelState by viewModel.modelState.collectAsState()
+    val playbackState by (viewModel.audioPlaybackController?.playbackState ?: kotlinx.coroutines.flow.MutableStateFlow(PlaybackState())).collectAsState()
     val pendingConfirmation by viewModel.pendingConfirmation.collectAsState()
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -435,7 +438,11 @@ fun ChatScreen(
                     ) {
                         items(messages, key = { it.id }) { msg ->
                             when (msg.sender) {
-                                MessageSender.USER -> UserMessageBubble(message = msg)
+                                MessageSender.USER -> UserMessageBubble(
+                                    message = msg,
+                                    playbackState = playbackState,
+                                    onTogglePlayback = { id, path -> viewModel.audioPlaybackController?.togglePlayPause(id, path) }
+                                )
                                 MessageSender.ASSISTANT -> AssistantMessage(message = msg)
                             }
                         }
@@ -949,6 +956,8 @@ fun ModelStatusBadge(
 @Composable
 fun UserMessageBubble(
     message: ChatMessage,
+    playbackState: PlaybackState,
+    onTogglePlayback: (String, String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -957,20 +966,92 @@ fun UserMessageBubble(
     ) {
         Surface(
             shape = RoundedCornerShape(
-                topStart = LokiCornerTokens.messageBubble,
-                topEnd = LokiCornerTokens.messageBubble,
-                bottomStart = LokiCornerTokens.messageBubble,
-                bottomEnd = LokiCornerTokens.messageBubbleCornerSmall
+                topStart = dev.loki.android.core.theme.LokiCornerTokens.messageBubble,
+                topEnd = dev.loki.android.core.theme.LokiCornerTokens.messageBubble,
+                bottomStart = dev.loki.android.core.theme.LokiCornerTokens.messageBubble,
+                bottomEnd = dev.loki.android.core.theme.LokiCornerTokens.messageBubbleCornerSmall
             ),
             color = MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.padding(start = 48.dp, end = 4.dp)
         ) {
-            Text(
-                text = message.text,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-            )
+            Column {
+                if (message.audioFilePath != null && message.waveformData != null) {
+                    val isPlaying = playbackState.playingMessageId == message.id && playbackState.isPlaying
+                    val progress = if (playbackState.playingMessageId == message.id) playbackState.progress else 0f
+                    
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = { onTogglePlayback(message.id, message.audioFilePath) },
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.width(8.dp))
+                        
+                        WaveformCanvas(
+                            waveformData = message.waveformData,
+                            progress = progress,
+                            activeColor = MaterialTheme.colorScheme.primary,
+                            inactiveColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                
+                androidx.compose.animation.AnimatedContent(
+                    targetState = message.transcriptStatus,
+                    label = "TranscriptStatusAnimation"
+                ) { status ->
+                    when (status) {
+                        TranscriptStatus.PENDING -> {
+                            val infiniteTransition = androidx.compose.animation.core.rememberInfiniteTransition(label = "Pulse")
+                            val alpha by infiniteTransition.animateFloat(
+                                initialValue = 0.4f,
+                                targetValue = 1.0f,
+                                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                                    animation = androidx.compose.animation.core.tween(800),
+                                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+                                ),
+                                label = "PulseAlpha"
+                            )
+                            Text(
+                                text = "Transcribing voice...",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                            )
+                        }
+                        TranscriptStatus.FAILED -> {
+                            Text(
+                                text = "Voice note (transcription failed)",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                            )
+                        }
+                        TranscriptStatus.COMPLETED -> {
+                            if (message.text.isNotBlank() && message.text != "[Voice Audio]") {
+                                Text(
+                                    text = message.text,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

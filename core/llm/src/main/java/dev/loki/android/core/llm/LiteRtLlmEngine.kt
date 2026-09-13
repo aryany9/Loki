@@ -131,6 +131,13 @@ class LiteRtLlmEngine(
 
     override fun isReady(): Boolean = engine != null && engine?.isInitialized() == true
 
+    override val availableKvTokens: Int
+        get() {
+            val conv = activeConversation ?: return activeKvCapacity
+            val used = try { conv.getTokenCount() } catch (e: Exception) { 0 }
+            return activeKvCapacity - used
+        }
+
     override suspend fun initializeAsync(
         modelPath: String?,
         runtimeConfig: RuntimeConfig,
@@ -533,7 +540,11 @@ class LiteRtLlmEngine(
             }
 
             val resultText = fullResponse.toString()
-            val turnEstTokens = ((prompt.length + resultText.length) / 4) + 16
+            var turnEstTokens = ((prompt.length + resultText.length) / 4) + 16
+            if (audioBytes != null && audioBytes.isNotEmpty()) {
+                val durationSeconds = audioBytes.size / (16000 * 2)
+                turnEstTokens += durationSeconds * 25
+            }
             val executedAction = isActionExecution(resultText)
             recentTurns.add(TurnEntry(userMessage, prompt, resultText, turnEstTokens, executedAction = executedAction, source = source))
             if (recentTurns.size > 10) {

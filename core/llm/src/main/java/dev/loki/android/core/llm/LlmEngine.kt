@@ -53,6 +53,13 @@ interface LlmEngine {
         set(_) {}
     fun isReady(): Boolean
 
+    /**
+     * Returns the remaining tokens available in the active conversation's KV-cache.
+     * If unsupported or no conversation is active, returns -1.
+     */
+    val availableKvTokens: Int
+        get() = -1
+
     suspend fun initializeAsync(modelPath: String? = null): Boolean =
         initializeAsync(modelPath, dev.loki.android.core.models.RuntimeConfig(), false)
 

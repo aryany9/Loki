@@ -16,3 +16,4 @@ captures/
 *.so
 app/src/main/jniLibs/arm64-v8a/libLiteRtDispatch_Qualcomm.so
 app/src/main/jniLibs/
+temp/

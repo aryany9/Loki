@@ -568,8 +568,16 @@ class AssistantSession(
                         val ttsDone = java.util.concurrent.atomic.AtomicBoolean(false)
                         val capture = async(ioDispatcher) {
                             try {
+                                val availableTokens = activeVoiceSession?.llmEngine?.availableKvTokens ?: -1
+                                val maxAudioDurationMs = if (availableTokens > 0) {
+                                    val reservedGenTokens = 256
+                                    val budgetSec = maxOf(0, (availableTokens - reservedGenTokens) / 25)
+                                    (budgetSec * 1000L).coerceAtLeast(1000L)
+                                } else null
+                                
                                 recorder.recordGatedUtterance(
                                     isCommitGated = { !ttsDone.get() || ttsEngine?.isSpeaking == true },
+                                    maxAudioDurationMs = maxAudioDurationMs,
                                     onRmsUpdate = { processRawRms(it) }
                                 )
                             } catch (e: dev.loki.android.core.voice.stt.MicUnavailableException) {
@@ -627,8 +635,16 @@ class AssistantSession(
                             val ttsDoneRetry = java.util.concurrent.atomic.AtomicBoolean(false)
                             val captureRetry = async(ioDispatcher) {
                                 try {
+                                    val availableTokens = activeVoiceSession?.llmEngine?.availableKvTokens ?: -1
+                                    val maxAudioDurationMs = if (availableTokens > 0) {
+                                        val reservedGenTokens = 256
+                                        val budgetSec = maxOf(0, (availableTokens - reservedGenTokens) / 25)
+                                        (budgetSec * 1000L).coerceAtLeast(1000L)
+                                    } else null
+                                    
                                     recorder.recordGatedUtterance(
                                         isCommitGated = { !ttsDoneRetry.get() || ttsEngine?.isSpeaking == true },
+                                        maxAudioDurationMs = maxAudioDurationMs,
                                         onRmsUpdate = { processRawRms(it) }
                                     )
                                 } catch (e: dev.loki.android.core.voice.stt.MicUnavailableException) {

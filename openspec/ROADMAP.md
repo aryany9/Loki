@@ -43,16 +43,9 @@ All archived and validated. Spec library is in canonical format (openspec/specs/
 - **(Backlog follow-up) Voice start-cue customization**: let the user pick/select a start tone (or disable). Currently a fixed runtime-synthesized tone is shipped for v1.
 - **STT streaming partials / optional Android STT engine**: quality/UX upgrade,
   privacy trade-off documented (prefer Whisper offline by default).
-- **(Parked) Audio capability layer (later, separate change)**: a runtime
-  audio-discovery/front-end for the voice input path: probe `AcousticEchoCanceler` /
-  `NoiseSuppressor` / `AutomaticGainControl` via `isAvailable()` + `create(active session)`
-  (and `AudioManager.getDevices()` input route/sample-rate); choose an input preset
-  (`VOICE_RECOGNITION` / `VOICE_COMMUNICATION` bundle AEC/NS/AGC opaquely) vs explicit
-  effects vs raw `MIC`; replace the blind post-TTS delay with a continuous armed-mic +
-  barge-in commit window gated on `tts.isSpeaking`/`onDone`; VAD stays Loki-owned
-  (Silero-on-device model needed → else existing energy VAD — no public Android
-  VAD-as-boolean probe exists). Architecture sketched in the `fix-voice-confirmation-and-persist-answer` change
-  discussion. Parked so the front-end fix can ship first without the audio-stack redesign.
+- **(Delivered in `add-audio-capability-layer`) Audio capability layer**: `AudioFrontEnd` abstraction implemented with `VOICE_RECOGNITION` and native DSP (`NoiseSuppressor` / `AcousticEchoCanceler`) attachment.
+  - *(Still Parked)*: Continuous barge-in commit window gated on `tts.isSpeaking`.
+  - *(Still Parked)*: Silero-on-device model for VAD (currently using energy VAD).
 
 ### Release / repo hygiene
 - **Tag v0.1.0** and publish first GitHub release (workflow ready; debug-signed APK
