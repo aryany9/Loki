@@ -624,7 +624,8 @@ class ChatViewModel(
                     if (currentConversationId != null && sttEngine != null) {
                         viewModelScope.launch(Dispatchers.IO) {
                             try {
-                                val transcript = sttEngine.transcribeAudio(audioFloats)
+                                val language = conversationManager.getAgentConfig().conversationLanguage
+                                val transcript = sttEngine.transcribeAudio(audioFloats, language)
                                 val finalStatus = if (transcript.isNotBlank()) TranscriptStatus.COMPLETED else TranscriptStatus.FAILED
                                 val finalText = transcript.ifBlank { "" }
 

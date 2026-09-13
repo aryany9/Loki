@@ -95,6 +95,7 @@ class WhisperTokenizer(context: Context) {
         return if (language.isBlank() || language.equals("auto", ignoreCase = true)) {
             intArrayOf(
                 startOfTranscriptToken,
+                languageTokenEn, // Default to English if auto
                 transcribeToken,
                 noTimestampsToken
             )
