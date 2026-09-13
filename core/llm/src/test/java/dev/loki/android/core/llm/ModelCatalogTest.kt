@@ -42,7 +42,51 @@ class ModelCatalogTest {
         assertEquals(ModelRuntime.LITERT_LM, decoded.models.single().runtime)
         assertEquals(ModelFormat.LITERT_MODEL, decoded.models.single().format)
     }
+    @Test
+    fun `catalog parsing accepts records with multiple variants and preserves integrity metadata`() {
+        val json = """
+            {
+              "schemaVersion": 1,
+              "models": [
+                {
+                  "id": "whisper-variant-test",
+                  "displayName": "Whisper Tiny (ASR)",
+                  "runtime": "LITERT_ASR",
+                  "format": "TFLITE",
+                  "artifacts": [
+                    {
+                      "fileName": "whisper_tiny_30s_i8.tflite",
+                      "relativePath": "whisper_tiny_30s_i8.tflite",
+                      "sizeBytes": 41116288,
+                      "sha256": "6748ac565a228c4a00b18d11ea1e2fd7cead3db6fba94e3f0bf35756b13ba4a9",
+                      "url": "https://example.com/i8.tflite",
+                      "variant": "quantized"
+                    },
+                    {
+                      "fileName": "whisper_tiny_30s_f32.tflite",
+                      "relativePath": "whisper_tiny_30s_f32.tflite",
+                      "sizeBytes": 150979184,
+                      "sha256": "0c8f0e2a1855909a0c027b4ac3c586fdd299e2b47bf1a4fdab51191bca1e0e89",
+                      "url": "https://example.com/f32.tflite",
+                      "variant": "full-precision"
+                    }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
 
+        val decoded = Json.decodeFromString<ModelCatalog>(json)
+        val model = decoded.models.single()
+        assertEquals("whisper-variant-test", model.id)
+        assertEquals(2, model.artifacts.size)
+
+        val i8 = model.artifacts.find { it.variant == "quantized" }!!
+        assertEquals("6748ac565a228c4a00b18d11ea1e2fd7cead3db6fba94e3f0bf35756b13ba4a9", i8.sha256)
+
+        val f32 = model.artifacts.find { it.variant == "full-precision" }!!
+        assertEquals("0c8f0e2a1855909a0c027b4ac3c586fdd299e2b47bf1a4fdab51191bca1e0e89", f32.sha256)
+    }
     @Test
     fun `downloader finalizes verified artifact`() = runBlocking {
         val bytes = "catalog-model".toByteArray()

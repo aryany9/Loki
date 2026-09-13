@@ -459,10 +459,11 @@ class ChatViewModel(
         viewModelScope.launch {
             val downloader = modelDownloader ?: ModelDownloader(modelManager.managedStorage)
             val downloadedArtifacts = mutableListOf<ModelArtifact>()
-            val totalArtifacts = entry.artifacts.size
+            val artifactsToDownload = entry.resolveArtifactsToDownload()
+            val totalArtifacts = artifactsToDownload.size
 
             try {
-                entry.artifacts.forEachIndexed { index, artifact ->
+                artifactsToDownload.forEachIndexed { index, artifact ->
                     val result = withContext(ioDispatcher) {
                         val stream = if (streamOpener != null) {
                             streamOpener(artifact.url)

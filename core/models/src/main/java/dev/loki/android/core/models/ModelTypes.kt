@@ -51,7 +51,8 @@ data class ModelArtifact(
     val relativePath: String,
     val sizeBytes: Long,
     val sha256: String? = null,
-    val url: String
+    val url: String,
+    val variant: String? = null
 )
 
 @Serializable
@@ -93,7 +94,16 @@ data class ModelCatalogEntry(
     val format: ModelFormat,
     val artifacts: List<ModelArtifact>,
     val capabilities: List<String> = emptyList()
-)
+) {
+    fun resolveArtifactsToDownload(): List<ModelArtifact> {
+        val hasQuantized = artifacts.any { it.variant == "quantized" }
+        return if (hasQuantized) {
+            artifacts.filter { it.variant != "full-precision" }
+        } else {
+            artifacts
+        }
+    }
+}
 
 @Serializable
 data class ModelCatalog(

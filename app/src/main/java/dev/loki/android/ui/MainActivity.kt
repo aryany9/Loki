@@ -616,10 +616,11 @@ class MainActivity : ComponentActivity() {
 
         val downloader = ModelDownloader(modelLibraryManager.managedStorage)
         val downloadedArtifacts = mutableListOf<ModelArtifact>()
-        val totalArtifacts = entry.artifacts.size
+        val artifactsToDownload = entry.resolveArtifactsToDownload()
+        val totalArtifacts = artifactsToDownload.size
 
         try {
-            entry.artifacts.forEachIndexed { index, artifact ->
+            artifactsToDownload.forEachIndexed { index, artifact ->
                 val connection = withContext(Dispatchers.IO) {
                     (URL(artifact.url).openConnection() as HttpURLConnection).apply {
                         connectTimeout = 15_000

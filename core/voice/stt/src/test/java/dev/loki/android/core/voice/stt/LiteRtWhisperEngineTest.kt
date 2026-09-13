@@ -116,6 +116,50 @@ class LiteRtWhisperEngineTest {
         )
     }
 
+    // Full-precision preferred: int8 decode emits 0 tokens on-device (2026-09-13),
+    // so f32 wins when present and quantized is fallback-only (see load()).
+    @Test
+    fun `load prefers full-precision variant when both exist`() = runTest {
+        val storage = makeStorage()
+        val modelDir = java.io.File(tempFolder.root, "models/test-model").apply { mkdirs() }
+        val f32File = java.io.File(modelDir, "f32.tflite").apply { createNewFile() }
+        val i8File = java.io.File(modelDir, "i8.tflite").apply { createNewFile() }
+
+        val engine = org.mockito.kotlin.spy(makeEngine(storage))
+        org.mockito.kotlin.doReturn(false).whenever(engine).initialize(org.mockito.kotlin.any())
+
+        val model = makeModelRecord("test-model", "f32.tflite").copy(
+            artifacts = listOf(
+                ModelArtifact("f32.tflite", "f32.tflite", 0L, null, "", "full-precision"),
+                ModelArtifact("i8.tflite", "i8.tflite", 0L, null, "", "quantized")
+            )
+        )
+
+        engine.load(model)
+        org.mockito.kotlin.verify(engine).initialize(f32File.absolutePath)
+    }
+
+    @Test
+    fun `load falls back to quantized when full-precision is missing`() = runTest {
+        val storage = makeStorage()
+        val modelDir = java.io.File(tempFolder.root, "models/test-model").apply { mkdirs() }
+        // f32File NOT created on disk
+        val i8File = java.io.File(modelDir, "i8.tflite").apply { createNewFile() }
+
+        val engine = org.mockito.kotlin.spy(makeEngine(storage))
+        org.mockito.kotlin.doReturn(false).whenever(engine).initialize(org.mockito.kotlin.any())
+
+        val model = makeModelRecord("test-model", "f32.tflite").copy(
+            artifacts = listOf(
+                ModelArtifact("f32.tflite", "f32.tflite", 0L, null, "", "full-precision"),
+                ModelArtifact("i8.tflite", "i8.tflite", 0L, null, "", "quantized")
+            )
+        )
+
+        engine.load(model)
+        org.mockito.kotlin.verify(engine).initialize(i8File.absolutePath)
+    }
+
     // -------------------------------------------------------------------------
     // release / cancel contract
     // -------------------------------------------------------------------------

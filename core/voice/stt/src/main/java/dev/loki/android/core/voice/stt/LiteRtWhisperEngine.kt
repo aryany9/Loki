@@ -59,12 +59,28 @@ class LiteRtWhisperEngine(
      * or interpreter construction fails.
      */
     override suspend fun load(model: ModelRecord): Boolean {
-        val artifact = model.artifacts.firstOrNull { it.fileName.endsWith(".tflite") }
-            ?: return false
+        // Full-precision wins when present: the int8 artifact's decode emits 0 tokens on
+        // every window (2026-09-13 on-device: (0 tokens) on 30s silence AND 3.4s speech),
+        // so the quantized variant is opt-in only until its decode is proven in a
+        // TFLite sandbox. Preference order mirrors ensureInitialized() below.
+        val fpArtifact = model.artifacts.firstOrNull { it.variant == "full-precision" }
+            ?: model.artifacts.firstOrNull { it.fileName.endsWith(".tflite") }
+        val quantizedArtifact = model.artifacts.firstOrNull { it.variant == "quantized" }
 
-        val resolvedFile = storage.artifactFile(model.id, artifact.relativePath)
-        if (!resolvedFile.exists()) {
-            Log.w(TAG, "Artifact not found on disk: ${resolvedFile.absolutePath}")
+        var resolvedFile: File? = null
+
+        if (fpArtifact != null) {
+            val f = storage.artifactFile(model.id, fpArtifact.relativePath)
+            if (f.exists()) resolvedFile = f
+        }
+
+        if (resolvedFile == null && quantizedArtifact != null) {
+            val f = storage.artifactFile(model.id, quantizedArtifact.relativePath)
+            if (f.exists()) resolvedFile = f
+        }
+
+        if (resolvedFile == null) {
+            Log.w(TAG, "No suitable artifact found on disk for ${model.id}")
             return false
         }
 
@@ -91,7 +107,7 @@ class LiteRtWhisperEngine(
             val options = Interpreter.Options().apply {
                 numThreads = NUM_THREADS
                 setUseNNAPI(false)
-                setUseXNNPACK(false)
+                setUseXNNPACK(USE_XNNPACK)
             }
             val interp = Interpreter(modelFile, options)
             val sigKeys = interp.signatureKeys.joinToString(", ")
@@ -114,6 +130,7 @@ class LiteRtWhisperEngine(
 
     fun ensureInitialized(): Boolean {
         if (isInitialized) return true
+        // f32 first (proven decode); int8 emits 0 tokens on-device (see load()).
         val defaultWhisper = storage.artifactFile("whisper-tiny-litert", "whisper_tiny_30s_f32.tflite")
         if (defaultWhisper.exists()) {
             Log.i(TAG, "Auto-initializing LiteRtWhisperEngine from: ${defaultWhisper.absolutePath}")
@@ -481,6 +498,21 @@ class LiteRtWhisperEngine(
         private const val MAX_TOKENS = 128
         private const val VOCAB_SIZE = 51865
         private const val NUM_THREADS = 2
+        /**
+         * XNNPACK is intentionally DISABLED for the Whisper artifact.
+         *
+         * Root cause (2026-09-13, on-device SIGSEGV repro): the Whisper TFLite artifact is a
+         * multi-subgraph model whose group_norm / SDPA ops are `odml.*` stablehlo composites.
+         * With setUseXNNPACK(true), XNNPACK attempts to dispatch those composite ops during
+         * Interpreter construction and dies with a native SIGSEGV (SEGV_ACCERR) in
+         * NativeInterpreterWrapperExperimental.<init> — uncatchable in Kotlin, crashes the
+         * process ("app stopped") before any Log line after "Loading LiteRT Whisper model".
+         * The int8 quantized artifact alone (setUseXNNPACK(false)) loads and transcribes
+         * cleanly on the same device, so quantization is safe; XNNPACK dispatch is not,
+         * for this composite-subgraph artifact. Do not silently reintroduce; if revisited,
+         * it requires a TFLite/XNNPACK runtime version that skips odml composite ops.
+         */
+        private const val USE_XNNPACK = false
 
         val whisperDispatcher = java.util.concurrent.Executors.newFixedThreadPool(2) { r ->
             Thread(r, "WhisperWorker").apply {
