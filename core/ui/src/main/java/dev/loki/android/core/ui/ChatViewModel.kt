@@ -59,7 +59,8 @@ class ChatViewModel(
     private val voiceStrategyResolver: VoiceInputStrategyResolver = VoiceInputStrategyResolver(),
     private val bundledCatalog: ModelCatalog? = null,
     private val modelDownloader: ModelDownloader? = null,
-    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    applicationContext: android.content.Context? = null
 ) : ViewModel() {
 
     val modelState: StateFlow<LlmModelState> = conversationManager.llmEngine.modelState
@@ -67,6 +68,11 @@ class ChatViewModel(
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+
+    // Task 7.3: Single-Instance Media3 Controller
+    val audioPlaybackController: AudioPlaybackController? = applicationContext?.let {
+        AudioPlaybackController(it, viewModelScope)
+    }
 
     private val _conversations = MutableStateFlow<List<ConversationRecord>>(emptyList())
     val conversations: StateFlow<List<ConversationRecord>> = _conversations.asStateFlow()
@@ -205,9 +211,10 @@ class ChatViewModel(
         displayInput: String,
         userInput: String,
         audioBytes: ByteArray?,
-        source: String
+        source: String,
+        customUserMessage: ChatMessage? = null
     ) {
-        val userMessage = ChatMessage(sender = MessageSender.USER, text = displayInput)
+        val userMessage = customUserMessage ?: ChatMessage(sender = MessageSender.USER, text = displayInput)
         val inFlightMessageId = UUID.randomUUID().toString()
         inFlightAssistantMessageId = inFlightMessageId
         val initialAssistantMessage = ChatMessage(
@@ -545,19 +552,115 @@ class ChatViewModel(
             val recorder = AudioRecorder()
             activeAudioRecorder = recorder
             try {
-                val audioFloats = recorder.recordUtterance()
+                val availableTokens = conversationManager.llmEngine.availableKvTokens
+                val maxAudioDurationMs = if (availableTokens > 0) {
+                    val reservedGenTokens = 256
+                    val budgetSec = maxOf(0, (availableTokens - reservedGenTokens) / 25)
+                    (budgetSec * 1000L).coerceAtLeast(1000L)
+                } else null
+                
+                val audioFloats = recorder.recordUtterance(maxAudioDurationMs = maxAudioDurationMs)
                 _isRecording.value = false
                 voiceStartCuePlayed = false
                 activeAudioRecorder = null
 
                 if (audioFloats.isNotEmpty()) {
                     val wavBytes = WavEncoder.pcmFloatsToWav(audioFloats)
+                    val userMessageId = java.util.UUID.randomUUID().toString()
+                    if (conversationManager.currentConversationId == null) {
+                        conversationManager.createConversation()
+                        refreshConversations()
+                    }
+                    val currentConversationId = conversationManager.currentConversationId
+                    
+                    // Task 6.2: Storage Domain Setup
+                    var savedAudioPath: String? = null
+                    if (currentConversationId != null) {
+                        try {
+                            val audioDir = java.io.File(conversationManager.conversationStore.baseDir.parentFile, "audio_records")
+                            if (!audioDir.exists()) audioDir.mkdirs()
+                            val file = java.io.File(audioDir, "${currentConversationId}_${userMessageId}.wav")
+                            file.writeBytes(wavBytes)
+                            savedAudioPath = file.absolutePath
+                            
+                            // Task 6.3: 50MB Inline LRU Quota Pruning
+                            val maxBytes = 50L * 1024 * 1024
+                            var totalSize = audioDir.listFiles()?.sumOf { it.length() } ?: 0L
+                            if (totalSize > maxBytes) {
+                                // We don't have SQLite to filter FAILED ones, but we can avoid deleting the current file
+                                val sortedFiles = audioDir.listFiles()?.filter { it != file }?.sortedBy { it.lastModified() } ?: emptyList()
+                                for (oldFile in sortedFiles) {
+                                    if (totalSize <= maxBytes) break
+                                    val size = oldFile.length()
+                                    if (oldFile.delete()) {
+                                        totalSize -= size
+                                    }
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to save audio record", e)
+                        }
+                    }
+
+                    val waveform = dev.loki.android.core.voice.stt.WaveformExtractor.extractAmplitudes(audioFloats)
+                    val userMessage = ChatMessage(
+                        id = userMessageId,
+                        sender = MessageSender.USER,
+                        text = "",
+                        transcriptStatus = TranscriptStatus.PENDING,
+                        audioFilePath = savedAudioPath,
+                        waveformData = waveform
+                    )
+                    
                     executeChatTurn(
                         displayInput = "[Voice Audio]",
                         userInput = "",
                         audioBytes = wavBytes,
-                        source = "CHAT_DIRECT_AUDIO"
+                        source = "CHAT_DIRECT_AUDIO",
+                        customUserMessage = userMessage
                     )
+
+                    // Task 5.1/5.4: Async Whisper Transcript Recovery
+                    if (currentConversationId != null && sttEngine != null) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            try {
+                                val transcript = sttEngine.transcribeAudio(audioFloats)
+                                val finalStatus = if (transcript.isNotBlank()) TranscriptStatus.COMPLETED else TranscriptStatus.FAILED
+                                val finalText = transcript.ifBlank { "" }
+
+                                // 1. Update UI stream
+                                _messages.value = _messages.value.map { msg ->
+                                    if (msg.id == userMessageId) {
+                                        msg.copy(transcriptStatus = finalStatus, text = finalText)
+                                    } else msg
+                                }
+
+                                // 2. Update persistent JSON store (KV-Cache Isolation: do NOT replace the multimodal Context)
+                                val store = conversationManager.conversationStore
+                                val record = store.loadConversation(currentConversationId)
+                                if (record != null) {
+                                    // The ConversationTurn.User was added by ConversationSession with timestamp close to userMessage.timestamp
+                                    val updatedTurns = record.turns.map { turn ->
+                                        if (turn is dev.loki.android.core.conversation.ConversationTurn.User && turn.text == "[Voice Audio]") {
+                                            // Heuristic: matching "[Voice Audio]" which is what executeChatTurn wrote
+                                            turn.copy(
+                                                text = if (finalStatus == TranscriptStatus.COMPLETED) finalText else turn.text,
+                                                transcriptStatus = dev.loki.android.core.conversation.ConversationTurn.TranscriptStatus.valueOf(finalStatus.name),
+                                                audioFilePath = savedAudioPath,
+                                                waveformData = waveform
+                                            )
+                                        } else turn
+                                    }
+                                    store.saveConversation(record.copy(turns = updatedTurns))
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Async transcription failed", e)
+                                _messages.value = _messages.value.map { msg ->
+                                    if (msg.id == userMessageId) msg.copy(transcriptStatus = TranscriptStatus.FAILED) else msg
+                                }
+                            }
+                        }
+                    }
                 }
             } catch (e: CancellationException) {
                 _isRecording.value = false
@@ -668,7 +771,9 @@ class ChatViewModel(
                             ChatMessage(
                                 sender = MessageSender.USER,
                                 text = turn.text,
-                                timestamp = turn.timestamp
+                                timestamp = turn.timestamp,
+                                transcriptStatus = dev.loki.android.core.ui.TranscriptStatus.valueOf(turn.transcriptStatus.name),
+                                audioFilePath = turn.audioFilePath
                             )
                         )
                     }
@@ -708,5 +813,10 @@ class ChatViewModel(
 
             return result
         }
+    }
+    
+    override fun onCleared() {
+        super.onCleared()
+        audioPlaybackController?.release()
     }
 }

@@ -185,6 +185,14 @@ class ConversationStore(
                 val file = getConversationFile(id)
                 val temp = getTempFile(id)
                 if (temp.exists()) temp.delete()
+                
+                // Cascade Deletion Hook: Wipe associated audio files
+                val audioDir = File(baseDir.parentFile, "audio_records")
+                if (audioDir.exists()) {
+                    val audioFiles = audioDir.listFiles { _, name -> name.startsWith("${id}_") }
+                    audioFiles?.forEach { it.delete() }
+                }
+                
                 if (file.exists()) file.delete() else false
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to delete conversation: $id", e)

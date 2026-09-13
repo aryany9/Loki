@@ -36,6 +36,8 @@ internal class AndroidAudioRecordReader(
     private val bufferSize: Int
 ) : AudioSourceReader {
     private var record: AudioRecord? = null
+    private var noiseSuppressor: android.media.audiofx.NoiseSuppressor? = null
+    private var echoCanceler: android.media.audiofx.AcousticEchoCanceler? = null
 
     override val isInitialized: Boolean
         get() = record?.state == AudioRecord.STATE_INITIALIZED
@@ -45,9 +47,11 @@ internal class AndroidAudioRecordReader(
         if (record == null) {
             val channelConfig = AudioFormat.CHANNEL_IN_MONO
             val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+            var usedSource = "VOICE_RECOGNITION"
+            
             try {
                 record = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
                     sampleRate,
                     channelConfig,
                     audioFormat,
@@ -57,9 +61,61 @@ internal class AndroidAudioRecordReader(
                 release()
                 throw MicUnavailableException(MicUnavailableReason.PERMISSION_DENIED, "Microphone permission denied during construction", e)
             } catch (e: Throwable) {
-                release()
-                throw MicUnavailableException(MicUnavailableReason.INIT_FAILED, "Failed to instantiate AudioRecord: ${e.message}", e)
+                // Ignore, try fallback
             }
+
+            if (record == null || record!!.state != AudioRecord.STATE_INITIALIZED) {
+                record?.release()
+                usedSource = "MIC"
+                Log.w("AudioRecorder", "VOICE_RECOGNITION failed, falling back to MIC")
+                try {
+                    record = AudioRecord(
+                        MediaRecorder.AudioSource.MIC,
+                        sampleRate,
+                        channelConfig,
+                        audioFormat,
+                        bufferSize * 2
+                    )
+                } catch (e: SecurityException) {
+                    release()
+                    throw MicUnavailableException(MicUnavailableReason.PERMISSION_DENIED, "Microphone permission denied on fallback", e)
+                } catch (e: Throwable) {
+                    release()
+                    throw MicUnavailableException(MicUnavailableReason.INIT_FAILED, "Failed to instantiate AudioRecord fallback: ${e.message}", e)
+                }
+            }
+
+            val currentRecord = record
+            if (currentRecord == null || currentRecord.state != AudioRecord.STATE_INITIALIZED) {
+                release()
+                throw MicUnavailableException(MicUnavailableReason.INIT_FAILED, "AudioRecord is not initialized (state=${currentRecord?.state})")
+            }
+
+            val sessionId = currentRecord.audioSessionId
+            var nsAttached = false
+            var aecAttached = false
+
+            try {
+                if (android.media.audiofx.NoiseSuppressor.isAvailable()) {
+                    noiseSuppressor = android.media.audiofx.NoiseSuppressor.create(sessionId)
+                    noiseSuppressor?.enabled = true
+                    nsAttached = noiseSuppressor != null
+                }
+            } catch (e: Exception) {
+                Log.w("AudioRecorder", "Failed to attach NoiseSuppressor", e)
+            }
+
+            try {
+                if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
+                    echoCanceler = android.media.audiofx.AcousticEchoCanceler.create(sessionId)
+                    echoCanceler?.enabled = true
+                    aecAttached = echoCanceler != null
+                }
+            } catch (e: Exception) {
+                Log.w("AudioRecorder", "Failed to attach AcousticEchoCanceler", e)
+            }
+
+            Log.i("AudioRecorder", "[Loki/AudioFrontEnd] source=$usedSource ns=$nsAttached aec=$aecAttached agc=false")
         }
 
         val currentRecord = record
@@ -100,6 +156,20 @@ internal class AndroidAudioRecordReader(
     }
 
     override fun release() {
+        try {
+            noiseSuppressor?.release()
+        } catch (e: Exception) {
+            Log.e("AudioRecorder", "Error releasing NoiseSuppressor", e)
+        }
+        noiseSuppressor = null
+
+        try {
+            echoCanceler?.release()
+        } catch (e: Exception) {
+            Log.e("AudioRecorder", "Error releasing AcousticEchoCanceler", e)
+        }
+        echoCanceler = null
+
         try {
             record?.release()
         } catch (e: Exception) {
@@ -190,12 +260,23 @@ open class AudioRecorder(
         isRecording = false
     }
 
+    open fun abortRecording() {
+        isRecording = false
+        release()
+    }
+
     open suspend fun recordUtterance(
+        maxAudioDurationMs: Long? = null,
         onRmsUpdate: ((Float) -> Unit)? = null
-    ): FloatArray = recordGatedUtterance(isCommitGated = { false }, onRmsUpdate = onRmsUpdate)
+    ): FloatArray = recordGatedUtterance(
+        isCommitGated = { false }, 
+        maxAudioDurationMs = maxAudioDurationMs, 
+        onRmsUpdate = onRmsUpdate
+    )
 
     open suspend fun recordGatedUtterance(
         isCommitGated: () -> Boolean,
+        maxAudioDurationMs: Long? = null,
         onRmsUpdate: ((Float) -> Unit)? = null
     ): FloatArray = withContext(ioDispatcher) {
         val wasArmed = isArmed
@@ -240,9 +321,11 @@ open class AudioRecorder(
         try {
             while (isActive && isRecording) {
                 val readCount = reader.read(buffer, 0, buffer.size)
-                if (readCount <= 0) {
+                if (readCount < 0) {
+                    Log.e(TAG, "[Loki/AudioRecord] Hardware preemption or read error: $readCount")
                     break
                 }
+                if (readCount == 0) continue
 
                 // Transition from gated to commit mode
                 val currentlyGated = isCommitGated()
@@ -400,6 +483,11 @@ open class AudioRecorder(
 
                 if (now - startTime > maxRecordingMs) {
                     Log.i(TAG, "Max recording duration reached (${maxRecordingMs}ms)")
+                    break
+                }
+
+                if (maxAudioDurationMs != null && (now - startTime > maxAudioDurationMs)) {
+                    Log.w(TAG, "Audio token circuit breaker tripped! KV cache capacity reached. Forcing early speech termination at ${maxAudioDurationMs}ms.")
                     break
                 }
             }

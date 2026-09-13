@@ -3,11 +3,12 @@
 ## Why
 
 The voice input path records via raw `MediaRecorder.AudioSource.MIC` with no platform DSP,
-so ambient room noise (HVAC, fans, speech-level fluctuations at 600–1200 RMS) repeatedly
-defeats the energy VAD — observed as a 17.5s capture hang on Turn 1 and inconsistent
-end-of-speech between turns. The roadmap parked this audio front-end redesign as a separate
-change so the behavioral VAD fixes could ship first; that prerequisite work is now in
-`fix-npu-turn-context`.
+delivering raw transducer audio. Ambient room noise (HVAC, fans) and acoustic speaker feedback
+(TTS playback leakage during multi-turn interactions) degrade audio quality for both the
+DirectAudio multimodal LLM path (`Content.AudioBytes`) and the Whisper STT fallback path.
+While earlier behavioral VAD fixes resolved the initial capture hangs, clean acoustic front-end
+processing (hardware noise suppression, acoustic echo cancellation, and beamforming) is needed
+to ensure high-fidelity audio capture and robust end-of-speech detection.
 
 ## What Changes
 
@@ -16,16 +17,15 @@ change so the behavioral VAD fixes could ship first; that prerequisite work is n
   wind filtration where the device supports it).
 - **Platform effect attach**: probe and enable `NoiseSuppressor` and `AcousticEchoCanceler`
   on the active audio session when `isAvailable()`; `AutomaticGainControl` left off by
-  default (it can distort Whisper's expected loudness envelope).
+  default (it can distort the audio encoder's expected loudness envelope).
 - **Graceful fallback**: devices without VOICE_RECOGNITION support or DSP effects fall back
   to `MIC` with a logged warning; behavior never worse than today.
-- **RMS recalibration awareness**: hardware DSP changes the RMS distribution, so all energy
+- **RMS recalibration awareness**: hardware DSP changes the RMS distribution, so energy
   VAD thresholds (`speechThreshold`, `silenceThreshold`, floor calibration) must be
   re-tuned on-device after this lands — the thresholds are already feel-knobs per
-  `fix-npu-turn-context` 10.7.
-- **Out of scope (stays parked)**: Silero on-device VAD, armed-mic barge-in commit window
-  gated on TTS state. This change is the front-end only; the roadmap's full audio-stack
-  redesign follows separately.
+  earlier calibration passes.
+- **Out of scope (stays parked)**: Silero on-device neural VAD, armed-mic continuous barge-in
+  commit window gated on TTS state. This change is the front-end capture layer only.
 
 ## Capabilities
 
