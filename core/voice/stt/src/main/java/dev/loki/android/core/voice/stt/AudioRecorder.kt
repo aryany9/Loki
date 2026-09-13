@@ -266,18 +266,41 @@ open class AudioRecorder(
     }
 
     open suspend fun recordUtterance(
-        maxAudioDurationMs: Long? = null,
         onRmsUpdate: ((Float) -> Unit)? = null
-    ): FloatArray = recordGatedUtterance(
-        isCommitGated = { false }, 
-        maxAudioDurationMs = maxAudioDurationMs, 
-        onRmsUpdate = onRmsUpdate
-    )
+    ): FloatArray = recordGatedUtterance(isCommitGated = { false }, onRmsUpdate = onRmsUpdate)
+
+    open suspend fun recordUtterance(
+        maxAudioDurationMs: Long?,
+        onRmsUpdate: ((Float) -> Unit)? = null
+    ): FloatArray = if (maxAudioDurationMs == null) {
+        recordUtterance(onRmsUpdate)
+    } else {
+        recordGatedUtterance(
+            isCommitGated = { false },
+            maxAudioDurationMs = maxAudioDurationMs,
+            onRmsUpdate = onRmsUpdate
+        )
+    }
 
     open suspend fun recordGatedUtterance(
         isCommitGated: () -> Boolean,
-        maxAudioDurationMs: Long? = null,
         onRmsUpdate: ((Float) -> Unit)? = null
+    ): FloatArray = recordGatedUtteranceInternal(isCommitGated, null, onRmsUpdate)
+
+    open suspend fun recordGatedUtterance(
+        isCommitGated: () -> Boolean,
+        maxAudioDurationMs: Long?,
+        onRmsUpdate: ((Float) -> Unit)? = null
+    ): FloatArray = if (maxAudioDurationMs == null) {
+        recordGatedUtterance(isCommitGated, onRmsUpdate)
+    } else {
+        recordGatedUtteranceInternal(isCommitGated, maxAudioDurationMs, onRmsUpdate)
+    }
+
+    private suspend fun recordGatedUtteranceInternal(
+        isCommitGated: () -> Boolean,
+        maxAudioDurationMs: Long?,
+        onRmsUpdate: ((Float) -> Unit)?
     ): FloatArray = withContext(ioDispatcher) {
         val wasArmed = isArmed
         if (!wasArmed) {
