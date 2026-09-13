@@ -38,7 +38,10 @@ fun interface ToolPolicy {
  * Central registry for all assistant tools.
  * Handles tool registration, discovery, permission checking, and dispatch.
  */
-class ToolRegistry {
+class ToolRegistry(
+    private val lockStateProvider: DeviceLockStateProvider = DeviceLockStateProvider { DeviceLockState.UNLOCKED },
+    private val accessPolicy: ToolAccessPolicy = AllowAllToolAccessPolicy
+) {
 
     private val tools = ConcurrentHashMap<String, Tool>()
 
@@ -135,6 +138,10 @@ class ToolRegistry {
                 "Missing permission: ${result.permission}",
                 ToolErrorCode.PERMISSION_DENIED
             )
+            is ToolExecutionResult.AccessDenied -> ToolResult.error(
+                result.decision.message ?: "Access denied: ${result.decision.reason}",
+                ToolErrorCode.ACCESS_DENIED
+            )
         }
     }
 
@@ -150,6 +157,13 @@ class ToolRegistry {
                 ToolErrorCode.NOT_FOUND
             )
         )
+
+        // Enforce access policy against current device conditions
+        val currentLockState = lockStateProvider.currentState()
+        when (val decision = accessPolicy.evaluate(tool, arguments, currentLockState)) {
+            is AccessDecision.Deny -> return ToolExecutionResult.AccessDenied(decision)
+            is AccessDecision.Allow -> { /* proceed */ }
+        }
 
         // Check required permissions
         for (perm in tool.requiredPermissions) {

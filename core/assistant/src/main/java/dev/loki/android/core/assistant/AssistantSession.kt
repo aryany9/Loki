@@ -278,6 +278,8 @@ class AssistantSession(
                         speakAndAwait(conversationManager.ttsEngine, permMsg)
                         openPermissionsScreen(null)
                         turnOutcome = TurnOutcome.PERMISSION_OPENED
+                    } else if (event.result.errorCode == ToolErrorCode.ACCESS_DENIED.name) {
+                        Log.i(TAG, "Tool execution denied by policy: ${event.result.error}")
                     }
                 }
                 is ConversationEvent.AskUser -> {
@@ -329,6 +331,8 @@ class AssistantSession(
                                 speakAndAwait(conversationManager.ttsEngine, permMsg)
                                 openPermissionsScreen(null)
                                 turnOutcome = TurnOutcome.PERMISSION_OPENED
+                            } else if (event.result.errorCode == ToolErrorCode.ACCESS_DENIED.name) {
+                                Log.i(TAG, "Tool execution denied by policy: ${event.result.error}")
                             }
                         }
                         is ConversationEvent.AskUser -> {
@@ -446,6 +450,8 @@ class AssistantSession(
                         speakAndAwait(conversationManager.ttsEngine, permMsg)
                         openPermissionsScreen(null)
                         turnOutcome = TurnOutcome.PERMISSION_OPENED
+                    } else if (event.result.errorCode == ToolErrorCode.ACCESS_DENIED.name) {
+                        Log.i(TAG, "Tool execution denied by policy: ${event.result.error}")
                     }
                 }
                 is ConversationEvent.AskUser -> {
@@ -757,6 +763,8 @@ class AssistantSession(
                                 val permMsg = "To do that, I need the $permName permission. Opening permissions."
                                 speakAndAwait(ttsEngine, permMsg)
                                 openPermissionsScreen(null)
+                            } else if (event.result.errorCode == ToolErrorCode.ACCESS_DENIED.name) {
+                                Log.i(TAG, "Tool execution denied by policy: ${event.result.error}")
                             }
                         }
                         is ConversationEvent.AskUser -> {

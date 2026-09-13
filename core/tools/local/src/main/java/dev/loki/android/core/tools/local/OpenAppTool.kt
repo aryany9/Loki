@@ -21,28 +21,58 @@ class OpenAppTool : LocalTool {
             ?: return ToolResult.error("Missing app_name", ToolErrorCode.VALIDATION_ERROR)
 
         val pm = context.packageManager
-        val packages = pm.getInstalledApplications(0)
 
-        val matchingApp = packages.firstOrNull { appInfo ->
-            val label = pm.getApplicationLabel(appInfo).toString()
-            label.equals(appName, ignoreCase = true) || label.contains(appName, ignoreCase = true)
+        // Query launcher activities first to prioritize user-visible launcher apps
+        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val launcherApps = try {
+            pm.queryIntentActivities(launcherIntent, 0)
+        } catch (_: Throwable) {
+            emptyList()
         }
 
-        if (matchingApp == null) {
+        var targetPackage: String? = launcherApps.firstOrNull { resolveInfo ->
+            val label = resolveInfo.loadLabel(pm).toString()
+            label.equals(appName, ignoreCase = true) || label.contains(appName, ignoreCase = true)
+        }?.activityInfo?.packageName
+
+        var targetLabel: String? = null
+
+        if (targetPackage == null) {
+            // Fallback to installed applications list
+            val packages = try {
+                pm.getInstalledApplications(0)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+            val matchingApp = packages.firstOrNull { appInfo ->
+                val label = pm.getApplicationLabel(appInfo).toString()
+                label.equals(appName, ignoreCase = true) || label.contains(appName, ignoreCase = true)
+            }
+            targetPackage = matchingApp?.packageName
+            targetLabel = matchingApp?.let { pm.getApplicationLabel(it).toString() }
+        } else {
+            val appInfo = try {
+                pm.getApplicationInfo(targetPackage, 0)
+            } catch (_: Throwable) {
+                null
+            }
+            targetLabel = appInfo?.let { pm.getApplicationLabel(it).toString() } ?: appName
+        }
+
+        if (targetPackage == null) {
             return ToolResult.error("App '$appName' not found", ToolErrorCode.NOT_FOUND)
         }
 
-        val launchIntent = pm.getLaunchIntentForPackage(matchingApp.packageName)
-            ?: return ToolResult.error("App '${matchingApp.packageName}' cannot be launched", ToolErrorCode.EXECUTION_ERROR)
+        val launchIntent = pm.getLaunchIntentForPackage(targetPackage)
+            ?: return ToolResult.error("App '$targetPackage' cannot be launched", ToolErrorCode.EXECUTION_ERROR)
 
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         context.startActivity(launchIntent)
 
-        val label = pm.getApplicationLabel(matchingApp).toString()
         return ToolResult.success(
             mapOf(
-                "app_name" to label,
-                "package_name" to matchingApp.packageName,
+                "app_name" to (targetLabel ?: appName),
+                "package_name" to targetPackage,
                 "status" to "opened"
             )
         )

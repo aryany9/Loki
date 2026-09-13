@@ -17,6 +17,8 @@ import dev.loki.android.core.models.ModelCatalogRepository
 import dev.loki.android.core.models.ModelLibraryManager
 import dev.loki.android.core.models.ModelRuntime
 import dev.loki.android.core.models.ModelRuntimeController
+import dev.loki.android.core.tools.AndroidDeviceLockStateProvider
+import dev.loki.android.core.tools.LockScreenActionMatrixPolicy
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.ToolRegistry
 import dev.loki.android.core.tools.local.DefaultLocalTools
@@ -58,10 +60,13 @@ object AppModule {
     @Provides
     @Singleton
     fun provideToolRegistry(
+        @ApplicationContext context: Context,
         memoryStore: dev.loki.android.core.conversation.MemoryStore,
         conversationStore: dev.loki.android.core.conversation.ConversationStore
     ): ToolRegistry {
-        val registry = ToolRegistry()
+        val lockProvider = AndroidDeviceLockStateProvider(context)
+        val accessPolicy = LockScreenActionMatrixPolicy()
+        val registry = ToolRegistry(lockStateProvider = lockProvider, accessPolicy = accessPolicy)
         DefaultLocalTools.registerAll(registry, memoryStore = memoryStore, conversationStore = conversationStore)
         return registry
     }

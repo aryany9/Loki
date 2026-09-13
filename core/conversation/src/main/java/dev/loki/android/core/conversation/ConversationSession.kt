@@ -2,6 +2,7 @@ package dev.loki.android.core.conversation
 
 import android.content.Context
 import dev.loki.android.core.llm.LlmEngine
+import dev.loki.android.core.tools.DenialReason
 import dev.loki.android.core.tools.PermissionManager
 import dev.loki.android.core.tools.Tool
 import dev.loki.android.core.tools.ToolErrorCode
@@ -562,7 +563,22 @@ open class ConversationSession(
                                         arguments = mapOf("query" to searchQuery),
                                         permissionManager = permissionManager
                                     )
-                                    if (lookupExec is ToolExecutionResult.Success) {
+                                    if (lookupExec is ToolExecutionResult.AccessDenied) {
+                                        val denialMsg = lookupExec.decision.message
+                                            ?: when (lookupExec.decision.reason) {
+                                                DenialReason.DEVICE_LOCKED -> "You'll need to unlock your phone to access your contacts."
+                                                DenialReason.USER_NOT_AUTHORIZED -> "You aren't authorized to access contacts."
+                                                DenialReason.CAPABILITY_UNSUPPORTED -> "Contact access is not supported on this device."
+                                            }
+                                        val denialResult = ToolResult.error(denialMsg, ToolErrorCode.ACCESS_DENIED)
+                                        lastToolResult = denialResult
+                                        TurnLogger.logToolExecution(turnId, "lookup_contact", false, "Access denied: ${lookupExec.decision.reason}")
+                                        send(ConversationEvent.ToolExecuted("lookup_contact", denialResult))
+                                        recordTurn(ConversationTurn.ToolExecutionResult("lookup_contact", denialResult))
+                                        finalResponseText = denialMsg
+                                        recordTurn(ConversationTurn.Assistant(finalResponseText))
+                                        break
+                                    } else if (lookupExec is ToolExecutionResult.Success) {
                                         val contactsJson = lookupExec.toolResult.data?.get("contacts")
                                             ?: lookupExec.toolResult.data?.get("matches")
                                         val candidates = if (!contactsJson.isNullOrBlank()) {
@@ -831,6 +847,29 @@ open class ConversationSession(
 
                                 // For next ReAct iteration, send ONLY the masked tool execution result message
                                 currentTurnPrompt = "Tool result for ${parsed.tool}: ${modelResult.data}"
+                            }
+                            is ToolExecutionResult.AccessDenied -> {
+                                val decision = execResult.decision
+                                val denialMsg = decision.message ?: when (decision.reason) {
+                                    DenialReason.DEVICE_LOCKED -> "You'll need to unlock your phone to do that."
+                                    DenialReason.USER_NOT_AUTHORIZED -> "You aren't authorized to perform this action."
+                                    DenialReason.CAPABILITY_UNSUPPORTED -> "This action is not supported on this device."
+                                }
+                                val toolError = ToolResult.error(denialMsg, ToolErrorCode.ACCESS_DENIED)
+                                lastToolResult = toolError
+                                TurnLogger.logToolExecution(turnId, parsed.tool, false, "Access denied: ${decision.reason}")
+                                send(ConversationEvent.ToolExecuted(parsed.tool, toolError))
+
+                                recordTurn(
+                                    ConversationTurn.ToolExecutionResult(
+                                        tool = parsed.tool,
+                                        result = toolError
+                                    )
+                                )
+
+                                finalResponseText = denialMsg
+                                recordTurn(ConversationTurn.Assistant(finalResponseText))
+                                break
                             }
                             is ToolExecutionResult.PermissionRequired -> {
                                 TurnLogger.logPermissionCheck(turnId, execResult.permission, execResult.state.name)
