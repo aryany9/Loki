@@ -8,10 +8,19 @@ import kotlinx.serialization.Serializable
 sealed interface ConversationTurn {
     val timestamp: Long
 
+    enum class TranscriptStatus {
+        PENDING,
+        COMPLETED,
+        FAILED
+    }
+
     @Serializable
     @SerialName("user")
     data class User(
         val text: String,
+        val transcriptStatus: TranscriptStatus = TranscriptStatus.COMPLETED,
+        val audioFilePath: String? = null,
+        val waveformData: ByteArray? = null,
         override val timestamp: Long = System.currentTimeMillis()
     ) : ConversationTurn
 

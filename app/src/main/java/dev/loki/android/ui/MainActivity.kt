@@ -149,7 +149,8 @@ class MainActivity : ComponentActivity() {
             conversationManager = conversationManager,
             sttEngine = sttEngine,
             modelLibraryManager = modelLibraryManager,
-            bundledCatalog = bundledCatalog
+            bundledCatalog = bundledCatalog,
+            applicationContext = applicationContext
         )
 
         agentPlaygroundViewModel = dev.loki.android.core.ui.AgentPlaygroundViewModel(
